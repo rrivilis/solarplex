@@ -1,0 +1,24 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sp"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }
+tokio    = { workspace = true }
+serde    = { workspace = true }
+serde_json = { workspace = true }
+anyhow   = { workspace = true }
+chrono   = { workspace = true }
+tracing  = { workspace = true }
+tracing-subscriber = { workspace = true }
+ulid     = { workspace = true }
+
+clap     = { version = "4", features = ["derive", "env"] }
+reqwest  = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex    = "1"
+base64   = "0.22"

@@ -1,0 +1,10 @@
+[package]
+name = "splx-ir"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lexpr = "0.2"
+thiserror = { workspace = true }
+
+[dev-dependencies]

@@ -1,0 +1,212 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300&family=Figtree:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  /* hsl(225,18%,8%) — base indigo-moonlight surface */
+  background: #111318;
+  color: #dedfe3;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* hsl(225,10%,22%) */
+  background: #2d3040;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #464953;
+}
+
+/* Inset top-left highlight — gives panels a subtle elevation without shadows */
+.panel-shine {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 1px 0 0 rgba(255,255,255,0.02);
+}
+
+/* Sidebar: faint vertical gradient, more visible hue at top */
+.sidebar-surface {
+  background: linear-gradient(
+    180deg,
+    hsl(228, 18%, 12%) 0%,
+    hsl(225, 16%, 11%) 60%,
+    hsl(224, 15%, 10%) 100%
+  );
+}
+
+/* Focus ring consistent with the palette — this is the app-wide default,
+   so every plain button/link that doesn't declare its own focus treatment
+   (most of them) picks it up automatically. box-shadow rather than outline
+   so it's pixel-identical to Tailwind's `ring-2 ring-accent-blue/60`
+   utility (SyncWorkspace's drag/resize handles use that directly) instead
+   of two visually-different focus styles coexisting in the same app.
+   Elements with their own focus:/focus-visible: utility classes still win
+   the cascade normally — this only fills the gap where nothing more
+   specific already applies. */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(79,142,247,0.6);
+}
+
+/* WCAG 2.3.3 Animation from Interactions — Framer Motion's transform-based
+   animations (rotate/scale/x/y) are handled separately via MotionConfig's
+   reducedMotion="user" in providers.tsx, which that library's own JS engine
+   drives and a CSS media query can't reach. This covers the other half:
+   plain Tailwind animation utilities (looping spinners/pulses/bounces),
+   which are ordinary CSS @keyframes and do respond to this query. Scoped to
+   just those utility classes rather than a blanket transition-duration:0 on
+   everything, so short hover/focus color transitions stay snappy instead of
+   the whole app feeling frozen. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin,
+  .animate-pulse,
+  .animate-bounce {
+    animation: none;
+  }
+}
+
+/* Tactile press feedback — buttons only change color on hover today, with
+   nothing to indicate an actual click besides the color swap. A slight
+   scale-down on press gives real physical "give." Deliberately an
+   unconditional discrete state swap, not an animation (WCAG 2.3.3 is about
+   ongoing/looping motion, not a one-off response to the user's own click),
+   so it applies even under prefers-reduced-motion — only the smoothing
+   transition below is gated on that.
+   :not(:disabled): a disabled control shouldn't visually react to a click
+   it's ignoring. Plain `button` (not `.something`) is deliberately the
+   lowest possible specificity so any component's own transition-property
+   utility (transition-colors, transition-all, ...) always wins outright
+   instead of this clobbering it — buttons that already animate color get
+   an instant transform snap instead of an eased one, which is a minor,
+   acceptable inconsistency next to silently breaking existing hover
+   transitions app-wide would be. */
+button:not(:disabled):active {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: no-preference) {
+  button {
+    transition: transform 100ms ease-out;
+  }
+}
+
+/* ── List density (Settings → compact/comfortable) ──────────────────────────
+   Toggled by lib/preferences.ts setting `data-density` on <html>. Applies to
+   the highest-traffic list rows (Sessions, Recent Activity, Inbox) via the
+   shared `.density-row` class — not every list in the app opts in yet. */
+[data-density="compact"] .density-row {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+/* ── Markdown prose — GitHub-style dark rendering ────────────────────────── */
+.prose-solarplex {
+  color: #c9d1d9;
+  font-size: 0.8125rem; /* 13px */
+  line-height: 1.7;
+}
+.prose-solarplex h1,
+.prose-solarplex h2,
+.prose-solarplex h3,
+.prose-solarplex h4 {
+  color: #e2e8f0;
+  font-weight: 600;
+  margin: 1.25em 0 0.5em;
+  line-height: 1.3;
+  border-bottom: 1px solid #1e2130;
+  padding-bottom: 0.3em;
+}
+.prose-solarplex h1 { font-size: 1.375rem; }
+.prose-solarplex h2 { font-size: 1.125rem; }
+.prose-solarplex h3 { font-size: 0.9375rem; border-bottom: none; }
+.prose-solarplex h4 { font-size: 0.875rem; border-bottom: none; color: #a0adb8; }
+.prose-solarplex p  { margin: 0 0 0.9em; }
+.prose-solarplex a  { color: #4f8ef7; text-decoration: underline; text-underline-offset: 2px; }
+.prose-solarplex a:hover { color: #7aafff; }
+.prose-solarplex strong { color: #e2e8f0; font-weight: 600; }
+.prose-solarplex em     { font-style: italic; color: #b0bec7; }
+.prose-solarplex code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8em;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+  color: #f0883e;
+}
+.prose-solarplex pre {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.prose-solarplex pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #c9d1d9;
+  font-size: 0.8125rem;
+}
+.prose-solarplex blockquote {
+  border-left: 3px solid #2d3748;
+  margin: 0.75em 0;
+  padding: 0.25em 0 0.25em 1rem;
+  color: #8892a0;
+}
+.prose-solarplex ul,
+.prose-solarplex ol {
+  margin: 0.5em 0 0.9em 1.25em;
+  padding: 0;
+}
+.prose-solarplex ul { list-style: disc; }
+.prose-solarplex ol { list-style: decimal; }
+.prose-solarplex li { margin: 0.2em 0; }
+.prose-solarplex hr {
+  border: none;
+  border-top: 1px solid #1e2130;
+  margin: 1.25em 0;
+}
+/* GFM tables */
+.prose-solarplex table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.8em;
+}
+.prose-solarplex th {
+  background: #161b22;
+  color: #8892a0;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.4em 0.75em;
+  border: 1px solid #21262d;
+}
+.prose-solarplex td {
+  padding: 0.35em 0.75em;
+  border: 1px solid #1a1f2e;
+  vertical-align: top;
+}
+.prose-solarplex tr:nth-child(even) td { background: #0d1117; }
+/* GFM checkboxes */
+.prose-solarplex input[type="checkbox"] {
+  margin-right: 0.35em;
+  accent-color: #4f8ef7;
+}

@@ -1,0 +1,16 @@
+[package]
+name = "secrets-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "secrets-cli"
+path = "src/main.rs"
+
+[dependencies]
+secrets-ratchet = { path = "../secrets-ratchet" }
+secrets-store = { path = "../secrets-store" }
+age = { version = "0.12", features = ["armor"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+zeroize = { version = "1", features = ["derive"] }
