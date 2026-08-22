@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 
 use protocol::types::MemberRole;
 use crate::state::AppState;
+use autometrics::autometrics;
 
 // ── GET /api/auth/why ─────────────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ pub struct WhyQuery {
     entity:     Option<String>,
 }
 
+#[autometrics]
 pub async fn why(
     State(state): State<Arc<AppState>>,
     Query(q): Query<WhyQuery>,
@@ -130,6 +132,7 @@ pub struct WhoCanQuery {
     entity:     Option<String>,
 }
 
+#[autometrics]
 pub async fn who_can(
     State(state): State<Arc<AppState>>,
     Query(q): Query<WhoCanQuery>,
@@ -207,6 +210,7 @@ pub struct LineageQuery {
     cap_id: String,
 }
 
+#[autometrics]
 pub async fn lineage(
     State(state): State<Arc<AppState>>,
     Query(q): Query<LineageQuery>,

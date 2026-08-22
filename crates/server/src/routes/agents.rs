@@ -11,11 +11,13 @@ use axum::{extract::State, http::HeaderMap, response::IntoResponse, routing::get
 use db::actors;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/", get(list_agents))
 }
 
+#[autometrics]
 async fn list_agents(headers: HeaderMap, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
         Ok(id)   => id,

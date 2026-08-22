@@ -84,10 +84,10 @@ pub async fn upsert_human(pool: &PgPool, id: &str, name: &str) -> DbResult<Actor
 }
 
 /// Register a human actor if this id has never been seen before; a true
-/// no-op otherwise — an already-registered actor's name (real OIDC name,
+/// no-op otherwise. An already-registered actor's name (real OIDC name,
 /// or a rename via `PATCH /auth/me`) is never touched. Use this, not
 /// `upsert_human`, for every "make sure this actor exists" call site that
-/// isn't itself the rename endpoint — `name` here is only ever a fallback
+/// isn't itself the rename endpoint. `name` here is only ever a fallback
 /// for a genuinely new row.
 pub async fn ensure_human(pool: &PgPool, id: &str, name: &str) -> DbResult<ActorRow> {
     sqlx::query_as::<_, ActorRow>(
@@ -104,7 +104,7 @@ pub async fn ensure_human(pool: &PgPool, id: &str, name: &str) -> DbResult<Actor
 }
 
 /// Upsert an agent actor by id, overwriting any existing name/type. See
-/// `upsert_human`'s doc comment — same caveat, no current caller actually
+/// `upsert_human`'s doc comment; same caveat, no current caller actually
 /// wants this for "register on first use".
 pub async fn upsert_agent(pool: &PgPool, id: &str, name: &str) -> DbResult<ActorRow> {
     sqlx::query_as::<_, ActorRow>(
@@ -210,11 +210,35 @@ pub async fn list_agent_directory(pool: &PgPool, viewer_actor_id: &str) -> DbRes
 
 async fn list_actors_of_type(pool: &PgPool, viewer_actor_id: &str, actor_type: &str) -> DbResult<Vec<TeammateRow>> {
     sqlx::query_as::<_, TeammateRow>(
-        "SELECT
+        // `session_memberships` gets a row the instant a Collaborator mints
+        // an attach cap (`issue_attach_token`), before the agent process
+        // has ever run, let alone connected. Left ungated, a minted-but-
+        // never-attached (or crashed-before-attaching) agent shows up here
+        // as a full "1 session" participant next to "never active", which
+        // is exactly backwards. The membership row means "authorized",
+        // not "showed up". `agent_real_joins` is the actual attach signal:
+        // a real `actor.joined` event only exists once `agent_attach`
+        // genuinely ran. Humans are deliberately not gated the same way.
+        // An invited-but-not-yet-logged-in human legitimately belongs in a
+        // membership directory; a never-attached agent doesn't.
+        "WITH agent_real_joins AS (
+            SELECT DISTINCT session_id, actor_id FROM events WHERE type = 'actor.joined'
+         )
+         SELECT
             a.id, a.name, a.email, a.created_at,
-            COUNT(DISTINCT sm.session_id) FILTER (WHERE sm.detached_at IS NULL) AS session_count,
+            COUNT(DISTINCT sm.session_id) FILTER (
+                WHERE sm.detached_at IS NULL
+                  AND (a.type != 'agent' OR EXISTS (
+                      SELECT 1 FROM agent_real_joins j WHERE j.session_id = sm.session_id AND j.actor_id = a.id
+                  ))
+            ) AS session_count,
             COALESCE(
-                ARRAY_AGG(DISTINCT sm.role) FILTER (WHERE sm.detached_at IS NULL AND sm.role IS NOT NULL),
+                ARRAY_AGG(DISTINCT sm.role) FILTER (
+                    WHERE sm.detached_at IS NULL AND sm.role IS NOT NULL
+                      AND (a.type != 'agent' OR EXISTS (
+                          SELECT 1 FROM agent_real_joins j WHERE j.session_id = sm.session_id AND j.actor_id = a.id
+                      ))
+                ),
                 ARRAY[]::TEXT[]
             ) AS roles,
             MAX(e.timestamp) AS last_active_at
@@ -232,6 +256,9 @@ async fn list_actors_of_type(pool: &PgPool, viewer_actor_id: &str, actor_type: &
                      AND my_sm.detached_at IS NULL
                      AND their_sm.actor_id = a.id
                      AND their_sm.detached_at IS NULL
+                     AND (a.type != 'agent' OR EXISTS (
+                         SELECT 1 FROM agent_real_joins j WHERE j.session_id = their_sm.session_id AND j.actor_id = a.id
+                     ))
                )
            )
          GROUP BY a.id

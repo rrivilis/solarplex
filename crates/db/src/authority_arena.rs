@@ -2,7 +2,7 @@
 //!
 //! # Conceptual model
 //!
-//! In a classic capability system the token IS the authority — a self-contained
+//! In a classic capability system the token bears the authority as a self-contained
 //! bearer credential.  Revocation is famously hard because authority has already
 //! been distributed and there is no global namespace to update.
 //!
@@ -16,7 +16,7 @@
 //! `AuthorityArena::revoke_epoch` is `drop(region)` — O(1) regardless of how
 //! many caps were allocated in that epoch.
 //!
-//! See THREAT_MODEL.md §4.1 for the full threat analysis.
+//! 
 //!
 //! # Usage
 //!

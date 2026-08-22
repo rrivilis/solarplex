@@ -2,12 +2,15 @@
   "name": "solarplex",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.21.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:a11y": "playwright test"
+    "typecheck": "tsc --noEmit",
+    "test:a11y": "playwright test",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -19,6 +22,7 @@
     "@radix-ui/react-tooltip": "^1.2.9",
     "@tailwindcss/typography": "^0.5.20",
     "@tanstack/react-query": "^5.101.0",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^3.6.0",
@@ -38,7 +42,10 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
+    "@next/bundle-analyzer": "^16.3.1",
     "@playwright/test": "^1.62.1",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",

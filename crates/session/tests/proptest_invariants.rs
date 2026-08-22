@@ -1041,6 +1041,163 @@ fn live_bundle_received_step_cross_session_delegation_persists_received() {
 }
 
 #[test]
+fn live_bundle_received_step_artifact_import_persists_received() {
+    let (_, _, effects) = transition(SessionState::Active, memory_with_owner(),
+        InboundEvent::Live(LiveEvent::BundleReceived {
+            bundle: SagaBundle {
+                bundle_id:    "ai_01:0:step".into(),
+                saga_id:      "ai_01".into(),
+                step_idx:     0,
+                from_session: "sess_source".into(),
+                to_session:   "sess_this".into(),
+                kind: BundleKind::Step {
+                    message: serde_json::json!({
+                        "kind":               "artifact_import",
+                        "source_artifact_id": "art_01",
+                        "source_seq":         42,
+                        "name":               "notes.md",
+                        "artifact_type":      "text/markdown",
+                        "storage_ref":        "blob://abc123",
+                        "content_hash":       "deadbeef",
+                        "source_created_by":  "actor_creator",
+                        "source_created_at":  "2026-01-01T00:00:00Z",
+                        "imported_by":        "actor_importer",
+                        "link_id":            "link_01",
+                        "source_name":        "Source Session",
+                        "target_name":        "Target Session",
+                    }),
+                    compensation: serde_json::json!({}),
+                },
+                ttl_ms: Utc::now().timestamp_millis() as u64 + 60_000,
+            },
+        }));
+
+    let received = effects.iter().find_map(|e| match e {
+        Effect::Persist(SessionEvent::CrossSessionArtifactImportReceived {
+            source_session_id, source_artifact_id, source_seq, name, artifact_type,
+            storage_ref, content_hash, source_created_by, imported_by, link_id,
+            source_name, target_name, ..
+        }) => Some((
+            source_session_id.clone(), source_artifact_id.clone(), *source_seq, name.clone(),
+            artifact_type.clone(), storage_ref.clone(), content_hash.clone(),
+            source_created_by.clone(), imported_by.clone(), link_id.clone(),
+            source_name.clone(), target_name.clone(),
+        )),
+        _ => None,
+    }).unwrap_or_else(|| panic!("expected CrossSessionArtifactImportReceived in {effects:?}"));
+    assert_eq!(received.0, "sess_source"); // from bundle.from_session, not the message body
+    assert_eq!(received.1, "art_01");
+    assert_eq!(received.2, 42);
+    assert_eq!(received.3, "notes.md");
+    assert_eq!(received.4, "text/markdown");
+    assert_eq!(received.5, "blob://abc123");
+    assert_eq!(received.6, "deadbeef");
+    assert_eq!(received.7, "actor_creator");
+    assert_eq!(received.8, "actor_importer");
+    assert_eq!(received.9, Some("link_01".to_string()));
+    assert_eq!(received.10, "Source Session");
+    assert_eq!(received.11, "Target Session");
+}
+
+#[test]
+fn live_bundle_received_step_context_summary_send_persists_received() {
+    let (_, _, effects) = transition(SessionState::Active, memory_with_owner(),
+        InboundEvent::Live(LiveEvent::BundleReceived {
+            bundle: SagaBundle {
+                bundle_id:    "cs_01:0:step".into(),
+                saga_id:      "cs_01".into(),
+                step_idx:     0,
+                from_session: "sess_source".into(),
+                to_session:   "sess_this".into(),
+                kind: BundleKind::Step {
+                    message: serde_json::json!({
+                        "kind":                "context_summary_send",
+                        "source_entry_id":     "entry_01",
+                        "entry_kind":          "hypothesis",
+                        "content":             "The cache is stale after deploy.",
+                        "source_authored_by":  "actor_author",
+                        "source_authored_at":  "2026-01-01T00:00:00Z",
+                        "imported_by":         "actor_importer",
+                        "link_id":             "link_01",
+                        "source_name":         "Source Session",
+                        "target_name":         "Target Session",
+                    }),
+                    compensation: serde_json::json!({}),
+                },
+                ttl_ms: Utc::now().timestamp_millis() as u64 + 60_000,
+            },
+        }));
+
+    let received = effects.iter().find_map(|e| match e {
+        Effect::Persist(SessionEvent::CrossSessionContextReceived {
+            source_session_id, source_entry_id, kind, content, source_authored_by,
+            imported_by, link_id, source_name, target_name, ..
+        }) => Some((
+            source_session_id.clone(), source_entry_id.clone(), kind.clone(), content.clone(),
+            source_authored_by.clone(), imported_by.clone(), link_id.clone(),
+            source_name.clone(), target_name.clone(),
+        )),
+        _ => None,
+    }).unwrap_or_else(|| panic!("expected CrossSessionContextReceived in {effects:?}"));
+    assert_eq!(received.0, "sess_source"); // from bundle.from_session, not the message body
+    assert_eq!(received.1, "entry_01");
+    assert_eq!(received.2, protocol::types::ContextEntryKind::Hypothesis);
+    assert_eq!(received.3, "The cache is stale after deploy.");
+    assert_eq!(received.4, "actor_author");
+    assert_eq!(received.5, "actor_importer");
+    assert_eq!(received.6, Some("link_01".to_string()));
+    assert_eq!(received.7, "Source Session");
+    assert_eq!(received.8, "Target Session");
+}
+
+#[test]
+fn live_bundle_received_step_annotation_persists_received() {
+    let (_, _, effects) = transition(SessionState::Active, memory_with_owner(),
+        InboundEvent::Live(LiveEvent::BundleReceived {
+            bundle: SagaBundle {
+                bundle_id:    "an_01:0:step".into(),
+                saga_id:      "an_01".into(),
+                step_idx:     0,
+                from_session: "sess_source".into(),
+                to_session:   "sess_this".into(),
+                kind: BundleKind::Step {
+                    message: serde_json::json!({
+                        "kind":        "annotation",
+                        "object_type": "artifact",
+                        "object_id":   "art_01",
+                        "object_name": "notes.md",
+                        "note":        "This looks stale, can we regenerate it?",
+                        "authored_by": "actor_annotator",
+                        "link_id":     "link_01",
+                        "source_name": "Source Session",
+                    }),
+                    compensation: serde_json::json!({}),
+                },
+                ttl_ms: Utc::now().timestamp_millis() as u64 + 60_000,
+            },
+        }));
+
+    let received = effects.iter().find_map(|e| match e {
+        Effect::Persist(SessionEvent::CrossSessionAnnotationReceived {
+            source_session_id, object_type, object_id, object_name, note, authored_by,
+            link_id, source_name, ..
+        }) => Some((
+            source_session_id.clone(), object_type.clone(), object_id.clone(), object_name.clone(),
+            note.clone(), authored_by.clone(), link_id.clone(), source_name.clone(),
+        )),
+        _ => None,
+    }).unwrap_or_else(|| panic!("expected CrossSessionAnnotationReceived in {effects:?}"));
+    assert_eq!(received.0, "sess_source"); // from bundle.from_session, not the message body
+    assert_eq!(received.1, "artifact");
+    assert_eq!(received.2, "art_01");
+    assert_eq!(received.3, "notes.md");
+    assert_eq!(received.4, "This looks stale, can we regenerate it?");
+    assert_eq!(received.5, "actor_annotator");
+    assert_eq!(received.6, Some("link_01".to_string()));
+    assert_eq!(received.7, "Source Session");
+}
+
+#[test]
 fn cross_session_delegation_committed_resolves_as_granted() {
     let (state, memory) = memory_with_delegation_saga_waiting("csd_03", "appr_03");
     let (_, _, effects) = transition(state, memory,

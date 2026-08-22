@@ -34,6 +34,7 @@ use serde::Deserialize;
 
 use crate::state::AppState;
 use crate::ws::create_approval_for_session;
+use autometrics::autometrics;
 
 // ── Request body ──────────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ const PENDING_RECEIPT_TTL_SECS:      i64 = 240;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
+#[autometrics]
 pub async fn handler(
     Path(session_id): Path<String>,
     State(state):     State<Arc<AppState>>,
@@ -255,6 +257,7 @@ pub struct ConsumeBody {
     pub receipt_id: String,
 }
 
+#[autometrics]
 pub async fn consume_handler(
     Path(session_id): Path<String>,
     State(state):     State<Arc<AppState>>,

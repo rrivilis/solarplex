@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use ulid::Ulid;
 
@@ -23,6 +23,7 @@ use protocol::messages::{
 };
 use protocol::types::{AgentStatus, ContextEntryKind, MemberRole};
 use session::rate_limit::RateLimitKey;
+use session::{BundleKind, SagaBundle};
 use crate::session_task::{
     task_admin_archive, task_admin_pause, task_admin_resume, task_artifact_create,
     task_artifact_delete, task_artifact_update, task_context_add, task_message_post,
@@ -30,32 +31,35 @@ use crate::session_task::{
 };
 use crate::state::AppState;
 use crate::ws::{create_approval_for_session, emit_to_session};
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_sessions).post(create_session))
-        .route("/:id", get(get_session).patch(update_session))
-        .route("/:id/digest", get(get_digest))
-        .route("/:id/members", post(add_member))
-        .route("/:id/invites", get(list_invites).post(create_invite))
-        .route("/:id/attach-token", post(issue_attach_token))
-        .route("/:id/regenerate-join-token", post(regenerate_join_token))
-        .route("/:id/transfer", post(transfer_ownership))
-        .route("/:id/events", get(list_events))
-        .route("/:id/connections", get(list_connections))
-        .route("/:id/messages", post(post_message))
-        .route("/:id/context", post(add_context))
-        .route("/:id/artifacts", get(list_artifacts).post(create_artifact))
-        .route("/:id/artifacts/import", post(import_artifact))
-        .route("/:id/artifacts/:artifact_id", get(get_artifact).patch(update_artifact).delete(delete_artifact))
-        .route("/:id/approvals", get(list_approvals).post(create_approval_rest))
-        .route("/:id/agent-attach", post(agent_attach))
-        .route("/:id/agent-detach", post(agent_detach))
-        .route("/:id/agent-status", post(agent_status))
-        .route("/:id/agent-heartbeat", post(agent_heartbeat))
-        .route("/:id/shell/start",    post(shell_start))
-        .route("/:id/shell/complete", post(shell_complete))
-        .route("/:id/methods", get(list_methods).post(register_methods))
+        .route("/{id}", get(get_session).patch(update_session))
+        .route("/{id}/digest", get(get_digest))
+        .route("/{id}/members", post(add_member))
+        .route("/{id}/invites", get(list_invites).post(create_invite))
+        .route("/{id}/attach-token", post(issue_attach_token))
+        .route("/{id}/regenerate-join-token", post(regenerate_join_token))
+        .route("/{id}/transfer", post(transfer_ownership))
+        .route("/{id}/events", get(list_events))
+        .route("/{id}/connections", get(list_connections))
+        .route("/{id}/messages", post(post_message))
+        .route("/{id}/context", post(add_context))
+        .route("/{id}/context/send", post(send_context_entry))
+        .route("/{id}/annotate", post(annotate_object))
+        .route("/{id}/artifacts", get(list_artifacts).post(create_artifact))
+        .route("/{id}/artifacts/import", post(import_artifact))
+        .route("/{id}/artifacts/{artifact_id}", get(get_artifact).patch(update_artifact).delete(delete_artifact))
+        .route("/{id}/approvals", get(list_approvals).post(create_approval_rest))
+        .route("/{id}/agent-attach", post(agent_attach))
+        .route("/{id}/agent-detach", post(agent_detach))
+        .route("/{id}/agent-status", post(agent_status))
+        .route("/{id}/agent-heartbeat", post(agent_heartbeat))
+        .route("/{id}/shell/start",    post(shell_start))
+        .route("/{id}/shell/complete", post(shell_complete))
+        .route("/{id}/methods", get(list_methods).post(register_methods))
 }
 
 #[derive(Deserialize)]
@@ -65,6 +69,7 @@ pub struct CreateSessionBody {
     pub approval_policy: Option<String>,
 }
 
+#[autometrics]
 async fn create_session(
     headers:      HeaderMap,
     State(state): State<Arc<AppState>>,
@@ -111,6 +116,7 @@ async fn create_session(
     }
 }
 
+#[autometrics]
 async fn list_sessions(
     headers:      HeaderMap,
     State(state): State<Arc<AppState>>,
@@ -143,6 +149,7 @@ async fn list_sessions(
     }
 }
 
+#[autometrics]
 async fn get_session(
     Path(id):     Path<String>,
     headers:      HeaderMap,
@@ -188,6 +195,7 @@ async fn get_session(
 /// as every other session-scoped read (`require_session_member`, Observer
 /// minimum), which already transparently satisfies linked-session access via
 /// `require_membership_or_linked_access` — no new authorization code needed.
+#[autometrics]
 async fn get_digest(
     Path(id):     Path<String>,
     headers:      HeaderMap,
@@ -212,6 +220,7 @@ async fn get_digest(
 // is persisted). This mints a fresh one for callers — human members without an
 // OIDC-issued sp_token — who need a usable invite link for an existing session.
 // Rotating invalidates any previously-issued raw token for this session.
+#[autometrics]
 async fn regenerate_join_token(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -248,6 +257,7 @@ pub struct UpdateSessionBody {
     pub actor_id: Option<String>,
 }
 
+#[autometrics]
 async fn update_session(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -344,6 +354,7 @@ pub struct AddMemberBody {
     pub escalation_timeout: Option<i32>,
 }
 
+#[autometrics]
 async fn add_member(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -432,6 +443,7 @@ pub struct CreateInviteBody {
     pub ttl_secs: i64,
 }
 
+#[autometrics]
 async fn create_invite(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -539,6 +551,7 @@ async fn create_invite(
     }
 }
 
+#[autometrics]
 async fn list_invites(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -574,6 +587,7 @@ pub struct TransferBody {
 // and returns early on `Some`.
 use crate::rate_limit::gate_session;
 
+#[autometrics]
 async fn transfer_ownership(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -638,6 +652,7 @@ struct IssueAttachTokenBody {
 fn default_agent_role() -> String { "agent".into() }
 fn default_ttl() -> u64 { 900 }
 
+#[autometrics]
 async fn issue_attach_token(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -733,6 +748,7 @@ struct PostMessageBody {
     cap_id: Option<String>,
 }
 
+#[autometrics]
 async fn post_message(
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -788,6 +804,7 @@ struct AddContextBody {
     cap_id: Option<String>,
 }
 
+#[autometrics]
 async fn add_context(
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -847,17 +864,34 @@ pub struct EventsQuery {
     pub limit: Option<i64>,
 }
 
+#[autometrics]
 async fn list_events(
     Path(id): Path<String>,
     headers:  HeaderMap,
     Query(q): Query<EventsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer).await {
-        return res;
-    }
+    let actor_id = match crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer).await {
+        Ok(actor_id) => actor_id,
+        Err(res) => return res,
+    };
+    // Linked-session (session_links) access has no real `session_memberships`
+    // row for this session -- treat that the same as the lowest human tier
+    // rather than erroring, matching require_membership_or_linked_access's
+    // own Observer-level grant for that path.
+    let role = sessions::get_membership(&state.db, &id, &actor_id).await
+        .map(|m| m.role.parse().unwrap_or(MemberRole::Observer))
+        .unwrap_or(MemberRole::Observer);
+
     match db::events::list(&state.db, &id, q.after_seq, q.limit.unwrap_or(100)).await {
-        Ok(events) => Json(events).into_response(),
+        Ok(mut events) => {
+            events.retain_mut(|e| match crate::event_visibility::min_role_for_type(&e.r#type) {
+                None => true,
+                Some(min) if role.satisfies(&min) => true,
+                Some(_) => crate::event_visibility::redact_value(&e.r#type, &mut e.payload),
+            });
+            Json(events).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -870,6 +904,7 @@ struct ConnectionsQuery {
 /// The queryable half of the connect/disconnect audit trail — see migration
 /// 033's doc comment. Deliberately separate from `/events`: this is
 /// connection lifecycle (including routine reconnects), not session content.
+#[autometrics]
 async fn list_connections(
     Path(id):     Path<String>,
     headers:      HeaderMap,
@@ -885,6 +920,7 @@ async fn list_connections(
     }
 }
 
+#[autometrics]
 async fn list_approvals(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -914,6 +950,7 @@ pub struct CreateArtifactBody {
     pub cap_id: Option<String>,
 }
 
+#[autometrics]
 async fn list_artifacts(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -928,6 +965,7 @@ async fn list_artifacts(
     }
 }
 
+#[autometrics]
 async fn create_artifact(
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -951,9 +989,7 @@ async fn create_artifact(
         h.update(body.content.as_bytes());
         format!("{:x}", h.finalize())
     };
-    if let Ok(mut cms) = state.cms.lock() {
-        cms.insert(&body.content);
-    }
+    state.cms.insert(&body.content);
     let db2   = state.db.clone();
     let sha2c = sha256.clone();
     tokio::spawn(async move {
@@ -1013,6 +1049,7 @@ struct ImportArtifactBody {
     source_artifact_id: String,
 }
 
+#[autometrics]
 async fn import_artifact(
     Path(target_id): Path<String>,
     headers:         HeaderMap,
@@ -1084,99 +1121,219 @@ async fn import_artifact(
         }))).into_response();
     }
 
-    // The actual copy — a brand-new artifact row in the target session,
-    // independent from this point on (editing either copy never touches
-    // the other; this is not a live reference).
-    let new_artifact = match db::artifacts::create(&state.db, db::artifacts::CreateArtifact {
-        session_id: target_id.clone(),
-        created_by: actor_id.clone(),
-        name: source_artifact.name.clone(),
-        artifact_type: source_artifact.r#type.clone(),
-        storage_ref: source_artifact.storage_ref.clone(),
-    }).await {
-        Ok(a) => a,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    let receipt_id = ulid::Ulid::new().to_string();
-    let receipt = match db::artifact_imports::insert(
-        &state.db, &receipt_id,
-        &body.source_session_id, &source_artifact.id, source_seq,
-        &target_id, &new_artifact.id,
-        &content_hash, &source_artifact.created_by, source_artifact.created_at,
-        &actor_id, link_id.as_deref(),
-    ).await {
-        Ok(r) => r,
-        // Lost a concurrent double-import race — the winning request's row
-        // already carries a real target artifact; fall back to it rather
-        // than erroring. `new_artifact` above is now a harmless orphan copy
-        // with no receipt pointing at it (same non-atomic-but-safe posture
-        // as the rest of this handler, which isn't wrapped in one tx either).
-        Err(db::DbError::Conflict(_)) => {
-            return match db::artifact_imports::find_existing(
-                &state.db, &target_id, &content_hash,
-            ).await {
-                Ok(Some(existing)) => match db::artifacts::get(&state.db, &existing.target_artifact_id).await {
-                    Ok(a) => (StatusCode::OK, Json(serde_json::json!({
-                        "receipt": existing, "artifact": a, "already_imported": true,
-                    }))).into_response(),
-                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-                },
-                Ok(None) => StatusCode::CONFLICT.into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            };
-        }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    // Broadcast the new artifact, exactly like a normal create.
-    let artifact_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ArtifactCreated {
-        session_id: target_id.clone(), actor: actor_id.clone(), timestamp: Utc::now(), seq: 0,
-        payload: ArtifactPayload {
-            artifact_id: new_artifact.id.clone(), name: new_artifact.name.clone(),
-            artifact_type: Some(new_artifact.r#type.clone()),
+    // Beyond this point the write moves to the target session's own mailbox
+    // via the reflector, instead of a direct create + emit_to_session here.
+    // That direct write was exactly the uncoordinated side-channel the
+    // actor-model rewrite was meant to eliminate: the target session's own
+    // live effect processing had no idea this write happened except after
+    // the fact. Dispatching a bundle serializes it through the target's own
+    // session task like every other mutation, and makes delivery correct
+    // when that task lives on a different replica than the one handling
+    // this request (Reflector::dispatch forwards durably; the notifier.rs
+    // cross-replica fix makes the resulting broadcast reach clients on any
+    // replica, not just whichever one processed it). See Part 3 of the plan.
+    let bundle = SagaBundle {
+        bundle_id:    Ulid::new().to_string(),
+        saga_id:      Ulid::new().to_string(),
+        step_idx:     0,
+        from_session: body.source_session_id.clone(),
+        to_session:   target_id.clone(),
+        kind: BundleKind::Step {
+            message: serde_json::json!({
+                "kind":               "artifact_import",
+                "source_artifact_id": source_artifact.id,
+                "source_seq":         source_seq,
+                "name":               source_artifact.name,
+                "artifact_type":      source_artifact.r#type,
+                "storage_ref":        source_artifact.storage_ref,
+                "content_hash":       content_hash,
+                "source_created_by":  source_artifact.created_by,
+                "source_created_at":  source_artifact.created_at.to_rfc3339(),
+                "imported_by":        actor_id,
+                "link_id":            link_id,
+                "source_name":        source_name,
+                "target_name":        target_name,
+            }),
+            compensation: serde_json::json!({}),
         },
-    });
-    emit_to_session(&state, &target_id, &actor_id, artifact_event).await;
-    let hub  = state.get_or_create_hub(&target_id);
-    let task = state.get_or_create_session_task(&target_id, &actor_id, Arc::clone(&hub));
-    task_artifact_create(&task, new_artifact.id.clone(), actor_id.clone(), new_artifact.name.clone(), Some(new_artifact.r#type.clone())).await;
+        // A human decision window isn't relevant here (there's no ack leg),
+        // but the target session's task may not be live at dispatch time —
+        // a generous TTL keeps the bundle in the reflector log for delivery
+        // on reconnect rather than losing it to a tight expiry.
+        ttl_ms: Utc::now().timestamp_millis() as u64 + 24 * 60 * 60 * 1000,
+    };
+    let local_node = crate::numa::session_numa_node(&body.source_session_id, state.numa_nodes);
+    crate::session_task::route_bundle(
+        &body.source_session_id, bundle, &state.reflector, &state.sessions, local_node,
+    ).await;
 
-    // The mandatory audit trail — a ContextEntry auto-fired in the target,
-    // exact format per product decision. Resolve both actors to display
-    // names first — this note is FOREIGN, human-facing text, and the raw
-    // ULIDs it was embedding directly here were exactly the pattern already
-    // fixed everywhere else names get surfaced (make_snapshot_msg, the CLI
-    // feed, etc.); this call site had just never gone through it.
-    let name_ids = vec![source_artifact.created_by.clone(), actor_id.clone()];
-    let names = actors::get_many(&state.db, &name_ids).await.unwrap_or_default();
-    let source_creator_name = names.get(&source_artifact.created_by)
-        .map(|a| a.name.clone())
-        .unwrap_or_else(|| source_artifact.created_by.clone());
-    let importer_name = names.get(&actor_id)
-        .map(|a| a.name.clone())
-        .unwrap_or_else(|| actor_id.clone());
-    let note = format!(
-        "Imported from {source_name}\nOriginally published by {source_creator_name} at {}\nImported by {importer_name} through session link {source_name} -> {target_name}",
-        source_artifact.created_at.to_rfc3339(),
-    );
-    let entry_id = ulid::Ulid::new().to_string();
-    let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
-        session_id: target_id.clone(), actor: actor_id.clone(), timestamp: Utc::now(), seq: 0,
-        payload: ContextEntryAddedPayload {
-            entry_id: entry_id.clone(), kind: ContextEntryKind::Fact,
-            content: note.clone(), authored_by: Some(actor_id.clone()),
-        },
-    });
-    emit_to_session(&state, &target_id, &actor_id, context_event).await;
-    task_context_add(&task, entry_id, actor_id.clone(), ContextEntryKind::Fact, note).await;
-
-    (StatusCode::CREATED, Json(serde_json::json!({
-        "receipt": receipt,
-        "artifact": new_artifact,
+    // No artifact/receipt to return synchronously — creation now happens
+    // asynchronously in the target's own mailbox. The frontend doesn't need
+    // it either: it relies on the live ArtifactCreated broadcast, not this
+    // response body (see SyncWorkspace.tsx's handleArtifactDrop).
+    (StatusCode::ACCEPTED, Json(serde_json::json!({
+        "already_imported": false,
+        "dispatched": true,
     }))).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct SendContextEntryBody {
+    pub source_session_id:   String,
+    pub source_entry_id:     String,
+    /// "fact" | "hypothesis" | "question" | "constraint" | "decision" — same
+    /// string set add_context's body already accepts; unrecognized falls
+    /// back to "fact", matching that handler's own fallback.
+    pub kind:                String,
+    pub content:              String,
+    pub source_authored_by:   String,
+    pub source_authored_at:   DateTime<Utc>,
+}
+
+/// Part 4B: send one of *your* session's existing context entries into a
+/// linked session's context log, with provenance. The caller already has
+/// the entry's own fields from its own live `state.contextEntries` (there's
+/// no `context_entries` table to re-read server-side — see Part 4's plan
+/// context) so this trusts the client for content/kind/authorship and only
+/// verifies genuine access to the claimed source session, same bar
+/// `import_artifact` uses for its own source-side check.
+#[autometrics]
+async fn send_context_entry(
+    Path(target_id): Path<String>,
+    headers:         HeaderMap,
+    State(state):    State<Arc<AppState>>,
+    Json(body):      Json<SendContextEntryBody>,
+) -> impl IntoResponse {
+    let actor_id = match crate::auth::require_session_member(
+        &state.db, &headers, &target_id, MemberRole::Collaborator,
+    ).await {
+        Ok(id)   => id,
+        Err(res) => return res,
+    };
+    if let Err(e) = db::sessions::require_membership_or_linked_access(
+        &state.db, &body.source_session_id, &actor_id, MemberRole::Observer,
+    ).await {
+        return match e {
+            db::DbError::NotFound | db::DbError::Unauthorized => StatusCode::NOT_FOUND.into_response(),
+            e => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        };
+    }
+
+    let (source_session, target_session, link) = tokio::join!(
+        db::sessions::get(&state.db, &body.source_session_id),
+        db::sessions::get(&state.db, &target_id),
+        db::session_links::get_between(&state.db, &body.source_session_id, &target_id),
+    );
+    let source_name = source_session.map(|s| s.name).unwrap_or_else(|_| body.source_session_id.clone());
+    let target_name = target_session.map(|s| s.name).unwrap_or_else(|_| target_id.clone());
+    let link_id = link.ok().flatten().map(|l| l.id);
+
+    let bundle = SagaBundle {
+        bundle_id:    Ulid::new().to_string(),
+        saga_id:      Ulid::new().to_string(),
+        step_idx:     0,
+        from_session: body.source_session_id.clone(),
+        to_session:   target_id.clone(),
+        kind: BundleKind::Step {
+            message: serde_json::json!({
+                "kind":                "context_summary_send",
+                "source_entry_id":     body.source_entry_id,
+                "entry_kind":          body.kind,
+                "content":             body.content,
+                "source_authored_by":  body.source_authored_by,
+                "source_authored_at":  body.source_authored_at.to_rfc3339(),
+                "imported_by":         actor_id,
+                "link_id":             link_id,
+                "source_name":         source_name,
+                "target_name":         target_name,
+            }),
+            compensation: serde_json::json!({}),
+        },
+        ttl_ms: Utc::now().timestamp_millis() as u64 + 24 * 60 * 60 * 1000,
+    };
+    let local_node = crate::numa::session_numa_node(&body.source_session_id, state.numa_nodes);
+    crate::session_task::route_bundle(
+        &body.source_session_id, bundle, &state.reflector, &state.sessions, local_node,
+    ).await;
+
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "dispatched": true }))).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AnnotateObjectBody {
+    pub source_session_id: String,
+    /// v1: "artifact" only (see Part 4's plan context).
+    pub object_type:        String,
+    pub object_id:           String,
+    pub object_name:         String,
+    pub note:                 String,
+}
+
+/// Part 4C: leave a note on an artifact that lives in `target_id` (the
+/// session owning the object), authored by a member of `source_session_id`
+/// (typically the caller's own home session, viewing `target_id` as a
+/// linked SyncWorkspace pane). Same authorization bar as artifact import
+/// and context-summary-send — Collaborator+ in the target, deliberately not
+/// loosened to Observer for v1 (see the plan's note on this call).
+#[autometrics]
+async fn annotate_object(
+    Path(target_id): Path<String>,
+    headers:         HeaderMap,
+    State(state):    State<Arc<AppState>>,
+    Json(body):      Json<AnnotateObjectBody>,
+) -> impl IntoResponse {
+    let actor_id = match crate::auth::require_session_member(
+        &state.db, &headers, &target_id, MemberRole::Collaborator,
+    ).await {
+        Ok(id)   => id,
+        Err(res) => return res,
+    };
+    if let Err(e) = db::sessions::require_membership_or_linked_access(
+        &state.db, &body.source_session_id, &actor_id, MemberRole::Observer,
+    ).await {
+        return match e {
+            db::DbError::NotFound | db::DbError::Unauthorized => StatusCode::NOT_FOUND.into_response(),
+            e => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        };
+    }
+
+    let (source_session, link) = tokio::join!(
+        db::sessions::get(&state.db, &body.source_session_id),
+        db::session_links::get_between(&state.db, &body.source_session_id, &target_id),
+    );
+    let source_name = source_session.map(|s| s.name).unwrap_or_else(|_| body.source_session_id.clone());
+    let link_id = link.ok().flatten().map(|l| l.id);
+
+    let bundle = SagaBundle {
+        bundle_id:    Ulid::new().to_string(),
+        saga_id:      Ulid::new().to_string(),
+        step_idx:     0,
+        from_session: body.source_session_id.clone(),
+        to_session:   target_id.clone(),
+        kind: BundleKind::Step {
+            message: serde_json::json!({
+                "kind":        "annotation",
+                "object_type": body.object_type,
+                "object_id":   body.object_id,
+                "object_name": body.object_name,
+                "note":        body.note,
+                "authored_by": actor_id,
+                "link_id":     link_id,
+                "source_name": source_name,
+            }),
+            compensation: serde_json::json!({}),
+        },
+        ttl_ms: Utc::now().timestamp_millis() as u64 + 24 * 60 * 60 * 1000,
+    };
+    let local_node = crate::numa::session_numa_node(&body.source_session_id, state.numa_nodes);
+    crate::session_task::route_bundle(
+        &body.source_session_id, bundle, &state.reflector, &state.sessions, local_node,
+    ).await;
+
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "dispatched": true }))).into_response()
+}
+
+#[autometrics]
 async fn get_artifact(
     Path((session_id, artifact_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1205,6 +1362,7 @@ pub struct UpdateArtifactBody {
     pub cap_id: Option<String>,
 }
 
+#[autometrics]
 async fn update_artifact(
     Path((session_id, artifact_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1278,6 +1436,7 @@ pub struct DeleteArtifactQuery {
     pub cap_id: Option<String>,
 }
 
+#[autometrics]
 async fn delete_artifact(
     Path((session_id, artifact_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1348,7 +1507,7 @@ async fn delete_artifact(
 
 // ── Sidecar REST endpoints (no WS) ───────────────────────────────────────────
 
-/// POST /api/sessions/:id/agent-attach
+/// POST /api/sessions/{id}/agent-attach
 ///
 /// Called by the sidecar on startup instead of opening a WS connection.
 /// Emits `actor.joined` (role = Agent) + `agent.status.changed` (Running)
@@ -1366,6 +1525,7 @@ struct AgentAttachBody {
     cap_id: String,
 }
 
+#[autometrics]
 async fn agent_attach(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1416,7 +1576,7 @@ async fn agent_attach(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// POST /api/sessions/:id/agent-detach
+/// POST /api/sessions/{id}/agent-detach
 ///
 /// Called by shim when the adapter reports its MCP client's SSE stream
 /// closed (AdapterMessage::ClientDisconnected). Mirrors agent_attach: emits
@@ -1429,6 +1589,7 @@ struct AgentDetachBody {
     cap_id: String,
 }
 
+#[autometrics]
 async fn agent_detach(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1455,7 +1616,7 @@ async fn agent_detach(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// POST /api/sessions/:id/agent-status
+/// POST /api/sessions/{id}/agent-status
 ///
 /// Called by the sidecar to update its live status (Running / Waiting / etc.)
 /// without a WS connection.
@@ -1467,6 +1628,7 @@ struct AgentStatusBody {
     status: String,
 }
 
+#[autometrics]
 async fn agent_status(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1499,7 +1661,7 @@ async fn agent_status(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// POST /api/sessions/:id/agent-heartbeat
+/// POST /api/sessions/{id}/agent-heartbeat
 ///
 /// Called periodically by shim for the life of the process. Agents never
 /// hold a WS connection to `/stream` (that's browser-only), so this is the
@@ -1513,6 +1675,7 @@ struct AgentHeartbeatBody {
     cap_id: String,
 }
 
+#[autometrics]
 async fn agent_heartbeat(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1527,10 +1690,10 @@ async fn agent_heartbeat(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// POST /api/sessions/:id/approvals
+/// POST /api/sessions/{id}/approvals
 ///
 /// Called by the sidecar to create an approval request.  The sidecar then
-/// GETs `/api/approvals/:approval_id/resolution` to long-poll for the result.
+/// GETs `/api/approvals/{approval_id}/resolution` to long-poll for the result.
 ///
 /// Body: `{ actor_id, tool_name, arguments, timeout_secs? }`
 /// Response: `{ approval_id, expires_at }`
@@ -1549,7 +1712,7 @@ fn default_approval_timeout() -> u64 { 25 }
 
 // ── Shell adapter routes ──────────────────────────────────────────────────────
 
-/// POST /api/sessions/:id/shell/start
+/// POST /api/sessions/{id}/shell/start
 ///
 /// Emits `shell.command.started` and returns `{ command_id }` so the fish
 /// adapter can link the matching `complete` call.
@@ -1574,6 +1737,7 @@ struct ShellStartBody {
     cwd: Option<String>,
 }
 
+#[autometrics]
 async fn shell_start(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1609,7 +1773,7 @@ async fn shell_start(
     (StatusCode::CREATED, Json(serde_json::json!({ "command_id": command_id }))).into_response()
 }
 
-/// POST /api/sessions/:id/shell/complete
+/// POST /api/sessions/{id}/shell/complete
 ///
 /// Emits `shell.command.completed`.  Called after the command exits.
 #[derive(Deserialize)]
@@ -1622,6 +1786,7 @@ struct ShellCompleteBody {
     duration_ms: u64,
 }
 
+#[autometrics]
 async fn shell_complete(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1651,10 +1816,11 @@ async fn shell_complete(
 
 // ── ORB method registry ───────────────────────────────────────────────────────
 
-/// GET /api/sessions/:id/methods
+/// GET /api/sessions/{id}/methods
 ///
 /// List all registered MCP methods for a session.  Returns every method
 /// across all attached sidecars, ordered by server_slug + method_name.
+#[autometrics]
 async fn list_methods(
     Path(id): Path<String>,
     headers:  HeaderMap,
@@ -1669,7 +1835,7 @@ async fn list_methods(
     }
 }
 
-/// POST /api/sessions/:id/methods
+/// POST /api/sessions/{id}/methods
 ///
 /// Register (or re-register) a batch of MCP methods for a sidecar/actor.
 ///
@@ -1687,6 +1853,7 @@ struct RegisterMethodsBody {
     methods:  Vec<db::methods::MethodDef>,
 }
 
+#[autometrics]
 async fn register_methods(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1706,6 +1873,7 @@ async fn register_methods(
     }
 }
 
+#[autometrics]
 async fn create_approval_rest(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,

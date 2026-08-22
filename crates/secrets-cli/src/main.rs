@@ -9,6 +9,17 @@
 //! - `decrypt` — runs on the target host as `ExecStartPre`, turning
 //!   `secrets.age` into the `EnvironmentFile=` systemd reads.
 //!
+//! `encrypt-bytes`/`decrypt-bytes` are a fifth, deliberately separate pair:
+//! `CredentialBundle` is a fixed 3-field shape (database_url,
+//! oidc_client_id, oidc_client_secret) baked into `encrypt`/`decrypt`/
+//! `rotate` above — it does not rotate through the ratchet the way
+//! `database_url`/`oidc_client_secret` do, and it has no opinion about
+//! what's inside beyond "bytes." Used for secrets that want the same
+//! TPM-sealed/age delivery pipeline but don't fit that fixed shape and
+//! don't share its rotation cadence — e.g. backup object-store credentials
+//! (see deploy/scripts/backup-postgres.sh), which rotate on the storage
+//! provider's own schedule, not the DB-password ratchet's.
+//!
 //! Identities are always passed via `--*-env` environment variables
 //! (never bare CLI args — args land in `ps`/shell history, env vars set
 //! by systemd's own `Environment=` or an operator's shell do not).
@@ -97,6 +108,30 @@ enum Command {
         #[arg(long, env = "SOLARPLEX_OIDC_CLIENT_ID")]
         oidc_client_id: String,
     },
+    /// Encrypt an arbitrary file's raw bytes to one or more recipients —
+    /// for secrets that don't fit `CredentialBundle`'s fixed shape. The
+    /// caller owns the format of what's inside `--in` (e.g. a KEY=VALUE
+    /// env file); this subcommand only ever sees bytes.
+    EncryptBytes {
+        #[arg(long = "in")]
+        input: PathBuf,
+        #[arg(long = "recipient", required = true)]
+        recipients: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Decrypt an `encrypt-bytes`-produced file back to raw bytes at
+    /// `--out`. Intended to run as `ExecStartPre` against a runtime-only
+    /// (tmpfs) output path, same as `decrypt`, but for a second,
+    /// independent ciphertext artifact rather than `secrets.age` itself.
+    DecryptBytes {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, env = "SOLARPLEX_AGE_IDENTITY")]
+        identity: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -123,6 +158,8 @@ fn main() -> Result<()> {
             &database_url_template,
             oidc_client_id,
         ),
+        Command::EncryptBytes { input, recipients, out } => cmd_encrypt_bytes(&input, &recipients, &out),
+        Command::DecryptBytes { input, identity, out } => cmd_decrypt_bytes(&input, &identity, &out),
     }
 }
 
@@ -225,6 +262,29 @@ fn cmd_rotate(
     write_new_file(secrets_out, secrets_armored.as_bytes())?;
 
     println!("rotated: {} , {}", state_out.display(), secrets_out.display());
+    Ok(())
+}
+
+fn cmd_encrypt_bytes(input: &Path, recipients: &[String], out: &Path) -> Result<()> {
+    let mut plaintext = fs::read(input).with_context(|| format!("reading {}", input.display()))?;
+    let parsed = parse_recipients(recipients)?;
+    let refs = recipient_refs(&parsed);
+
+    let armored = encrypt_bytes(&plaintext, &refs)?;
+    plaintext.zeroize();
+
+    write_new_file(out, armored.as_bytes())?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+fn cmd_decrypt_bytes(input: &Path, identity: &str, out: &Path) -> Result<()> {
+    let armored = fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
+    let id = parse_identity(identity)?;
+
+    let mut plaintext = decrypt_bytes(&armored, &id as &dyn Identity)?;
+    write_new_file(out, &plaintext)?;
+    plaintext.zeroize();
     Ok(())
 }
 

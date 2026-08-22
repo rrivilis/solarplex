@@ -72,6 +72,25 @@ pub async fn run_login(_args: LoginArgs, ctx: &Ctx) -> Result<()> {
     config::save_token(&token)?;
     let name = me["name"].as_str().unwrap_or("?");
     println!("{} Signed in as {}", green("✓"), bold(name));
+
+    // `Ctx::load` reads `SOLARPLEX_TOKEN` from the environment *after* the
+    // credentials file and lets it win unconditionally -- deliberate, for
+    // CI/scripts, but it means a stale value left in an interactive shell
+    // silently shadows the login that just succeeded, with no symptom until
+    // the next command fails in a way that looks unrelated to this one
+    // having worked. Catch it here, at the one moment it's cheap to explain.
+    if std::env::var("SOLARPLEX_TOKEN").is_ok() {
+        println!(
+            "{} {}",
+            yellow("Note:"),
+            dim(
+                "SOLARPLEX_TOKEN is set in your environment and will override this \
+                 login on every future command. Unset it if you want the sign-in \
+                 above to actually take effect (fish: `set -e SOLARPLEX_TOKEN`, \
+                 bash/zsh: `unset SOLARPLEX_TOKEN`)."
+            )
+        );
+    }
     Ok(())
 }
 

@@ -1,27 +1,6 @@
-//! Rate-limit vocabulary — `RateLimitKey`, `Policy`, `Admission`, and the
+//! Rate-limit vocabulary. `RateLimitKey`, `Policy`, `Admission`, and the
 //! `FixedWindowBucket` algorithm — shared between `crates/server`'s two
 //! limiter tiers (session/entity-scoped and user/tenant-scoped).
-//!
-//! An earlier version of this module also owned Tier-1 bucket *storage*
-//! (a field on `SessionMemory`) and was checked from inside the session
-//! task's own effect-processing loop. That placement was wrong: every
-//! action this was meant to gate (`MessagePosted`, `ArtifactCreated`, ...)
-//! has its durable, user-visible write happen directly in the REST handler
-//! via `emit_to_session` — *before* that handler ever feeds the action
-//! into the session task. By the time the session task's effect loop saw
-//! the event, the message was already persisted and broadcast to every
-//! connected client; the gate could produce an accurate audit trail but
-//! could never actually prevent anything.
-//!
-//! The fix is enforcement has to happen synchronously, at the REST
-//! handler, before its own `emit_to_session` call — the same place Tier 2
-//! (`ActorCreate`) was already correctly checking. Both tiers now live in
-//! `crates/server::rate_limit`, checked synchronously against a shared
-//! `DashMap`, before any durable write. This module keeps only the parts
-//! that don't need axum/tokio/dashmap: the key taxonomy, the policy table,
-//! and the bucket algorithm itself — `crates/session` has zero runtime
-//! dependencies by design (see this crate's `lib.rs`), and a concurrent
-//! map is exactly the kind of thing that doesn't belong here.
 
 use std::time::{Duration, Instant};
 
@@ -73,6 +52,13 @@ pub enum RateLimitKey {
     /// Minting or delegating a capability from an authority-dsl s-expression
     /// via `POST /sessions/:id/authority/import`.
     AuthorityImport      { actor_id: String },
+    /// A new (never-before-seen) actor_id self-registering via the
+    /// anonymous join_token WS path — no actor_id field, same as
+    /// `OwnershipTransfer`, since the whole point is to bound how many
+    /// *distinct new identities* one session's shared invite token can mint,
+    /// not to rate-limit any one of them individually (there's no stable
+    /// actor to key on until after this check passes). See `ws.rs::handle_ws`.
+    AnonymousJoin,
 }
 
 impl RateLimitKey {
@@ -94,6 +80,7 @@ impl RateLimitKey {
             RateLimitKey::SessionRemoteMutate    { .. } => "SessionRemoteMutate",
             RateLimitKey::MembershipGrant        { .. } => "MembershipGrant",
             RateLimitKey::AuthorityImport        { .. } => "AuthorityImport",
+            RateLimitKey::AnonymousJoin                  => "AnonymousJoin",
         }
     }
 
@@ -130,6 +117,11 @@ impl RateLimitKey {
             // AgentAttach.
             RateLimitKey::MembershipGrant      { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(3600) }),
             RateLimitKey::AuthorityImport      { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(3600) }),
+            // Generous enough for real anonymous-invite traffic (a handful
+            // of people clicking a shared link over a session's lifetime),
+            // tight enough to bound a sockpuppet-minting script hammering
+            // the same join_token.
+            RateLimitKey::AnonymousJoin                => Some(Policy::Count { max: 20, window: Duration::from_secs(3600) }),
         }
     }
 }

@@ -1,3 +1,15 @@
+import withBundleAnalyzerInit from "@next/bundle-analyzer";
+
+// ANALYZE=true next build emits a static treemap to .next/analyze/*.html
+// instead of changing runtime behavior — dev-only tooling, not something
+// that affects a real deploy. openAnalyzer stays false: this is meant to
+// be inspected as a generated file (or scripted against), not to pop a
+// browser tab open on a headless build box.
+const withBundleAnalyzer = withBundleAnalyzerInit({
+  enabled: process.env.ANALYZE === "true",
+  openAnalyzer: false,
+});
+
 const isProd = process.env.NODE_ENV === "production";
 
 // NEXT_PUBLIC_* values are inlined into the client bundle at `next build`
@@ -43,4 +55,4 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+export default withBundleAnalyzer(nextConfig);

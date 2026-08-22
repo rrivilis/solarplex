@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import RelativeTime from "@/components/RelativeTime";
-import { DOT_COLOR, EVENT_LABEL, eventSummary } from "@/components/Timeline";
+import { DOT_COLOR, EVENT_LABEL, eventSummary } from "@/lib/eventTaxonomy";
 import EventTypeFilterBar from "@/components/EventTypeFilterBar";
 import { useEventTypeFilter } from "@/lib/eventFilter";
 import { signIn } from "@/lib/auth";

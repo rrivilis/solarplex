@@ -1,0 +1,31 @@
+[package]
+name = "solarplex-desktop"
+version = "0.1.0"
+description = "Solarplex desktop shell — a native window around the existing Next.js frontend."
+edition = "2021"
+rust-version = "1.77.2"
+
+# Standalone workspace root: this crate lives under frontend/, well outside
+# the Rust backend's own workspace at the repo root (see /Cargo.toml's
+# explicit `members` list, which does not include this path). Without this,
+# cargo would walk up looking for a workspace, find the root one, and error
+# that this package isn't listed as one of its members.
+[workspace]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"

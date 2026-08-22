@@ -36,6 +36,7 @@ use splx_ir::SplxValue;
 
 use crate::rate_limit::gate_session;
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/", post(import))
@@ -67,6 +68,7 @@ struct ImportResponse {
     stratum: i64,
 }
 
+#[autometrics]
 async fn import(
     headers:      HeaderMap,
     Path(session_id): Path<String>,

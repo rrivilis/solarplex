@@ -20,10 +20,10 @@ import { useSession } from "@/lib/ws";
 import { getSessions } from "@/lib/sessions";
 import {
   directLink, listLinks, mintLinkInvite, redeemLinkInvite, setLinkVisibility, unlink as unlinkSession,
-  getDigest, SessionLinkListItem,
+  getDigest, sendContextEntry, SessionLinkListItem,
 } from "@/lib/sessionLinks";
-import { getArtifact, importArtifact, whiteboardPreview } from "@/lib/artifacts";
-import { DOT_COLOR, EVENT_LABEL, eventSummary, INTERNAL_WS } from "@/components/Timeline";
+import { getArtifact, importArtifact, annotateArtifact, whiteboardPreview } from "@/lib/artifacts";
+import { DOT_COLOR, EVENT_LABEL, eventSummary, INTERNAL_WS } from "@/lib/eventTaxonomy";
 import MessageBody from "@/components/MessageBody";
 import { SessionRow, ArtifactSummary } from "@/lib/types";
 
@@ -103,11 +103,39 @@ export default function SyncWorkspace({ sessionId, actorId }: Props) {
   // own dragConstraints, so a drag physically cannot carry a pane off-screen.
   const workspaceRef = useRef<HTMLDivElement | null>(null);
 
+  // Which panes are actually scrolled into view right now (IntersectionObserver-
+  // reported by each pane itself against workspaceRef, see SessionPaneWindow) —
+  // deliberately *not* the same as "open" (openPanes): a pane you opened
+  // earlier but dragged/scrolled out of view shouldn't show up as a target
+  // in another pane's "send to..." picker, since you can't see it landed
+  // there without hunting for it. Scoping to visible-on-screen keeps that
+  // picker legible instead of listing every pane ever opened this session.
+  const [visiblePaneIds, setVisiblePaneIds] = useState<Set<string>>(new Set());
+  const handleVisibilityChange = useCallback((id: string, visible: boolean) => {
+    setVisiblePaneIds(prev => {
+      if (prev.has(id) === visible) return prev;
+      const next = new Set(prev);
+      if (visible) next.add(id); else next.delete(id);
+      return next;
+    });
+  }, []);
+
   const { data: links, refetch: refetchLinks } = useQuery({
     queryKey: ["session-links", sessionId],
     queryFn: () => listLinks(sessionId),
+    staleTime: 30_000,
   });
   const { data: mySessions } = useQuery({ queryKey: ["sessions"], queryFn: getSessions });
+
+  // Session id -> display name, for anywhere a pane needs to refer to
+  // *another* pane by name (the context-summary-send target picker) without
+  // its own live WS connection to resolve it. Every pane ever opened here
+  // came from either mySessions (the actor's own sessions) or the home
+  // session's own links (peer_session_name), so this covers every id that
+  // can appear in openPanes.
+  const paneNames: Record<string, string> = {};
+  (mySessions ?? []).forEach(s => { paneNames[s.id] = s.name; });
+  (links ?? []).forEach(l => { paneNames[l.peer_session_id] = l.peer_session_name; });
 
   const updateLayout = useCallback((id: string, partial: Partial<PaneLayout>) => {
     setLayouts(prev => {
@@ -191,6 +219,10 @@ export default function SyncWorkspace({ sessionId, actorId }: Props) {
             onLayoutChange={p => updateLayout(id, p)}
             onFocus={() => bringToFront(id)}
             onClose={() => closePane(id)}
+            otherPaneIds={openPanes.filter(p => p !== id && visiblePaneIds.has(p))}
+            homeSessionId={sessionId}
+            paneNames={paneNames}
+            onVisibilityChange={handleVisibilityChange}
           />
         ))}
       </div>
@@ -442,6 +474,7 @@ function tabLabel(t: PaneTab, counts: { artifacts: number; context: number; appr
 
 function SessionPaneWindow({
   sessionId, actorId, isHome, isClosing, initialLayout, zIndex, dragConstraintsRef, onLayoutChange, onFocus, onClose,
+  otherPaneIds, homeSessionId, paneNames, onVisibilityChange,
 }: {
   sessionId: string;
   actorId: string;
@@ -453,9 +486,37 @@ function SessionPaneWindow({
   onLayoutChange: (p: Partial<PaneLayout>) => void;
   onFocus: () => void;
   onClose: () => void;
+  /** Every other pane currently *scrolled into view* on this desktop
+   *  (session ids) — for the context-summary-send target picker (Part 4B).
+   *  Scoped to visible-on-screen, not just "opened at some point", so the
+   *  picker can't list a pane you'd have to hunt for after sending to it.
+   *  This pane's own id is excluded by the caller. */
+  otherPaneIds: string[];
+  /** The workspace's own home session — the attributed sender for an
+   *  annotation left from this (non-home) pane (Part 4C). */
+  homeSessionId: string;
+  /** Session id -> display name, for the target picker (otherwise it can
+   *  only show raw ids — see the parent's own doc comment on this map). */
+  paneNames: Record<string, string>;
+  /** Reports this pane's own on-screen visibility (via IntersectionObserver
+   *  against the workspace canvas) up to the parent, which aggregates every
+   *  pane's report into the `visiblePaneIds` set `otherPaneIds` is derived
+   *  from. */
+  onVisibilityChange: (id: string, visible: boolean) => void;
 }) {
-  const { state, approve, deny, sendMessage, resolveContextEntry } = useSession(sessionId, actorId, null);
+  const { state, approve, deny, sendMessage, resolveContextEntry, setFocus } = useSession(sessionId, actorId, null);
   const [tab, setTab] = useState<PaneTab>("activity");
+
+  // Part 4A: report which tab this pane has open so other live viewers of
+  // the same session (including via a linked pane) see a presence
+  // indicator. Two separate effects, deliberately: a mount-only cleanup
+  // (empty deps) for "clear on unmount", separate from the tab-change
+  // effect below — combining them would fire the cleanup on every tab
+  // switch too (React re-runs an effect's cleanup before every re-run,
+  // not just on unmount), flickering focus to undefined and back on each
+  // switch instead of just moving cleanly from one tab to the next.
+  useEffect(() => setFocus(tab), [tab, setFocus]);
+  useEffect(() => () => setFocus(undefined), [setFocus]);
   // Computed-on-read, not part of the live WS stream — only fetched once the
   // tab is actually opened, then kept lightly fresh like the cross-session
   // activity feed (short staleTime + refetch-on-focus).
@@ -468,6 +529,25 @@ function SessionPaneWindow({
   });
   const [draft, setDraft] = useState("");
   const dragControls = useDragControls();
+
+  // Part 4B: which context entry currently has its "send to..." target
+  // picker open (null = none). One at a time, closed after a successful
+  // send or an explicit dismiss.
+  const [sendingEntryId, setSendingEntryId] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const handleSendContextEntry = useCallback(async (entry: typeof state.contextEntries[number], targetId: string) => {
+    setSending(true);
+    try {
+      await sendContextEntry(targetId, sessionId, entry);
+      toast.success(`Sent to ${paneNames[targetId] ?? targetId.slice(0, 10)}`);
+      setSendingEntryId(null);
+    } catch (err) {
+      toast.error(`Send failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSending(false);
+    }
+  }, [sessionId, paneNames]);
 
   // ── Cross-pane artifact drop target ──────────────────────────────────────
   // Native HTML5 drag-and-drop, deliberately separate from framer-motion's
@@ -577,6 +657,27 @@ function SessionPaneWindow({
     }
   }, []);
 
+  // Report on-screen visibility to the parent (Part 4B's "send to..."
+  // picker scope). `root: dragConstraintsRef.current` is the scrollable
+  // pane canvas itself, not the browser viewport — a pane can be fully
+  // within the browser window but still scrolled out of the canvas's own
+  // visible area, and that should count as not-visible here.
+  useEffect(() => {
+    const el = containerRef.current;
+    const root = dragConstraintsRef.current;
+    if (!el || !root) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => onVisibilityChange(sessionId, entry.isIntersecting),
+      { root, threshold: 0.05 },
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      onVisibilityChange(sessionId, false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   const MIN_W = 280;
   const MIN_H = 220;
 
@@ -644,6 +745,15 @@ function SessionPaneWindow({
   const KEY_STEP = 12;
   const KEY_STEP_LARGE = 48;
 
+  // Keyboard move/resize mutate MotionValues/a ref directly (see the Position
+  // and Size comments above) specifically so nothing re-renders mid-gesture —
+  // but that also means nothing on screen tells a screen-reader user a move
+  // actually happened. This announcement is the one deliberate exception:
+  // plain React state, same sr-only + aria-live="polite" pattern Messages.tsx
+  // already uses for new-message announcements, set once per discrete keydown
+  // rather than continuously (there's no pointermove-style stream to fight).
+  const [moveAnnouncement, setMoveAnnouncement] = useState("");
+
   const handleMoveKeyDown = useCallback((e: React.KeyboardEvent) => {
     const arrows: Record<string, [number, number]> = {
       ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
@@ -666,6 +776,7 @@ function SessionPaneWindow({
     x.set(nextX);
     y.set(nextY);
     onLayoutChangeRef.current({ x: nextX, y: nextY });
+    setMoveAnnouncement(`Pane moved to ${Math.round(nextX)}, ${Math.round(nextY)}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x, y]);
 
@@ -685,6 +796,7 @@ function SessionPaneWindow({
     const dy = dir[1] * step;
     applyResizeDelta(edge, dx, dy, sizeRef.current.w, sizeRef.current.h, x.get(), y.get());
     onLayoutChangeRef.current({ w: sizeRef.current.w, h: sizeRef.current.h, x: x.get(), y: y.get() });
+    setMoveAnnouncement(`Pane resized to ${Math.round(sizeRef.current.w)} by ${Math.round(sizeRef.current.h)} pixels`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyResizeDelta, x, y]);
 
@@ -732,6 +844,7 @@ function SessionPaneWindow({
           isDragTarget ? "border-accent-blue ring-2 ring-accent-blue/40" : "border-border"
         }`}
       >
+        <div aria-live="polite" role="status" className="sr-only">{moveAnnouncement}</div>
         {isDragTarget && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-accent-blue/10 backdrop-blur-[1px] pointer-events-none">
             <span className="text-xs font-medium text-accent-blue bg-surface-0/90 px-3 py-1.5 rounded-lg border border-accent-blue/40 shadow-lg">
@@ -767,15 +880,26 @@ function SessionPaneWindow({
 
         {/* Tabs */}
         <div className="shrink-0 flex gap-1 px-2 pt-1.5 border-b border-border">
-          {(["activity", "artifacts", "context", "approvals", "digest"] as PaneTab[]).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`text-2xs px-2 py-1 rounded-t-md transition-colors ${tab === t ? "text-accent-blue border-b-2 border-accent-blue" : "text-muted hover:text-subtle"}`}
-            >
-              {tabLabel(t, { artifacts: state.artifacts.length, context: state.contextEntries.length, approvals: pendingApprovals.length })}
-            </button>
-          ))}
+          {(["activity", "artifacts", "context", "approvals", "digest"] as PaneTab[]).map(t => {
+            // Part 4A: who else (not me) is currently looking at this same
+            // tab, live-only via presence.focus — no snapshot/events involved.
+            const here = Object.entries(state.focusByActor)
+              .filter(([id, focusedTab]) => id !== actorId && focusedTab === t)
+              .map(([id]) => actorNames[id] ?? id);
+            return (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                title={here.length ? `Also viewing: ${here.join(", ")}` : undefined}
+                className={`relative text-2xs px-2 py-1 rounded-t-md transition-colors ${tab === t ? "text-accent-blue border-b-2 border-accent-blue" : "text-muted hover:text-subtle"}`}
+              >
+                {tabLabel(t, { artifacts: state.artifacts.length, context: state.contextEntries.length, approvals: pendingApprovals.length })}
+                {here.length > 0 && (
+                  <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-accent-purple align-middle" aria-hidden />
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* Content — tabIndex: a scrollable region with no other focusable
@@ -819,7 +943,7 @@ function SessionPaneWindow({
               {state.artifacts.length === 0 ? (
                 <p className="text-2xs text-muted px-1">No artifacts yet.</p>
               ) : state.artifacts.map(a => (
-                <ArtifactChip key={a.id} sessionId={sessionId} artifact={a} />
+                <ArtifactChip key={a.id} sessionId={sessionId} artifact={a} isHome={isHome} homeSessionId={homeSessionId} />
               ))}
             </div>
           )}
@@ -834,20 +958,47 @@ function SessionPaneWindow({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-2xs uppercase tracking-wide text-muted">{entry.kind}</span>
-                    {entry.resolved ? (
-                      <span className="text-2xs text-accent-green shrink-0">✓ resolved</span>
-                    ) : (
-                      <button
-                        onClick={() => resolveContextEntry(entry.id)}
-                        className="text-2xs text-muted hover:text-accent-green transition-colors shrink-0"
-                      >
-                        Resolve
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {otherPaneIds.length > 0 && (
+                        <button
+                          onClick={() => setSendingEntryId(v => (v === entry.id ? null : entry.id))}
+                          title="Send to another open session"
+                          aria-label="Send to another open session"
+                          className="text-2xs text-muted hover:text-accent-blue transition-colors"
+                        >
+                          Send ↗
+                        </button>
+                      )}
+                      {entry.resolved ? (
+                        <span className="text-2xs text-accent-green">✓ resolved</span>
+                      ) : (
+                        <button
+                          onClick={() => resolveContextEntry(entry.id)}
+                          className="text-2xs text-muted hover:text-accent-green transition-colors"
+                        >
+                          Resolve
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <p className={`text-xs mt-0.5 whitespace-pre-wrap break-words ${entry.resolved ? "text-muted" : "text-subtle"}`}>
                     {entry.content}
                   </p>
+                  {sendingEntryId === entry.id && (
+                    <div className="mt-2 p-2 rounded-lg bg-surface-0 border border-border space-y-1">
+                      <p className="text-2xs text-muted px-0.5">Send to:</p>
+                      {otherPaneIds.map(id => (
+                        <button
+                          key={id}
+                          disabled={sending}
+                          onClick={() => handleSendContextEntry(entry, id)}
+                          className="w-full text-left text-2xs px-2 py-1 rounded-md text-subtle hover:bg-surface-2 transition-colors disabled:opacity-50"
+                        >
+                          {paneNames[id] ?? `${id.slice(0, 10)}…`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -961,10 +1112,40 @@ function SessionPaneWindow({
 
 const ARTIFACT_PREVIEW_CHARS = 140;
 
-function ArtifactChip({ sessionId, artifact }: { sessionId: string; artifact: ArtifactSummary }) {
+function ArtifactChip({
+  sessionId, artifact, isHome, homeSessionId,
+}: {
+  sessionId: string;
+  artifact: ArtifactSummary;
+  /** Whether this chip is rendered in the workspace's own home pane. The
+   *  annotate affordance (Part 4C) only makes sense for a *linked* pane's
+   *  artifact — annotating your own session's own artifact is just a
+   *  normal context entry, already covered by the Context tab. */
+  isHome: boolean;
+  homeSessionId: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [annotating, setAnnotating] = useState(false);
+  const [note, setNote] = useState("");
+  const [submittingNote, setSubmittingNote] = useState(false);
   const showContent = expanded || hovered;
+
+  async function submitAnnotation() {
+    const trimmed = note.trim();
+    if (!trimmed) return;
+    setSubmittingNote(true);
+    try {
+      await annotateArtifact(sessionId, homeSessionId, artifact.id, artifact.name, trimmed);
+      toast.success("Annotation sent");
+      setNote("");
+      setAnnotating(false);
+    } catch (err) {
+      toast.error(`Annotate failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSubmittingNote(false);
+    }
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ["artifact", sessionId, artifact.id],
@@ -1018,9 +1199,53 @@ function ArtifactChip({ sessionId, artifact }: { sessionId: string; artifact: Ar
     >
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-subtle truncate">{artifact.name}</p>
-        <span className="text-2xs text-muted shrink-0">{expanded ? "▾" : "▸"}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {!isHome && (
+            <button
+              onClick={e => { e.stopPropagation(); setAnnotating(v => !v); }}
+              title="Leave a note on this artifact (in its own session)"
+              aria-label="Leave a note on this artifact"
+              className="text-2xs text-muted hover:text-accent-blue transition-colors"
+            >
+              ✎
+            </button>
+          )}
+          <span className="text-2xs text-muted">{expanded ? "▾" : "▸"}</span>
+        </div>
       </div>
       <p className="text-2xs text-muted">{artifact.type}</p>
+      {annotating && (
+        <div
+          className="mt-1.5 p-2 rounded-lg bg-surface-0 border border-border space-y-1.5"
+          onClick={e => e.stopPropagation()}
+          onPointerDown={e => e.stopPropagation()}
+        >
+          <textarea
+            autoFocus
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitAnnotation(); if (e.key === "Escape") setAnnotating(false); }}
+            placeholder="Note for this artifact's own session…"
+            rows={2}
+            className="w-full resize-none bg-surface-1 border border-border rounded-md px-2 py-1 text-2xs text-primary placeholder:text-muted focus:outline-none focus:border-accent-blue/50 transition-colors"
+          />
+          <div className="flex gap-1.5">
+            <button
+              disabled={submittingNote || !note.trim()}
+              onClick={submitAnnotation}
+              className="flex-1 text-2xs font-medium py-1 rounded-md bg-accent-blue/10 border border-accent-blue/25 text-accent-blue hover:bg-accent-blue/20 transition-colors disabled:opacity-40"
+            >
+              Send note
+            </button>
+            <button
+              onClick={() => setAnnotating(false)}
+              className="px-2 text-2xs font-medium py-1 rounded-md bg-surface-3 border border-border text-muted hover:text-subtle transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {showContent && (
         <div className="mt-1 pt-1 border-t border-border/50">
           {isWhiteboard ? (

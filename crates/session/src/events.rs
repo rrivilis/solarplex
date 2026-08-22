@@ -10,9 +10,7 @@
 //!
 //! ## The four sub-algebras
 //!
-//! Events are organized by which algebraic sub-system they belong to.  Each
-//! algebra induces a family of graph rewrite rules on the session's bigraphical
-//! structure (place graph × link graph):
+//! Events are organized by which algebraic sub-system they belong to.
 //!
 //! ### 1. Participation algebra   { attach, leave, reconnect, detach }
 //! Place-graph rewrites: insert / remove actor nodes in the session place hierarchy.
@@ -24,12 +22,11 @@
 //! ###                              message posted, context added/resolved,
 //! ###                              artifact created/updated/deleted }
 //! Place-graph rewrites: proposal node, commitment edge, divergence annotation.
-//! The Ring-0/1/2 proposal events map to the protection model in
-//! THREAT_MODEL.md §4.4. The message/context/artifact events share this bit
+//! The message/context/artifact events share this bit
 //! because they're the same "session-owned content mutated" shape — session
 //! content nodes are inserted/updated/removed, same as a proposal committing.
 //! All of these are currently shadow-persisted only (see
-//! `session_task::is_machine_autonomous`) — `ws.rs`/`routes/sessions.rs`
+//! `session_task::is_machine_autonomous`). `ws.rs`/`routes/sessions.rs`
 //! remain the authoritative writers; feeding them here keeps the machine's
 //! own memory (and `SessionSnapshot` if ever built from it) accurate without
 //! flipping write ownership, which would require the caller to also be able
@@ -38,12 +35,12 @@
 //!
 //! ### 4. Projection algebra      { snapshot, invalidate }
 //! Cursor rewrites: subscriber delivery pointer advances monotonically.
-//! (deliver/ack/backfill are runtime-only — not loggable events.)
+//! (deliver/ack/backfill are runtime-only, not loggable events.)
 //!
 //! ## Cap sub-algebra             { delegate, revoke, epoch_advance }
 //! Link-graph rewrites: delegation edge add/remove, epoch fence cuts stale edges.
 //! Eventually merges with the participation and approval algebras into a unified
-//! graph rewrite algebra alongside the cap DAG — see session crate README.
+//! graph rewrite algebra alongside the cap DAG.
 //!
 //! ### 5. Saga algebra            { begin, step_sent, step_acked, compensated, terminated }
 //! Cross-session coordination protocol: a coordinator drives a sequence of steps
@@ -485,6 +482,69 @@ pub enum SessionEvent {
         resolved_at:  DateTime<Utc>,
     },
 
+    /// The target session received an artifact-import bundle from a linked
+    /// source session. One-way — unlike delegation there is no ack leg back
+    /// to the source, so (unlike `CrossSessionDelegationReceived`) there is
+    /// no placeholder ID field here: the real local `Artifact` row is
+    /// created and its ID assigned entirely inside the same server-side
+    /// hook (`session_task.rs`) that this event triggers, with nothing to
+    /// thread back into a later event.
+    CrossSessionArtifactImportReceived {
+        source_session_id:  String,
+        source_artifact_id: String,
+        source_seq:          i64,
+        name:                String,
+        artifact_type:       String,
+        storage_ref:         String,
+        content_hash:        String,
+        source_created_by:   String,
+        source_created_at:   DateTime<Utc>,
+        imported_by:         String,
+        link_id:             Option<String>,
+        source_name:         String,
+        target_name:         String,
+        received_at:         DateTime<Utc>,
+    },
+
+    /// The target session received a context-summary-send bundle: an
+    /// existing `ContextEntry` from a linked session, pushed here with
+    /// provenance. There is no relational `context_entries` table (a
+    /// `ContextEntry` lives entirely in the event log/snapshot projection,
+    /// same as any other `ContextEntryAdded`) -- so unlike artifact import,
+    /// there's no separate "target id" to record here at all: the target
+    /// session's own `ContextEntryAdded` (built and broadcast by
+    /// `session_task.rs`'s side-effect hook) *is* the durable write.
+    CrossSessionContextReceived {
+        source_session_id: String,
+        source_entry_id:   String,
+        kind:               ContextEntryKind,
+        content:            String,
+        source_authored_by: String,
+        source_authored_at: DateTime<Utc>,
+        imported_by:        String,
+        link_id:             Option<String>,
+        source_name:         String,
+        target_name:         String,
+        received_at:         DateTime<Utc>,
+    },
+
+    /// The target session received an annotation on one of its own objects
+    /// (v1: artifacts only) from a member of a linked session. Same "no
+    /// relational insert" reasoning as `CrossSessionContextReceived` -- the
+    /// note lands as a `ContextEntryAdded` in the target, this event is the
+    /// EventLog-only audit trail of the cross-session hop itself.
+    CrossSessionAnnotationReceived {
+        source_session_id: String,
+        object_type:        String,
+        object_id:           String,
+        object_name:         String,
+        note:                 String,
+        authored_by:          String,
+        link_id:              Option<String>,
+        source_name:          String,
+        received_at:          DateTime<Utc>,
+    },
+
     // ── Effect algebra (place-graph rewrites) ─────────────────────────────────
 
     /// A Ring-0 write proposal was created.
@@ -784,7 +844,10 @@ impl SessionEvent {
             | SessionEvent::ContextEntryResolved { .. }
             | SessionEvent::ArtifactCreated { .. }
             | SessionEvent::ArtifactUpdated { .. }
-            | SessionEvent::ArtifactDeleted { .. } => "effect",
+            | SessionEvent::ArtifactDeleted { .. }
+            | SessionEvent::CrossSessionArtifactImportReceived { .. }
+            | SessionEvent::CrossSessionContextReceived { .. }
+            | SessionEvent::CrossSessionAnnotationReceived { .. } => "effect",
 
             SessionEvent::SnapshotCreated { .. }
             | SessionEvent::SnapshotInvalidated { .. } => "projection",
@@ -857,6 +920,9 @@ impl SessionEvent {
             SessionEvent::CrossSessionDelegationRequested { .. } => "cross_session_delegation_requested",
             SessionEvent::CrossSessionDelegationReceived  { .. } => "cross_session_delegation_received",
             SessionEvent::CrossSessionDelegationResolved  { .. } => "cross_session_delegation_resolved",
+            SessionEvent::CrossSessionArtifactImportReceived { .. } => "cross_session_artifact_import_received",
+            SessionEvent::CrossSessionContextReceived { .. } => "cross_session_context_received",
+            SessionEvent::CrossSessionAnnotationReceived { .. } => "cross_session_annotation_received",
             SessionEvent::EffectProposed    { .. } => "effect_proposed",
             SessionEvent::EffectScouted     { .. } => "effect_scouted",
             SessionEvent::EffectAttested    { .. } => "effect_attested",

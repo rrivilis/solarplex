@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 
 use db::actors;
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/humans", post(create_human))
         .route("/agents", post(create_agent))
-        .route("/:id", get(get_actor))
+        .route("/{id}", get(get_actor))
 }
 
 /// Minimal, deliberately non-`ActorRow` response shape — an actor lookup is
@@ -31,6 +32,7 @@ struct ActorSummary {
     actor_type: String,
 }
 
+#[autometrics]
 async fn get_actor(
     Path(id):     Path<String>,
     headers:      HeaderMap,
@@ -52,6 +54,7 @@ pub struct CreateHumanBody {
     pub email: String,
 }
 
+#[autometrics]
 async fn create_human(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateHumanBody>,
@@ -75,6 +78,7 @@ pub struct CreateAgentBody {
     pub config: Option<serde_json::Value>,
 }
 
+#[autometrics]
 async fn create_agent(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateAgentBody>,

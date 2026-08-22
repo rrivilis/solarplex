@@ -2,6 +2,7 @@ mod client;
 mod cmd;
 mod config;
 mod output;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -131,6 +132,11 @@ enum Commands {
     ///   sp why --session <name>    explicit session (default: attached)
     #[command(verbatim_doc_comment)]
     Why(cmd::why::WhyArgs),
+    /// Interactive TUI dashboard: browse sessions live, alongside (not instead
+    /// of) the one-shot commands above. Navigation and hotkeys only in this
+    /// first cut -- no typed command-input line.
+    #[command(name = "shell")]
+    Tui,
     /// Route a URI/text/ULID through plumbing rules
     Plumb(cmd::plumb::PlumbArgs),
     /// Resolve a bare ULID to its entity type and display it
@@ -163,9 +169,13 @@ async fn main() -> Result<()> {
     }));
 
     // Initialise tracing only when RUST_LOG is set, so normal CLI usage is clean.
+    // Writer is stderr, not the default stdout: `sp shell` renders its TUI to
+    // stdout via the alternate screen, and tracing output landing on the same
+    // stream corrupts that render instead of appearing as separate log lines.
     if std::env::var("RUST_LOG").is_ok() {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
             .init();
     }
 
@@ -194,6 +204,7 @@ async fn main() -> Result<()> {
         Commands::Auth(a)     => cmd::auth::run(a, &ctx).await?,
         Commands::Watch(a)    => cmd::watch::run(a, &ctx).await?,
         Commands::Why(a)      => cmd::why::run(a, &ctx).await?,
+        Commands::Tui         => tui::run(&ctx).await?,
         Commands::Plumb(a)    => cmd::plumb::run(a, &ctx).await?,
         Commands::Resolve { id } => {
             cmd::plumb::run(

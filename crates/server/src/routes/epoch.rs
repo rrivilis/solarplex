@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::{Path, State},
+    extract::{ws::Utf8Bytes, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -35,10 +35,12 @@ use protocol::types::MemberRole;
 use crate::state::AppState;
 use crate::ws::emit_to_session;
 use protocol::messages::{EpochAdvancedPayload, WsMessage, WsPayload};
+use autometrics::autometrics;
 
 // ── GET /api/sessions/:id/epoch ───────────────────────────────────────────────
 
 /// Return the current epoch and recent revocation history for a session.
+#[autometrics]
 pub async fn get_epoch(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -100,6 +102,7 @@ pub struct RevokeResponse {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
+#[autometrics]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -286,7 +289,7 @@ pub async fn revoke(
                         "code": 4401,
                     });
                     if let Ok(json) = serde_json::to_string(&close_msg) {
-                        let _ = tx.send(Arc::new(json));
+                        let _ = tx.send(Utf8Bytes::from(json));
                     }
                 }
                 tracing::info!(

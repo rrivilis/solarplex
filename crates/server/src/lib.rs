@@ -8,7 +8,11 @@
 
 pub mod auth;
 pub mod authz;
+pub mod event_visibility;
 pub mod gc;
+pub mod health;
+pub mod lease;
+pub mod metrics_route;
 pub mod notifier;
 pub mod numa;
 pub mod rate_limit;

@@ -50,6 +50,22 @@ impl Client {
             return Ok(resp);
         }
         if status == reqwest::StatusCode::UNAUTHORIZED {
+            // `SOLARPLEX_TOKEN` (see `Ctx::load`) always wins over the
+            // credentials file `sp login` writes to -- deliberately, for
+            // CI/scripts, but a stale value left in an interactive shell
+            // silently shadows every future `sp login` with no other
+            // symptom than this exact error. Worth saying so here since
+            // it's otherwise a genuinely confusing failure mode: `sp login`
+            // itself succeeds (it injects the fresh token directly, bypassing
+            // this env var), only the *next* command is affected.
+            if std::env::var("SOLARPLEX_TOKEN").is_ok() {
+                anyhow::bail!(
+                    "Not signed in (or your session expired). Run `sp login` -- but note \
+                     SOLARPLEX_TOKEN is set in your environment and overrides any saved \
+                     login unconditionally. If it's stale, `sp login` won't fix this until \
+                     you unset it (fish: `set -e SOLARPLEX_TOKEN`, bash/zsh: `unset SOLARPLEX_TOKEN`)."
+                );
+            }
             anyhow::bail!("Not signed in (or your session expired). Run `sp login`.");
         }
         let body = resp.text().await.unwrap_or_default();
@@ -597,6 +613,28 @@ impl Client {
             .json::<Value>()
             .await
             .with_context(|| format!("POST {url} decode"))
+    }
+
+    /// `GET /api/intent/parse?text=...` -- deterministic governance-command
+    /// parsing (NFST grammar match, not an LLM), same endpoint the frontend
+    /// CommandPalette already calls. Read-only, side-effect-free, never
+    /// blocks or gates anything -- a parsed intent is a proposal a caller
+    /// surfaces as a suggestion, never a substitute for the caller's own
+    /// authorized action. Builds its own request rather than going through
+    /// `self.get()`: `text` is free-form and commonly contains spaces, and
+    /// `.query()` percent-encodes it correctly where `get()`'s plain
+    /// `format!()`-a-URL-string callers don't.
+    pub async fn parse_intent(&self, text: &str) -> Result<Value> {
+        let url  = self.url("/intent/parse");
+        let resp = self.authed(self.http.get(&url))
+            .query(&[("text", text)])
+            .send()
+            .await
+            .context("parse_intent")?;
+        Self::check_status(resp, "GET", &url).await?
+            .json::<Value>()
+            .await
+            .context("parse_intent decode")
     }
 
     async fn patch(&self, url: &str, body: &Value) -> Result<Value> {

@@ -13,14 +13,21 @@ import Timeline, { INTERNAL_WS } from "@/components/Timeline";
 import Messages from "@/components/Messages";
 import NeedsAction from "@/components/NeedsAction";
 import StatusPanel from "@/components/StatusPanel";
-import ArtifactsTab from "@/components/ArtifactsTab";
-import ContextTab from "@/components/ContextTab";
 import SessionSkeleton from "@/components/SessionSkeleton";
 import { API_BASE } from "@/lib/env";
 import { getActorOverride } from "@/lib/actorOverride";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
-const Whiteboard = dynamic(() => import("@/components/Whiteboard"), { ssr: false });
+// Lazy, same as Whiteboard below: only one center-panel tab renders at a
+// time (see the `tab === "..."` guards further down), but a plain static
+// import still ships every tab's code in this route's initial bundle
+// regardless of which one a visitor actually opens. ArtifactsTab and
+// ContextTab are secondary tabs (Messages is the default) — ArtifactsTab
+// also drags in react-markdown + remark-gfm, which have no reason to load
+// before someone actually opens that tab.
+const Whiteboard   = dynamic(() => import("@/components/Whiteboard"),   { ssr: false });
+const ArtifactsTab = dynamic(() => import("@/components/ArtifactsTab"), { ssr: false });
+const ContextTab   = dynamic(() => import("@/components/ContextTab"),   { ssr: false });
 
 type CenterTab = "messages" | "log" | "artifacts" | "whiteboard" | "context";
 type ArtifactSummary = { id: string; name: string; type: string };
@@ -433,6 +440,7 @@ export default function SessionPage() {
         events={state.events}
         connected={state.connected}
         notMember={state.notMember}
+        actorIdReserved={state.actorIdReserved}
         phase={state.phase}
         actorId={ACTOR_ID}
         onTransfer={handleTransfer}

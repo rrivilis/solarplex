@@ -30,6 +30,7 @@ use sqlx::PgPool;
 use intent::Intent;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/parse", get(parse))
@@ -40,6 +41,7 @@ struct ParseQuery {
     text: String,
 }
 
+#[autometrics]
 async fn parse(
     headers:      axum::http::HeaderMap,
     Query(q):     Query<ParseQuery>,

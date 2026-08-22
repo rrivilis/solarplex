@@ -24,6 +24,9 @@ pub mod cross_session_delegations;
 pub mod artifact_imports;
 pub mod search;
 pub mod session_connections;
+pub mod reflector_cursors;
+pub mod session_placements;
+pub mod reflector_forwarding;
 
 pub use pool::*;
 

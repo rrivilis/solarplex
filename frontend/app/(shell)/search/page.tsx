@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import RelativeTime from "@/components/RelativeTime";
-import { DOT_COLOR, EVENT_LABEL, eventSummary } from "@/components/Timeline";
+import { DOT_COLOR, EVENT_LABEL, eventSummary } from "@/lib/eventTaxonomy";
 import { signIn } from "@/lib/auth";
 import { search, ActorHit, ArtifactHit, EventHit, SessionHit } from "@/lib/search";
 import { useShellAuth } from "@/lib/shellAuth";
@@ -61,7 +61,7 @@ export default function SearchPage() {
           autoFocus
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Search sessions, artifacts, people…"
+          placeholder='Search, or filter with type: session: actor: — e.g. type:artifact session:standup logo'
           aria-label="Search"
           className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-surface-1 border border-border text-sm text-primary outline-none placeholder:text-muted focus:border-accent-blue/40 transition-colors"
         />
@@ -71,7 +71,13 @@ export default function SearchPage() {
         <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
           <div className="text-4xl mb-4 text-border select-none leading-none">⬡</div>
           <p className="text-sm font-medium text-subtle mb-1">Type at least 2 characters</p>
-          <p className="text-xs text-muted">Also accessible via ⌘K from any page.</p>
+          <p className="text-xs text-muted mb-3">Also accessible via ⌘K from any page.</p>
+          <p className="text-2xs text-muted">
+            Narrow with <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">type:</code>,{" "}
+            <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">session:</code>, or{" "}
+            <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">actor:</code> — quote a value with
+            spaces, e.g. <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">session:&quot;weekly sync&quot;</code>
+          </p>
         </div>
       ) : isFetching && !data ? (
         <div className="space-y-1.5">

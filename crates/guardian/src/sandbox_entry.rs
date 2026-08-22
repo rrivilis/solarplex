@@ -47,10 +47,30 @@ pub fn run(args: &[String]) -> ! {
 
     #[cfg(unix)]
     {
-        let exe  = std::ffi::CString::new(opts.command[0].as_bytes()).unwrap();
-        let argv: Vec<std::ffi::CString> = opts.command.iter()
-            .map(|s| std::ffi::CString::new(s.as_bytes()).unwrap())
-            .collect();
+        // CString::new fails on an embedded NUL byte. This is reachable from
+        // agent-controlled input (the command/args come from the approved
+        // DeclaredEffects, not a fixed constant) — a panic here would be an
+        // uncontrolled crash in a security-sensitive child process; exit
+        // cleanly instead, same fail-closed posture as every other setup
+        // step above (`require_full_sandbox_or_opt_out`) and the bad-args
+        // exit code already used elsewhere in this function.
+        let exe = match std::ffi::CString::new(opts.command[0].as_bytes()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("sandbox-entry: command contains an embedded NUL byte: {e}");
+                std::process::exit(2);
+            }
+        };
+        let argv: Vec<std::ffi::CString> = match opts.command.iter()
+            .map(|s| std::ffi::CString::new(s.as_bytes()))
+            .collect::<Result<_, _>>()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("sandbox-entry: an argument contains an embedded NUL byte: {e}");
+                std::process::exit(2);
+            }
+        };
         let err = unsafe { libc::execvp(exe.as_ptr(), argv_ptrs(&argv).as_ptr()) };
         eprintln!("sandbox-entry: execvp failed (returned {err})");
         std::process::exit(1);

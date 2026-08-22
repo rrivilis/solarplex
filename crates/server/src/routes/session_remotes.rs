@@ -1,15 +1,15 @@
 //! Git-remote-style fetch between sessions — durable, directional, with a
 //! per-pair watermark cursor. See `db::session_remotes` and migration 027.
 //!
-//! - `POST /sessions/:id/remotes` — add a remote pointer (Collaborator+ in
+//! - `POST /sessions/{id}/remotes` — add a remote pointer (Collaborator+ in
 //!   the *local* session only; adding grants nothing by itself).
-//! - `GET /sessions/:id/remotes` — list this session's remotes.
-//! - `POST /sessions/:id/remotes/:remote_id/fetch` — pull events since the
+//! - `GET /sessions/{id}/remotes` — list this session's remotes.
+//! - `POST /sessions/{id}/remotes/{remote_id}/fetch` — pull events since the
 //!   last watermark. Authorization against the *remote* session is checked
 //!   here, at fetch time, via the same `require_membership_or_linked_access`
 //!   every other cross-session read uses. Never writes into the local
 //!   session's event log.
-//! - `DELETE /sessions/:id/remotes/:remote_id` — remove.
+//! - `DELETE /sessions/{id}/remotes/{remote_id}` — remove.
 
 use std::sync::Arc;
 
@@ -27,13 +27,14 @@ use session::rate_limit::RateLimitKey;
 
 use crate::rate_limit::gate_session;
 use crate::state::AppState;
+use autometrics::autometrics;
 
-/// Mounted at `/sessions/:id` alongside session_links.
+/// Mounted at `/sessions/{id}` alongside session_links.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/remotes", get(list_remotes).post(add_remote))
-        .route("/remotes/:remote_id", axum::routing::delete(remove_remote))
-        .route("/remotes/:remote_id/fetch", post(fetch_remote))
+        .route("/remotes/{remote_id}", axum::routing::delete(remove_remote))
+        .route("/remotes/{remote_id}/fetch", post(fetch_remote))
 }
 
 #[derive(Deserialize)]
@@ -41,6 +42,7 @@ struct AddRemoteBody {
     remote_session_id: String,
 }
 
+#[autometrics]
 async fn add_remote(
     Path(local_id): Path<String>,
     headers: HeaderMap,
@@ -65,6 +67,7 @@ async fn add_remote(
     }
 }
 
+#[autometrics]
 async fn list_remotes(
     Path(local_id): Path<String>,
     headers: HeaderMap,
@@ -81,6 +84,7 @@ async fn list_remotes(
     }
 }
 
+#[autometrics]
 async fn fetch_remote(
     Path((local_id, remote_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -138,6 +142,7 @@ async fn fetch_remote(
     Json(serde_json::json!({ "remote": updated, "events": events })).into_response()
 }
 
+#[autometrics]
 async fn remove_remote(
     Path((local_id, remote_id)): Path<(String, String)>,
     headers: HeaderMap,

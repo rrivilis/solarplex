@@ -24,6 +24,7 @@ use std::sync::Arc;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::{get, post}, Json, Router};
 use serde::Deserialize;
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -45,24 +46,24 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/auth/who-can",  get(auth_query::who_can))
         .route("/auth/lineage",  get(auth_query::lineage))
         // Epoch-based cap revocation + status
-        .route("/sessions/:id/epoch",        get(epoch::get_epoch))
-        .route("/sessions/:id/epoch/revoke", post(epoch::revoke))
+        .route("/sessions/{id}/epoch",        get(epoch::get_epoch))
+        .route("/sessions/{id}/epoch/revoke", post(epoch::revoke))
         // ORB execution dispatch
-        .route("/sessions/:id/invoke",          post(invoke::handler))
-        .route("/sessions/:id/consume-receipt", post(invoke::consume_handler))
+        .route("/sessions/{id}/invoke",          post(invoke::handler))
+        .route("/sessions/{id}/consume-receipt", post(invoke::consume_handler))
         // Three-tier commitment model: write proposals (Tier 1) + attestations (Tier 2)
-        .nest("/sessions/:id", proposals::router())
+        .nest("/sessions/{id}", proposals::router())
         // Standing approval policies (in-memory; survive process lifetime)
-        .nest("/sessions/:id", approval_policies::router())
+        .nest("/sessions/{id}", approval_policies::router())
         // Cross-session sync: session-to-session linking (live multiplex)
-        .nest("/sessions/:id", session_links::session_scoped_router())
+        .nest("/sessions/{id}", session_links::session_scoped_router())
         .merge(session_links::top_level_router())
         // Cross-session sync: git-remote-style durable fetch
-        .nest("/sessions/:id", session_remotes::router())
+        .nest("/sessions/{id}", session_remotes::router())
         // Artifact reputation: hash prevalence + family graph
         .merge(artifact_hashes::router())
         // authority-dsl (Lisp) → AuthorityArena import
-        .nest("/sessions/:id/authority", authority_import::router())
+        .nest("/sessions/{id}/authority", authority_import::router())
 }
 
 // ── Token exchange ────────────────────────────────────────────────────────────
@@ -72,6 +73,7 @@ struct ExchangeBody {
     token: String,
 }
 
+#[autometrics]
 async fn exchange_token(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ExchangeBody>,

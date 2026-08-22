@@ -22,12 +22,13 @@ use protocol::types::MemberRole;
 
 use crate::state::AppState;
 use crate::ws::emit_to_session;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/:id", get(preview))
-        .route("/:id/redeem", post(redeem))
-        .route("/:id/revoke", post(revoke))
+        .route("/{id}", get(preview))
+        .route("/{id}/redeem", post(redeem))
+        .route("/{id}/revoke", post(revoke))
 }
 
 // ── Preview ──────────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ pub fn router() -> Router<Arc<AppState>> {
 // Lets the frontend show "you've been invited to <session> as <role>" before
 // the invitee authenticates — no sp_token required, read-only, no side effects.
 
+#[autometrics]
 async fn preview(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -44,7 +46,7 @@ async fn preview(
         Err(db::DbError::NotFound) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    // A direct DB read, not a call through the gated GET /sessions/:id
+    // A direct DB read, not a call through the gated GET /sessions/{id}
     // endpoint — the invitee isn't a member yet, which is exactly the case
     // that handler now correctly rejects. The preview is deliberately
     // unauthenticated, so it has to fetch what it needs to show itself.
@@ -76,6 +78,7 @@ pub struct RedeemBody {
     pub sp_token: String,
 }
 
+#[autometrics]
 async fn redeem(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -242,6 +245,7 @@ async fn diagnose_redeem_failure(state: &Arc<AppState>, id: &str) -> axum::respo
 
 // ── Revoke ─────────────────────────────────────────────────────────────────
 
+#[autometrics]
 async fn revoke(
     Path(id):     Path<String>,
     headers:      HeaderMap,

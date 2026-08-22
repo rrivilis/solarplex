@@ -10,10 +10,12 @@ use axum::{
     extract::State,
     http::{Request, StatusCode},
     response::{IntoResponse, Response},
-    routing::any,
+    routing::{any, get},
     Router,
 };
+use autometrics::autometrics;
 use dashmap::DashMap;
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -142,6 +144,21 @@ impl ShimClient {
     pub fn notify_disconnected(&self) {
         let _ = self.write_tx.send(ipc::AdapterMessage::ClientDisconnected);
     }
+
+    /// Whether the write side of the IPC channel to the shim is still open.
+    /// A cheap, purely-local check -- no round trip, no timeout -- so it
+    /// stays truthful even when the shim or session server is the thing
+    /// that's actually degraded. `UnboundedSender::is_closed` reflects
+    /// whether the background writer task (and therefore the shim's read
+    /// end) is still alive.
+    pub fn is_connected(&self) -> bool {
+        !self.write_tx.is_closed()
+    }
+
+    /// Count of proposals currently awaiting a decision from the shim.
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 // ── Ring-1 Tier-2 hash helper ─────────────────────────────────────────────────
@@ -172,6 +189,20 @@ async fn snapshot_paths(paths: &[String]) -> HashMap<String, SnapEntry> {
 pub struct StdioUpstream {
     stdin: Mutex<tokio::io::BufWriter<tokio::process::ChildStdin>>,
     pending: Arc<DashMap<String, oneshot::Sender<serde_json::Value>>>,
+    /// Kept alive for the sole purpose of tying the subprocess's lifetime to
+    /// this struct's -- never read after spawn. Without this field, the
+    /// local `child` binding below was the *only* owner of the `Child`
+    /// handle and was dropped the moment `spawn()` returned (once stdin/
+    /// stdout were taken out of it), and `tokio::process::Child` does not
+    /// kill its process on drop by default. The subprocess kept running
+    /// completely unmanaged from that point on -- normally invisible
+    /// because the adapter process usually stays up for as long as the
+    /// subprocess should, but any early exit (a bind failure below,
+    /// graceful shutdown, a panic) orphaned it, attached to this terminal
+    /// via the inherited stderr. `kill_on_drop(true)` on the `Command`
+    /// below only takes effect once something -- this field -- actually
+    /// holds the `Child` past the constructor.
+    _child: tokio::process::Child,
 }
 
 impl StdioUpstream {
@@ -185,6 +216,7 @@ impl StdioUpstream {
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::inherit())
+                .kill_on_drop(true)
                 .spawn()?
         };
         #[cfg(not(windows))]
@@ -194,6 +226,7 @@ impl StdioUpstream {
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::inherit())
+                .kill_on_drop(true)
                 .spawn()?
         };
 
@@ -229,6 +262,7 @@ impl StdioUpstream {
         Ok(Self {
             stdin: Mutex::new(tokio::io::BufWriter::new(stdin)),
             pending,
+            _child: child,
         })
     }
 
@@ -286,14 +320,24 @@ struct ProxyState {
     upstream:   Upstream,
     shim:       ShimClient,
     sse_streams: Arc<DashMap<String, mpsc::UnboundedSender<String>>>,
+    prometheus_handle: PrometheusHandle,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub async fn serve(config: Config, shim: ShimClient) -> anyhow::Result<()> {
+pub async fn serve(config: Config, shim: ShimClient, prometheus_handle: PrometheusHandle) -> anyhow::Result<()> {
     let addr     = format!("0.0.0.0:{}", config.listen_port);
     let api_base = config.server_ws
         .replace("ws://", "http://").replace("wss://", "https://");
+
+    // Bind before spawning anything with a side effect: a stale previous
+    // adapter still holding this port is a common, recoverable startup
+    // race (kill the old process, retry), and failing fast here means it
+    // never costs an orphaned MCP subprocess -- see StdioUpstream's
+    // `_child` field doc comment for what used to happen when the spawn
+    // came first and the bind failed afterward.
+    tracing::info!("adapter proxy listening on {addr}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     let upstream = if let Some(ref cmd) = config.upstream_mcp_cmd {
         Upstream::Stdio(StdioUpstream::spawn(cmd).await?)
@@ -307,21 +351,44 @@ pub async fn serve(config: Config, shim: ShimClient) -> anyhow::Result<()> {
     let state = Arc::new(ProxyState {
         config, api_base, upstream, shim,
         sse_streams: Arc::new(DashMap::new()),
+        prometheus_handle,
     });
+
+    // Same periodic-upkeep shape as crates/server/src/main.rs — evicts idle
+    // histogram/summary buckets, and doubles as a live sample of how many
+    // SSE streams this adapter currently has open.
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                state.prometheus_handle.run_upkeep();
+                metrics::gauge!("sidecar_sse_streams").set(state.sse_streams.len() as f64);
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/",      any(intercept))
+        .route("/metrics", get(metrics_handler))
         .route("/*path", any(intercept))
         .with_state(state);
 
-    tracing::info!("adapter proxy listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
+/// `GET /metrics` — same unauthenticated-scrape posture as the server's
+/// equivalent (see `crate::metrics_route`'s doc comment); this process has
+/// no session/cap-scoped auth concept to gate it behind either.
+async fn metrics_handler(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+    state.prometheus_handle.render()
+}
+
 // ── Intercept handler ─────────────────────────────────────────────────────────
 
+#[autometrics]
 async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> Response {
     let method  = req.method().clone();
     let path    = req.uri().path().to_string();
@@ -333,13 +400,13 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
         return match &state.upstream {
             Upstream::Stdio(_) => {
                 if path.ends_with("/sse") { handle_sse_open(&state) }
-                else { StatusCode::NOT_FOUND.into_response() }
+                else { json_error_response(StatusCode::NOT_FOUND, "not found") }
             }
             Upstream::Http { client, base_url } => {
                 if path.ends_with("/sse") {
                     forward_streaming_http(client, base_url, &path, headers, state.config.listen_port).await
                 } else {
-                    StatusCode::NOT_FOUND.into_response()
+                    json_error_response(StatusCode::NOT_FOUND, "not found")
                 }
             }
         };
@@ -348,7 +415,7 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
     // ── POST ─────────────────────────────────────────────────────────────────
     let body_bytes = match axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(_) => return json_error_response(StatusCode::BAD_REQUEST, "could not read request body"),
     };
 
     let rpc: serde_json::Value = match serde_json::from_slice(&body_bytes) {
@@ -358,12 +425,39 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                 Upstream::Http { client, base_url } => {
                     forward_http(client, base_url, &method, &path, headers, body_bytes).await
                 }
-                Upstream::Stdio(_) => StatusCode::BAD_REQUEST.into_response(),
+                Upstream::Stdio(_) => mcp_error_response("request body was not valid JSON"),
             };
         }
     };
 
     let tool_call = extract_tool_call(&body_bytes);
+
+    // ── Meta-tools answered before the shim gate ────────────────────────────────
+    //
+    // Every other solarplex_* meta-tool is handled in `handle_meta_tool`, which
+    // runs *after* `shim.propose()` below -- deliberately, since those tools
+    // still need the standing-policy/approval machinery. These two are the
+    // exceptions, for different reasons but the same shape of fix:
+    //   - introspect: its entire purpose is to stay answerable even when the
+    //     shim/session-server path it reports on is degraded or unreachable,
+    //     so it must not itself depend on that path.
+    //   - session_info: pure local config readback (this process's own
+    //     session_id/actor_id, set once from env at startup) -- there is no
+    //     side effect and no meaningful decision for a human to gate, so
+    //     routing it through the full approval round trip only ever bought a
+    //     confusing multi-minute hang for zero benefit. Was previously routed
+    //     through `handle_meta_tool` post-gate; every real test of it hung on
+    //     a human approval for a call that carries no risk.
+    // Both answered from purely local, already-in-memory `ProxyState` -- no
+    // IPC round trip, no network call.
+    if let Some(ref call) = tool_call {
+        let id = rpc.get("id").cloned().unwrap_or(json!(null));
+        match call.tool.as_str() {
+            "solarplex_introspect"   => return build_introspect_response(&state, id),
+            "solarplex_session_info" => return build_session_info_response(&state, id),
+            _ => {}
+        }
+    }
 
     // ── Tool call: gate via shim ──────────────────────────────────────────────
     let mut rpc_to_send  = rpc.clone();
@@ -745,7 +839,7 @@ async fn forward_http(
         "PUT"    => client.put(&upstream_url),
         "DELETE" => client.delete(&upstream_url),
         "PATCH"  => client.patch(&upstream_url),
-        _        => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
+        _        => return json_error_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
     };
     for (name, value) in &headers {
         let n = name.as_str();
@@ -759,14 +853,14 @@ async fn forward_http(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("upstream HTTP error: {e}");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return json_error_response(StatusCode::BAD_GATEWAY, "upstream MCP server unreachable");
         }
     };
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let resp_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
-        Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+        Err(_) => return json_error_response(StatusCode::BAD_GATEWAY, "failed to read upstream response"),
     };
     Response::builder()
         .status(status)
@@ -795,7 +889,7 @@ async fn forward_streaming_http(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("upstream SSE error: {e}");
-            return StatusCode::BAD_GATEWAY.into_response();
+            return json_error_response(StatusCode::BAD_GATEWAY, "upstream MCP server unreachable");
         }
     };
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())
@@ -831,6 +925,52 @@ async fn forward_streaming_http(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
+// ── Introspection ────────────────────────────────────────────────────────────
+
+/// Build `solarplex_introspect`'s response entirely from in-memory
+/// `ProxyState` -- no IPC, no HTTP, nothing that can itself be the thing
+/// that's degraded. See the call site in `intercept` for why this runs
+/// before the shim gate rather than as one more `handle_meta_tool` arm.
+fn build_introspect_response(state: &ProxyState, id: serde_json::Value) -> Response {
+    let upstream_kind = match &state.upstream {
+        Upstream::Stdio(_)      => "stdio",
+        Upstream::Http { .. }   => "http",
+    };
+    let shim_connected  = state.shim.is_connected();
+    let pending_count   = state.shim.pending_count();
+    let sse_stream_count = state.sse_streams.len();
+
+    let text = format!(
+        "Session ID:        {}\n\
+         Actor ID:          {}\n\
+         Cap ID:             {}\n\
+         Upstream MCP:       {upstream_kind}\n\
+         Shim IPC connected: {shim_connected}\n\
+         Pending proposals:  {pending_count}\n\
+         Active SSE streams: {sse_stream_count}",
+        state.config.session_id,
+        state.config.actor_id,
+        state.config.cap_id.as_deref().unwrap_or("(none -- human-driven session)"),
+    );
+
+    json_response(json!({
+        "jsonrpc": "2.0", "id": id,
+        "result": { "content": [{ "type": "text", "text": text }] }
+    }))
+}
+
+/// Build `solarplex_session_info`'s response -- see the call site in
+/// `intercept` for why this runs before the shim gate rather than as one
+/// more `handle_meta_tool` arm.
+fn build_session_info_response(state: &ProxyState, id: serde_json::Value) -> Response {
+    json_response(json!({
+        "jsonrpc": "2.0", "id": id,
+        "result": { "content": [{ "type": "text", "text": format!(
+            "Session ID: {}\nActor ID:   {}", state.config.session_id, state.config.actor_id,
+        )}]}
+    }))
+}
+
 // ── Tool call extraction ──────────────────────────────────────────────────────
 
 fn extract_tool_call(body: &[u8]) -> Option<ToolCall> {
@@ -847,8 +987,13 @@ fn extract_tool_call(body: &[u8]) -> Option<ToolCall> {
 
 const META_TOOLS: &str = r#"[
   {
+    "name": "solarplex_introspect",
+    "description": "Report this adapter's own live state: shim IPC connectivity, pending proposal count, active SSE stream count, upstream MCP kind. Answered locally -- works even when the shim or session server is unreachable, unlike every other solarplex_* tool.",
+    "inputSchema": { "type": "object", "properties": {} }
+  },
+  {
     "name": "solarplex_session_info",
-    "description": "Return the Solarplex session and actor this adapter is bound to.",
+    "description": "Return the Solarplex session and actor this adapter is bound to. Answered locally, same as solarplex_introspect -- no approval needed.",
     "inputSchema": { "type": "object", "properties": {} }
   },
   {
@@ -971,6 +1116,7 @@ fn maybe_inject_meta_tools(resp: &serde_json::Value) -> serde_json::Value {
     r
 }
 
+#[autometrics]
 async fn handle_meta_tool(
     state:       &Arc<ProxyState>,
     rpc:         &serde_json::Value,
@@ -983,12 +1129,9 @@ async fn handle_meta_tool(
     let actor_id   = &state.config.actor_id;
 
     match tool.tool.as_str() {
-        "solarplex_session_info" => Some(json_response(json!({
-            "jsonrpc": "2.0", "id": id,
-            "result": { "content": [{ "type": "text", "text": format!(
-                "Session ID: {session_id}\nActor ID:   {actor_id}"
-            )}]}
-        }))),
+        // solarplex_session_info is answered pre-gate now -- see
+        // `build_session_info_response` and its call site in `intercept`.
+        // Unreachable here.
 
         "solarplex_create_artifact" => {
             let name    = tool.args.get("name").and_then(|v| v.as_str()).unwrap_or("artifact");
@@ -1344,4 +1487,25 @@ fn mcp_error_response(message: &str) -> Response {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap()
+}
+
+/// Plain (non-JSON-RPC) error body for the paths that aren't handling an
+/// MCP tool call at all -- an unrecognized GET (e.g. an MCP client probing
+/// `/.well-known/oauth-authorization-server` or similar auth-discovery
+/// URLs this proxy doesn't implement), a request whose body couldn't even
+/// be read, or an upstream connection failure. These used to be a bare
+/// `StatusCode::X.into_response()`, which axum renders as a genuinely empty
+/// body -- fine for a client that checks the status code first, but a
+/// client that unconditionally does something like `await res.json()`
+/// (several MCP client implementations, including the one this proxy was
+/// smoke-tested against, do exactly this on auth-related responses) gets
+/// "Unexpected end of JSON input" instead of a real error. The status code
+/// is unchanged; only the body goes from zero bytes to an actual JSON object.
+fn json_error_response(status: StatusCode, message: &str) -> Response {
+    let body = json!({ "error": message });
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap_or_default()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }

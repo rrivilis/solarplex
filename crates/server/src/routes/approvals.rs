@@ -15,17 +15,18 @@ use session::rate_limit::RateLimitKey;
 use crate::rate_limit::gate_session;
 use crate::state::AppState;
 use crate::ws::vote_on_approval;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/pending", get(list_pending_for_actor))
-        .route("/:id",                  get(get_for_guardian))
-        .route("/:id/resolution",       get(poll_resolution))
-        .route("/:id/vote",             post(cast_vote))
-        .route("/:id/delegate",         post(delegate_cross_session))
-        .route("/:id/scout",            patch(patch_scout_manifest))
-        .route("/:id/execution",        patch(patch_execution_manifest))
-        .route("/:id/declared-effects", patch(patch_declared_effects_handler))
+        .route("/{id}",                  get(get_for_guardian))
+        .route("/{id}/resolution",       get(poll_resolution))
+        .route("/{id}/vote",             post(cast_vote))
+        .route("/{id}/delegate",         post(delegate_cross_session))
+        .route("/{id}/scout",            patch(patch_scout_manifest))
+        .route("/{id}/execution",        patch(patch_execution_manifest))
+        .route("/{id}/declared-effects", patch(patch_declared_effects_handler))
 }
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ async fn require_shim_auth(
 /// Returns pending approvals for the authenticated actor.
 /// Requires `Authorization: Bearer <sp_token>` — the query-param fallback
 /// that used to accept a self-asserted actor_id has been removed.
+#[autometrics]
 async fn list_pending_for_actor(
     headers:       HeaderMap,
     State(state):  State<Arc<AppState>>,
@@ -101,7 +103,7 @@ async fn list_pending_for_actor(
     }
 }
 
-// ── GET /api/approvals/:id (guardian fetch) ────────────────────────────────────
+// ── GET /api/approvals/{id} (guardian fetch) ────────────────────────────────────
 
 /// Guardian calls this to fetch the server-canonical command and declared effects
 /// for an approval.  The caller must supply:
@@ -109,6 +111,7 @@ async fn list_pending_for_actor(
 ///   X-Actor-Id:   <actor_id>
 /// The server verifies that the actor is a member of the session that owns
 /// this approval, preventing cross-session IDOR.
+#[autometrics]
 async fn get_for_guardian(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,
@@ -172,9 +175,9 @@ async fn get_for_guardian(
     .into_response()
 }
 
-// ── POST /api/approvals/:id/vote ──────────────────────────────────────────────
+// ── POST /api/approvals/{id}/vote ──────────────────────────────────────────────
 
-/// POST /api/approvals/:id/vote
+/// POST /api/approvals/{id}/vote
 ///
 /// Requires `Authorization: Bearer <sp_token>`. The actor_id is derived from
 /// the token server-side; `actor_id` in the request body is ignored.
@@ -185,6 +188,7 @@ struct CastVoteBody {
     decision: String,         // "grant" | "deny"
 }
 
+#[autometrics]
 async fn cast_vote(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,
@@ -243,7 +247,7 @@ async fn cast_vote(
     StatusCode::NO_CONTENT.into_response()
 }
 
-// ── POST /api/approvals/:id/delegate ─────────────────────────────────────────
+// ── POST /api/approvals/{id}/delegate ─────────────────────────────────────────
 //
 // Cross-session approval delegation: session A asks session B to decide this
 // approval on its behalf. B's decision is a completely normal ApprovalRequest,
@@ -263,6 +267,7 @@ struct DelegateBody {
     target_session_id: String,
 }
 
+#[autometrics]
 async fn delegate_cross_session(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,
@@ -303,7 +308,7 @@ async fn delegate_cross_session(
     match db::session_links::exists_between(&state.db, &source_session_id, &body.target_session_id).await {
         Ok(true)  => {}
         Ok(false) => return (StatusCode::BAD_REQUEST,
-            "source and target sessions must be linked before delegating (see POST /sessions/:a/link/:b)").into_response(),
+            "source and target sessions must be linked before delegating (see POST /sessions/{a}/link/{b})").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 
@@ -326,12 +331,13 @@ async fn delegate_cross_session(
 
 // ── Ring-2 scout manifest endpoints ──────────────────────────────────────────
 
-/// PATCH /api/approvals/:id/scout
+/// PATCH /api/approvals/{id}/scout
 #[derive(Deserialize)]
 struct PatchScoutBody {
     scout_manifest: serde_json::Value,
 }
 
+#[autometrics]
 async fn patch_scout_manifest(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,
@@ -354,13 +360,14 @@ async fn patch_scout_manifest(
     }
 }
 
-/// PATCH /api/approvals/:id/execution
+/// PATCH /api/approvals/{id}/execution
 #[derive(Deserialize)]
 struct PatchExecutionBody {
     execution_manifest: serde_json::Value,
     diverged:           bool,
 }
 
+#[autometrics]
 async fn patch_execution_manifest(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,
@@ -391,13 +398,14 @@ async fn patch_execution_manifest(
     }
 }
 
-// ── PATCH /api/approvals/:id/declared-effects ────────────────────────────────
+// ── PATCH /api/approvals/{id}/declared-effects ────────────────────────────────
 
 #[derive(Deserialize)]
 struct PatchDeclaredEffectsBody {
     declared_effects: serde_json::Value,
 }
 
+#[autometrics]
 async fn patch_declared_effects_handler(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,
@@ -427,7 +435,8 @@ struct ResolutionQuery {
     timeout: Option<u64>,
 }
 
-/// GET /api/approvals/:id/resolution?timeout=N
+/// GET /api/approvals/{id}/resolution?timeout=N
+#[autometrics]
 async fn poll_resolution(
     Path(approval_id): Path<String>,
     headers:           HeaderMap,

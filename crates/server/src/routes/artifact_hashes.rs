@@ -10,15 +10,17 @@ use axum::{
 use serde::Deserialize;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/artifact-hashes/:sha256",   get(lookup))
+        .route("/artifact-hashes/{sha256}",   get(lookup))
         .route("/artifact-hashes/scan-result", post(scan_result))
 }
 
-// ── GET /api/artifact-hashes/:sha256 ─────────────────────────────────────────
+// ── GET /api/artifact-hashes/{sha256} ─────────────────────────────────────────
 
+#[autometrics]
 async fn lookup(
     Path(sha256):  Path<String>,
     State(state):  State<Arc<AppState>>,
@@ -26,8 +28,7 @@ async fn lookup(
     match db::artifact_reputation::lookup(&state.db, &sha256).await {
         Ok(None) => (StatusCode::NOT_FOUND, "hash not seen").into_response(),
         Ok(Some((row, verdict, family_name))) => {
-            let cms_score = state.cms.lock().ok()
-                .and_then(|cms| cms.score(""));  // placeholder — scoring happens at write time
+            let cms_score = state.cms.score("");  // placeholder — scoring happens at write time
             Json(serde_json::json!({
                 "sha256":      row.sha256,
                 "verdict":     verdict.as_str(),
@@ -53,6 +54,7 @@ struct ScanResultBody {
     yara_matches: Vec<String>,
 }
 
+#[autometrics]
 async fn scan_result(
     State(state): State<Arc<AppState>>,
     Json(body):   Json<ScanResultBody>,

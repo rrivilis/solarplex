@@ -81,7 +81,7 @@ pub async fn insert(
 ///
 /// Used by the invoke endpoint to validate cap state (epoch, revoked_at,
 /// permissions) without marking the cap as used.  Unlike `exchange`, the
-/// cap is not a single-use attach token — it's a long-lived delegation
+/// cap is not a single-use attach token. It's a long-lived delegation
 /// credential that persists across multiple tool calls.
 pub async fn get_cap(pool: &PgPool, id: &str) -> DbResult<TokenRow> {
     sqlx::query_as::<_, TokenRow>(

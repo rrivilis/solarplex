@@ -25,10 +25,16 @@ export default function InboxPage() {
   const { authed } = useShellAuth();
 
   const queryClient = useQueryClient();
+  // Same queryKey AppNav's badge already polls with staleTime: 30_000 — match
+  // it here too. Without this, opening /inbox (typically via that badge)
+  // always fired an immediate second fetch on mount, since react-query
+  // evaluates staleness per-observer: this component's own default
+  // staleTime: 0 ignored how fresh AppNav's already-cached data was.
   const { data: entries, isPending, isError } = useQuery({
     queryKey: ["mailbox"],
     queryFn: getMailbox,
     enabled: authed,
+    staleTime: 30_000,
   });
 
   async function handleOpen(entry: MailboxEntry) {

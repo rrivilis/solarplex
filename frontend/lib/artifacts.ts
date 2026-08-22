@@ -66,6 +66,35 @@ export async function importArtifact(
 }
 
 /**
+ * Leave a note on an artifact that lives in `targetSessionId` (the session
+ * that owns it) — delivered via the reflector, lands as a provenance-
+ * tagged context entry in that session, not a local-only comment. Call
+ * this when viewing `targetSessionId` as a linked SyncWorkspace pane, not
+ * your own home session; `sourceSessionId` is your own (the session the
+ * note is attributed as coming from).
+ */
+export async function annotateArtifact(
+  targetSessionId: string,
+  sourceSessionId: string,
+  artifactId: string,
+  artifactName: string,
+  note: string,
+): Promise<void> {
+  const res = await authFetch(`${API_BASE}/sessions/${targetSessionId}/annotate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_session_id: sourceSessionId,
+      object_type: "artifact",
+      object_id: artifactId,
+      object_name: artifactName,
+      note,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+}
+
+/**
  * Whiteboard artifacts store dual-format JSON — `{ scene, preview }`, where
  * `preview` is a base64 PNG data URL rendered at save time (see
  * Whiteboard.tsx's saveAsArtifact). The `scene` half is raw Excalidraw

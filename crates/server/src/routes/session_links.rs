@@ -1,17 +1,17 @@
 //! Session-to-session linking — the single mechanism for cross-session sync
 //! (supersedes the v1 single-artifact propose/approve flow).
 //!
-//! - `POST /sessions/:id/link-invites` — mint a link invite (Collaborator+).
+//! - `POST /sessions/{id}/link-invites` — mint a link invite (Collaborator+).
 //!   The invite row's own id is the bearer token, same convention as
 //!   `session_invites`/`/invite/{id}`.
-//! - `POST /link-invites/:id/redeem` — redeem into a target session
+//! - `POST /link-invites/{id}/redeem` — redeem into a target session
 //!   (Collaborator+ in the target).
-//! - `POST /sessions/:a/link/:b` — direct fast path when the caller already
+//! - `POST /sessions/{a}/link/{b}` — direct fast path when the caller already
 //!   holds Collaborator+ in both sessions; no invite round trip.
-//! - `GET /sessions/:id/links` — list this session's links, peer names
+//! - `GET /sessions/{id}/links` — list this session's links, peer names
 //!   resolved for display.
-//! - `PATCH /links/:id` — toggle visibility (full|muted).
-//! - `DELETE /links/:id` — unlink.
+//! - `PATCH /links/{id}` — toggle visibility (full|muted).
+//! - `DELETE /links/{id}` — unlink.
 //!
 //! Once a `session_links` row exists with `visibility = 'full'`, nothing
 //! else here does the actual "live multiplex" work — that's entirely
@@ -36,8 +36,9 @@ use session::rate_limit::RateLimitKey;
 
 use crate::rate_limit::gate_session;
 use crate::state::AppState;
+use autometrics::autometrics;
 
-/// Mounted at `/sessions/:id` (nested alongside proposals/approval_policies).
+/// Mounted at `/sessions/{id}` (nested alongside proposals/approval_policies).
 pub fn session_scoped_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/link-invites", post(mint_link_invite))
@@ -47,9 +48,9 @@ pub fn session_scoped_router() -> Router<Arc<AppState>> {
 /// Mounted at the API root.
 pub fn top_level_router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/link-invites/:id/redeem", post(redeem_link_invite))
-        .route("/links/:id", patch(mute_link).delete(delete_link))
-        .route("/sessions/:a/link/:b", post(direct_link))
+        .route("/link-invites/{id}/redeem", post(redeem_link_invite))
+        .route("/links/{id}", patch(mute_link).delete(delete_link))
+        .route("/sessions/{a}/link/{b}", post(direct_link))
 }
 
 fn default_ttl_secs() -> i64 { 259_200 } // 3 days — matches create_invite's default
@@ -60,6 +61,7 @@ struct MintLinkInviteBody {
     ttl_secs: i64,
 }
 
+#[autometrics]
 async fn mint_link_invite(
     Path(source_id): Path<String>,
     headers: HeaderMap,
@@ -86,6 +88,7 @@ struct RedeemLinkInviteBody {
     target_session_id: String,
 }
 
+#[autometrics]
 async fn redeem_link_invite(
     Path(invite_id): Path<String>,
     headers: HeaderMap,
@@ -110,6 +113,7 @@ async fn redeem_link_invite(
     }
 }
 
+#[autometrics]
 async fn direct_link(
     Path((a, b)): Path<(String, String)>,
     headers: HeaderMap,
@@ -140,6 +144,7 @@ async fn direct_link(
     }
 }
 
+#[autometrics]
 async fn list_links(
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -206,6 +211,7 @@ struct MuteLinkBody {
     visibility: String,
 }
 
+#[autometrics]
 async fn mute_link(
     Path(link_id): Path<String>,
     headers: HeaderMap,
@@ -230,6 +236,7 @@ async fn mute_link(
     }
 }
 
+#[autometrics]
 async fn delete_link(
     Path(link_id): Path<String>,
     headers: HeaderMap,

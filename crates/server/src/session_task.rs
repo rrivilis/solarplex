@@ -38,10 +38,11 @@ use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::Utf8Bytes;
 use chrono::Utc;
 use dashmap::DashMap;
 use db::approvals;
-use protocol::messages::{WsMessage, WsPayload};
+use protocol::messages::{ArtifactPayload, ContextEntryAddedPayload, WsMessage, WsPayload};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -49,14 +50,16 @@ use ulid::Ulid;
 
 use session::{
     build_snapshot, transition, DisconnectReason, Effect, InboundEvent, LiveEvent,
-    SagaBundle, SagaOutcome, SessionArena, SessionEvent, SessionMemory, SessionState,
-    VoteDecision, SNAPSHOT_DEPENDS_ON,
+    ReflectorCursor, SagaBundle, SagaOutcome, SessionArena, SessionEvent, SessionMemory,
+    SessionState, VoteDecision, SNAPSHOT_DEPENDS_ON,
 };
 
+use crate::lease::ConflictClass;
 use crate::numa::{route_kind, session_numa_node};
-use crate::reflector::Reflector;
+use crate::reflector::{DispatchOutcome, Reflector};
 use crate::session_broadcast;
 use crate::state::{LiveSnapshot, SessionHub};
+use autometrics::autometrics;
 
 // ── Public handle ─────────────────────────────────────────────────────────────
 
@@ -130,6 +133,10 @@ pub fn spawn_session_task(
     tokio::spawn(run_session_task(
         rx, self_tx, session_id, owner_id, db, hub, sessions, reflector, local_node,
     ));
+    // (replica_id threads through via `reflector.replica_id()` inside
+    // `run_session_task` rather than as its own parameter — it's already
+    // reachable there and adding a second way to say the same thing would
+    // just be one more place for the two to drift apart.)
     SessionTaskHandle { sender: tx, numa_node: local_node }
 }
 
@@ -159,6 +166,30 @@ async fn run_session_task(
         &db, &hub, &timers, &self_tx, &sessions, &reflector, local_node,
     )
     .await;
+
+    // Reflector backlog: cross-session bundles addressed to this session
+    // that arrived while no task was running to receive them online. The
+    // counterpart to the own-history replay above, for bundles instead of
+    // this session's own event log.
+    drain_reflector_backlog(&session_id, &db, &self_tx, &reflector).await;
+
+    // Durable cross-replica placement claim. Best-effort and non-blocking
+    // on failure -- this replica starts serving the session either way,
+    // same as today's single-replica behavior; the claim is directory
+    // infrastructure for other replicas to consult, not yet a gate on this
+    // replica's own local processing (see reflector.rs's module doc on
+    // `dispatch`'s claims staying in-process-only for now).
+    // `spawn_placement_heartbeat` renews this on a timer for as long as
+    // this task stays alive.
+    match db::session_placements::claim(&db, &session_id, reflector.replica_id(), crate::reflector::PLACEMENT_TTL_SECS).await {
+        Ok(Some(_)) => {}
+        Ok(None) => tracing::warn!(
+            session_id,
+            "session task starting, but another replica holds a non-stale placement \
+             claim on it — possible split-brain"
+        ),
+        Err(e) => tracing::warn!(session_id, "initial placement claim failed: {e}"),
+    }
 
     // Region allocator for the hot saga coordination path.
     //
@@ -295,6 +326,76 @@ async fn replay_history(
     (state, memory)
 }
 
+// ── Reflector backlog drain ───────────────────────────────────────────────────
+
+/// Drain the reflector for cross-session bundles addressed to `session_id`
+/// that arrived while no task was running to receive them online.
+///
+/// # Why a persisted watermark, not always `ReflectorCursor::zero()`
+///
+/// A session_task exists only while at least one client is attached, and
+/// can be dropped and respawned many times across a single server's uptime
+/// without the server itself restarting. `replay()` returns *every* bundle
+/// still in the log, not just ones this session hasn't seen; without a
+/// remembered position, every respawn would re-drain the entire log and
+/// re-inject bundles this session already fully processed in a previous
+/// lifetime. There's no `bundle_id` dedup in the session state machine to
+/// catch that downstream (checked before adding this: `gated_bundles`
+/// only tracks *currently* gated bundles, not a permanent seen-set), so a
+/// naive always-replay-from-zero here would risk duplicate saga steps,
+/// duplicate delegated approvals, etc. `db::reflector_cursors` (see
+/// migration 034) is the fix: the watermark persists across respawns, and
+/// is harmless across an actual server restart too, since the reflector's
+/// own in-memory log doesn't survive one either, so replaying any watermark
+/// against a fresh, empty log just returns nothing.
+///
+/// Each surviving bundle is injected the same way live online delivery
+/// already is (`LiveEvent::BundleIntercepted`, not `BundleReceived`
+/// directly, so it goes through the same policy/adapter layer a live
+/// arrival would), queued on `self_tx` so it's processed right after
+/// cold-start replay, before any live traffic.
+async fn drain_reflector_backlog(
+    session_id: &str,
+    db:         &PgPool,
+    self_tx:    &mpsc::Sender<InboundEvent>,
+    reflector:  &Arc<Reflector>,
+) {
+    let (seq, epoch) = db::reflector_cursors::get(db, session_id).await.unwrap_or((0, 0));
+    let from = ReflectorCursor { seq, epoch: epoch as u32, view: 0 };
+
+    let backlog = reflector.replay(from);
+    if backlog.is_empty() {
+        return;
+    }
+
+    let mut delivered      = 0usize;
+    let mut high_watermark = from;
+    for (cursor, bundle) in backlog {
+        high_watermark = cursor;
+        if bundle.to_session != session_id {
+            continue;
+        }
+        let msg = InboundEvent::Live(LiveEvent::BundleIntercepted {
+            bundle,
+            interceptor_cap_id: String::new(),
+            reflector_cursor:   cursor,
+        });
+        if let Err(e) = self_tx.send(msg).await {
+            tracing::warn!(session_id, "session task: reflector backlog drain: send failed: {e}");
+            break;
+        }
+        delivered += 1;
+    }
+
+    if let Err(e) = db::reflector_cursors::upsert(db, session_id, high_watermark.seq, high_watermark.epoch as i32).await {
+        tracing::warn!(session_id, "session task: reflector backlog drain: failed to persist watermark: {e}");
+    }
+
+    if delivered > 0 {
+        tracing::debug!(session_id, delivered, "session task: reflector backlog drained");
+    }
+}
+
 // ── Effect interpreter ────────────────────────────────────────────────────────
 
 async fn run_effects(
@@ -327,13 +428,13 @@ async fn run_effects(
             // to all connected actors in this session.
             Effect::Broadcast { payload } => {
                 if let Ok(json) = serde_json::to_string(&payload) {
-                    hub.broadcast(Arc::new(json));
+                    hub.broadcast(Utf8Bytes::from(json));
                 }
             }
 
             Effect::Send { to, payload } => {
                 if let Ok(json) = serde_json::to_string(&payload) {
-                    hub.send_to(&to, Arc::new(json));
+                    hub.send_to(&to, Utf8Bytes::from(json));
                 }
             }
 
@@ -402,7 +503,7 @@ async fn run_effects(
                     "reason": reason,
                 });
                 if let Ok(json) = serde_json::to_string(&frame) {
-                    hub.send_to(&actor_id, Arc::new(json));
+                    hub.send_to(&actor_id, Utf8Bytes::from(json));
                 }
             }
 
@@ -494,13 +595,13 @@ async fn handle_persist(
     reflector:  &Arc<Reflector>,
     local_node: u8,
 ) {
-    // Cross-session delegation glue: the real DB side effects (creating B's
-    // approval, resolving A's approval) are async and can't happen inside
-    // the pure session-crate transition — see CrossSessionDelegationReceived/
-    // Resolved's own doc comments. Both events stay shadow-persisted
+    // Cross-session glue: the real DB side effects (creating B's approval,
+    // resolving A's approval, creating an imported Artifact) are async and
+    // can't happen inside the pure session-crate transition — see each
+    // event's own doc comment. All of these events stay shadow-persisted
     // (EventLog only, matches ApprovalDelegated's precedent); this runs
     // regardless, since it's not what decides real- vs shadow-persist.
-    handle_cross_session_delegation_side_effects(session_id, &event, db, hub, sessions).await;
+    handle_cross_session_side_effects(session_id, &event, db, hub, sessions).await;
 
     if is_machine_autonomous(&event) {
         // Phase 5: real DB write for machine-owned events.
@@ -538,13 +639,14 @@ async fn handle_persist(
     }
 }
 
-/// Real DB side effects for the two cross-session-delegation event kinds
-/// that need async work the pure session-crate transition can't perform.
+/// Real DB side effects for cross-session event kinds that need async work
+/// the pure session-crate transition can't perform: the two cross-session-
+/// delegation events, and cross-session artifact import.
 /// Best-effort: logs and continues on failure rather than blocking the
 /// surrounding persist pipeline — this mirrors how the rest of this file
 /// treats snapshot writes and broadcasts as non-fatal side channels.
 ///
-/// Authority model (deliberate, not incidental):
+/// Authority model (deliberate, not incidental) — delegation:
 ///   - Session linkage never itself confers approval authority — it's only
 ///     the "these sessions have agreed to interact" precondition checked at
 ///     delegate-time (routes/approvals.rs::delegate_cross_session).
@@ -565,7 +667,7 @@ async fn handle_persist(
 ///     cap-gated action would be. The Pending-state CAS guard is today's
 ///     revalidation net; epoch-awareness would need approval_requests to
 ///     carry its issuing epoch, which it doesn't yet.
-async fn handle_cross_session_delegation_side_effects(
+async fn handle_cross_session_side_effects(
     session_id: &str,
     event:      &SessionEvent,
     db:         &PgPool,
@@ -615,7 +717,7 @@ async fn handle_cross_session_delegation_side_effects(
                 },
             });
             if let Ok(json) = serde_json::to_string(&msg) {
-                hub.broadcast(Arc::new(json));
+                hub.broadcast(Utf8Bytes::from(json));
             }
             tracing::info!(session_id, %saga_id, %approval_id, %source_session_id, "cross-session delegation: created local approval");
         }
@@ -683,14 +785,198 @@ async fn handle_cross_session_delegation_side_effects(
             };
             let msg = WsMessage::new(Ulid::new().to_string(), payload);
             if let Ok(json) = serde_json::to_string(&msg) {
-                hub.broadcast(Arc::new(json));
+                hub.broadcast(Utf8Bytes::from(json));
             }
             tracing::info!(session_id, %saga_id, %approval_id, %decision, "cross-session delegation: resolved source approval");
+        }
+
+        // Fired in the target session: create the real, local Artifact copy
+        // (and its artifact_imports receipt) — one-way, no ack leg back to
+        // the source. Uses `emit_via_task` (not a bare `hub.broadcast`, and
+        // not `emit_to_session` — this runs from inside the session task,
+        // not an HTTP handler, so it has `db`/`hub` directly but no `state`)
+        // so these land as real EventRows: cross-replica delivery
+        // (notifier.rs) needs a durable write + pg_notify to pick them up,
+        // the same requirement Part A fixed for ordinary session writes.
+        SessionEvent::CrossSessionArtifactImportReceived {
+            source_session_id, source_artifact_id, source_seq, name, artifact_type,
+            storage_ref, content_hash, source_created_by, source_created_at,
+            imported_by, link_id, source_name, target_name, ..
+        } => {
+            let new_artifact = match db::artifacts::create(db, db::artifacts::CreateArtifact {
+                session_id:    session_id.to_string(),
+                created_by:    imported_by.clone(),
+                name:          name.clone(),
+                artifact_type: artifact_type.clone(),
+                storage_ref:   storage_ref.clone(),
+            }).await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!(session_id, %source_session_id, "artifact import: create artifact: {e}");
+                    return;
+                }
+            };
+
+            let receipt_id = Ulid::new().to_string();
+            if let Err(e) = db::artifact_imports::insert(
+                db, &receipt_id,
+                source_session_id, source_artifact_id, *source_seq,
+                session_id, &new_artifact.id,
+                content_hash, source_created_by, *source_created_at,
+                imported_by, link_id.as_deref(),
+            ).await {
+                // Lost a concurrent double-import race — the winning
+                // request's row already carries a real target artifact.
+                // `new_artifact` above is now a harmless orphan copy with no
+                // receipt pointing at it (same non-atomic-but-safe posture
+                // routes/sessions.rs's direct-write version had).
+                if matches!(e, db::DbError::Conflict(_)) {
+                    tracing::info!(
+                        session_id, %source_session_id, %content_hash,
+                        "artifact import: lost a concurrent double-import race, discarding orphan copy",
+                    );
+                } else {
+                    tracing::error!(session_id, %source_session_id, "artifact import: insert receipt: {e}");
+                }
+                return;
+            }
+
+            let artifact_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ArtifactCreated {
+                session_id: session_id.to_string(), actor: imported_by.clone(), timestamp: Utc::now(), seq: 0,
+                payload: ArtifactPayload {
+                    artifact_id: new_artifact.id.clone(), name: new_artifact.name.clone(),
+                    artifact_type: Some(new_artifact.r#type.clone()),
+                },
+            });
+            emit_via_task(db, hub, session_id, imported_by, artifact_event).await;
+
+            // Audit note — resolve display names first, same fix
+            // routes/sessions.rs's original handler applied (raw ULIDs in a
+            // human-facing note is exactly the bug already fixed everywhere
+            // else names get surfaced).
+            let name_ids = vec![source_created_by.clone(), imported_by.clone()];
+            let names = db::actors::get_many(db, &name_ids).await.unwrap_or_default();
+            let source_creator_name = names.get(source_created_by)
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| source_created_by.clone());
+            let importer_name = names.get(imported_by)
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| imported_by.clone());
+            let note = format!(
+                "Imported from {source_name}\nOriginally published by {source_creator_name} at {}\nImported by {importer_name} through session link {source_name} -> {target_name}",
+                source_created_at.to_rfc3339(),
+            );
+            let entry_id = Ulid::new().to_string();
+            let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
+                session_id: session_id.to_string(), actor: imported_by.clone(), timestamp: Utc::now(), seq: 0,
+                payload: ContextEntryAddedPayload {
+                    entry_id: entry_id.clone(), kind: protocol::types::ContextEntryKind::Fact,
+                    content: note.clone(), authored_by: Some(imported_by.clone()),
+                },
+            });
+            emit_via_task(db, hub, session_id, imported_by, context_event).await;
+
+            tracing::info!(
+                session_id, %source_session_id, artifact_id = %new_artifact.id,
+                "artifact import: delivered via reflector",
+            );
+        }
+
+        // Fired in the target session: land a linked session's context
+        // entry here, with provenance. Unlike artifact import there is no
+        // relational insert at all -- ContextEntryAdded's own durable
+        // write (via emit_via_task) IS the target-side record; see the
+        // event's own doc comment.
+        SessionEvent::CrossSessionContextReceived {
+            source_session_id, kind, content, source_authored_by, source_authored_at,
+            imported_by, source_name, target_name, ..
+        } => {
+            let names = db::actors::get_many(db, &[source_authored_by.clone()]).await.unwrap_or_default();
+            let author_name = names.get(source_authored_by)
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| source_authored_by.clone());
+            let note = format!(
+                "Sent from {source_name}\nOriginally added by {author_name} at {}\n\n{content}",
+                source_authored_at.to_rfc3339(),
+            );
+            let entry_id = Ulid::new().to_string();
+            let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
+                session_id: session_id.to_string(), actor: imported_by.clone(), timestamp: Utc::now(), seq: 0,
+                payload: ContextEntryAddedPayload {
+                    entry_id, kind: kind.clone(),
+                    content: note, authored_by: Some(imported_by.clone()),
+                },
+            });
+            emit_via_task(db, hub, session_id, imported_by, context_event).await;
+            tracing::info!(
+                session_id, %source_session_id, %target_name,
+                "context summary send: delivered via reflector",
+            );
+        }
+
+        // Fired in the target session: land an annotation from a linked
+        // session's member onto one of this session's own objects. Same
+        // "no relational insert" posture as context-summary-send above.
+        SessionEvent::CrossSessionAnnotationReceived {
+            source_session_id, object_type, object_name, note, authored_by, source_name, ..
+        } => {
+            let names = db::actors::get_many(db, &[authored_by.clone()]).await.unwrap_or_default();
+            let author_name = names.get(authored_by)
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| authored_by.clone());
+            let full_note = format!(
+                "Annotation from {source_name} ({author_name}) on {object_type} '{object_name}':\n{note}",
+            );
+            let entry_id = Ulid::new().to_string();
+            let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
+                session_id: session_id.to_string(), actor: authored_by.clone(), timestamp: Utc::now(), seq: 0,
+                payload: ContextEntryAddedPayload {
+                    entry_id, kind: protocol::types::ContextEntryKind::Fact,
+                    content: full_note, authored_by: Some(authored_by.clone()),
+                },
+            });
+            emit_via_task(db, hub, session_id, authored_by, context_event).await;
+            tracing::info!(
+                session_id, %source_session_id, %object_name,
+                "annotation: delivered via reflector",
+            );
         }
 
         _ => {}
     }
     let _ = sessions; // reserved for a future reconnect-drain path; unused today
+}
+
+/// Durably persist + broadcast a `WsMessage` from inside the session task's
+/// own async context, where `hub`/`db` are already in hand. Mirrors
+/// `ws::emit_to_session`'s pipeline exactly (stamp + append + snapshot +
+/// commit + notify + broadcast) so cross-replica delivery (`notifier.rs`)
+/// picks these up the same way it picks up ordinary hub-originated writes.
+/// Not `emit_to_session` itself: that function is HTTP-handler-specific,
+/// looking its hub up from `state.hubs` — callers here already hold both.
+async fn emit_via_task(
+    db:         &PgPool,
+    hub:        &Arc<SessionHub>,
+    session_id: &str,
+    actor_id:   &str,
+    event:      WsMessage,
+) {
+    let snap_ref = crate::ws::current_snap(hub);
+    let mut tx = match db.begin().await {
+        Ok(t) => t,
+        Err(e) => { tracing::error!(session_id, "emit_via_task: begin tx: {e}"); return; }
+    };
+    let (seq, new_snap, stamped) = match crate::ws::stamp_append_snapshot(
+        &mut tx, snap_ref.as_ref(), session_id, actor_id, event,
+    ).await {
+        Ok(r) => r,
+        Err(e) => { tracing::error!(session_id, "emit_via_task: stamp: {e}"); return; }
+    };
+    if let Err(e) = tx.commit().await {
+        tracing::error!(session_id, "emit_via_task: commit: {e}"); return;
+    }
+    let _ = db::events::notify_session(db, session_id, seq).await;
+    crate::ws::store_and_broadcast(hub, seq, new_snap, &stamped).await;
 }
 
 // ── Real Persist ──────────────────────────────────────────────────────────────
@@ -756,7 +1042,7 @@ async fn real_persist(
     if let Some(payload) = session_broadcast::to_ws_payload(session_id, seq, &event) {
         let msg = WsMessage::new(Ulid::new().to_string(), payload);
         if let Ok(json) = serde_json::to_string(&msg) {
-            hub.broadcast(Arc::new(json));
+            hub.broadcast(Utf8Bytes::from(json));
         }
     }
 
@@ -908,15 +1194,27 @@ async fn persist_snapshot(
 
 // ── Bundle relay ──────────────────────────────────────────────────────────────
 
-/// Append a `SagaBundle` to the reflector and attempt online delivery.
+/// Dispatch a `SagaBundle` through the reflector's lease-gated path and
+/// attempt online delivery.
 ///
 /// Steps:
-/// 1. Reflector append — assigns monotonic seq, fires broadcast for subscribers.
+/// 1. Reflector dispatch, lease-gated on the bundle's session and saga-step
+///    claims (see `crate::lease`), falling back to a plain append if a
+///    lease race doesn't resolve within a few attempts. With no other
+///    production caller contending for these specific classes today, this
+///    is expected to commit on the first attempt every time; the gate is
+///    real, just not yet meaningfully exercised (see `crate::reflector`'s
+///    module doc).
 /// 2. Look up target session in the topology map.
-/// 3. If live: send `LiveEvent::BundleReceived` to the target's mpsc mailbox.
-/// 4. If offline: log and leave the bundle in the reflector queue for replay
-///    when the target reconnects.
-async fn route_bundle(
+/// 3. If live: send `LiveEvent::BundleIntercepted` to the target's mpsc mailbox.
+/// 4. If offline: log and leave the bundle in the reflector queue.
+///    `drain_reflector_backlog` delivers it when the target reconnects.
+/// `pub(crate)`: also called directly from `routes/sessions.rs`'s
+/// `import_artifact` handler, which dispatches a `SagaBundle` straight from
+/// the HTTP layer rather than through a session task's own `Effect::Bundle`
+/// (there's no source-side saga state to track for a one-shot import, so it
+/// skips `live_saga_begin`'s machinery entirely — see Part 3 of the plan).
+pub(crate) async fn route_bundle(
     session_id: &str,
     bundle:     SagaBundle,
     reflector:  &Arc<Reflector>,
@@ -928,22 +1226,81 @@ async fn route_bundle(
     let saga_id     = bundle.saga_id.clone();
     let step_idx    = bundle.step_idx;
 
-    // Step 1: persist in reflector.
-    let cursor = reflector.append(bundle.clone());
+    // Step 1: dispatch through the lease-gated path.
+    const MAX_DISPATCH_ATTEMPTS: u8 = 3;
+    let claims = [
+        ConflictClass::Session(to_session.clone()),
+        ConflictClass::SagaStep(saga_id.clone(), step_idx),
+    ];
+    let mut outcome = None;
+    for attempt in 0..MAX_DISPATCH_ATTEMPTS {
+        match reflector.dispatch(bundle.clone(), &claims).await {
+            DispatchOutcome::Retry => {
+                tracing::debug!(
+                    session_id, attempt, %bundle_id,
+                    "session task: Effect::Bundle dispatch lease race, retrying",
+                );
+            }
+            resolved => {
+                outcome = Some(resolved);
+                break;
+            }
+        }
+    }
 
-    tracing::debug!(
-        session_id,
-        %to_session,
-        %bundle_id,
-        %saga_id,
-        step_idx,
-        reflector_seq   = cursor.seq,
-        reflector_epoch = cursor.epoch,
-        "session task: Effect::Bundle appended to reflector",
-    );
+    match outcome {
+        Some(DispatchOutcome::Committed(cursor)) => {
+            tracing::debug!(
+                session_id, %to_session, %bundle_id, %saga_id, step_idx,
+                reflector_seq = cursor.seq, reflector_epoch = cursor.epoch,
+                "session task: Effect::Bundle appended to reflector",
+            );
+            deliver_or_queue(session_id, &to_session, bundle, &bundle_id, cursor, sessions, local_node).await;
+        }
+        Some(DispatchOutcome::Forwarded) => {
+            // Durably handed off to whichever replica actually holds this
+            // bundle's claims -- see reflector.rs's module doc. This
+            // replica must not also attempt local delivery: the target
+            // almost certainly isn't running here, and the owning
+            // replica's own spawn_reflector_forward_listener will append
+            // it to *its* log and deliver from there.
+            tracing::debug!(
+                session_id, %to_session, %bundle_id, %saga_id, step_idx,
+                "session task: Effect::Bundle durably forwarded to the replica that owns its claims",
+            );
+        }
+        Some(DispatchOutcome::Retry) | None => {
+            // Never observed in practice today (see the doc comment above),
+            // but a bundle must not be silently dropped if it ever does
+            // happen, so fall back to the ungated append rather than lose it.
+            tracing::warn!(
+                session_id, %to_session, %bundle_id,
+                "session task: Effect::Bundle dispatch failed after {MAX_DISPATCH_ATTEMPTS} \
+                 attempts (lease race did not resolve), falling back to a plain append",
+            );
+            let cursor = reflector.append(bundle.clone());
+            deliver_or_queue(session_id, &to_session, bundle, &bundle_id, cursor, sessions, local_node).await;
+        }
+    }
+}
 
-    // Step 2 & 3: try online delivery.
-    if let Some(target) = sessions.get(&to_session) {
+/// Attempt immediate delivery to `to_session`'s locally-running task, or
+/// leave the bundle queued in the reflector log for `drain_reflector_backlog`
+/// to pick up on reconnect. Shared between `route_bundle` (bundles this
+/// replica itself just committed) and `spawn_reflector_forward_listener`
+/// (bundles handed off *to* this replica by another one via
+/// `db::reflector_forwarding`) — same "is the target live right here,
+/// right now" question either way, once a local cursor exists.
+async fn deliver_or_queue(
+    session_id: &str,
+    to_session: &str,
+    bundle:     SagaBundle,
+    bundle_id:  &str,
+    cursor:     ReflectorCursor,
+    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
+    local_node: u8,
+) {
+    if let Some(target) = sessions.get(to_session) {
         let kind = route_kind(local_node, target.numa_node);
         tracing::debug!(
             session_id,
@@ -969,7 +1326,6 @@ async fn route_bundle(
             );
         }
     } else {
-        // Step 4: offline — bundle stays in reflector log.
         tracing::debug!(
             session_id,
             %to_session,
@@ -978,6 +1334,81 @@ async fn route_bundle(
             reflector_epoch = cursor.epoch,
             "session task: Effect::Bundle: target offline, queued in reflector",
         );
+    }
+}
+
+/// Consumes bundles other replicas have durably forwarded to this one (see
+/// `db::reflector_forwarding` and `reflector.rs`'s `Reflector::forward`).
+/// Woken by `pg_notify` on the `reflector_bundles` channel (payload = a
+/// replica id — every replica's listener receives every notification,
+/// same as `notifier.rs`'s pattern, and just ignores ones not addressed to
+/// its own `reflector.replica_id()`), with a periodic poll as a backstop
+/// in case a notify is ever missed (Postgres LISTEN/NOTIFY has no
+/// redelivery guarantee).
+///
+/// Spawns its own background task; fire-and-forget from the caller's side,
+/// same shape as `notifier::spawn_event_notifier`.
+pub fn spawn_reflector_forward_listener(
+    pool:      PgPool,
+    reflector: Arc<Reflector>,
+    sessions:  Arc<DashMap<String, SessionTaskHandle>>,
+) {
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = run_reflector_forward_listener(&pool, &reflector, &sessions).await {
+                tracing::warn!("reflector forward listener disconnected ({e}), reconnecting in 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    });
+}
+
+async fn run_reflector_forward_listener(
+    pool:      &PgPool,
+    reflector: &Arc<Reflector>,
+    sessions:  &Arc<DashMap<String, SessionTaskHandle>>,
+) -> anyhow::Result<()> {
+    let mut listener = sqlx::postgres::PgListener::connect_with(pool).await?;
+    listener.listen("reflector_bundles").await?;
+    tracing::info!(replica_id = reflector.replica_id(), "reflector forward listener: listening on reflector_bundles");
+
+    loop {
+        let claim_deadline = tokio::time::sleep(Duration::from_secs(15));
+        tokio::select! {
+            notification = listener.recv() => { notification?; }
+            _ = claim_deadline => {} // periodic backstop poll
+        }
+        drain_forwarded_bundles(pool, reflector, sessions).await;
+    }
+}
+
+async fn drain_forwarded_bundles(
+    pool:      &PgPool,
+    reflector: &Arc<Reflector>,
+    sessions:  &Arc<DashMap<String, SessionTaskHandle>>,
+) {
+    let claimed = match db::reflector_forwarding::claim_pending::<SagaBundle>(pool, reflector.replica_id()).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("reflector forward listener: claim_pending failed: {e}");
+            return;
+        }
+    };
+    for (forward_id, bundle) in claimed {
+        let to_session   = bundle.to_session.clone();
+        let from_session = bundle.from_session.clone();
+        let bundle_id    = bundle.bundle_id.clone();
+        let cursor       = reflector.append(bundle.clone());
+        tracing::debug!(
+            forward_id, %to_session, %bundle_id,
+            reflector_seq = cursor.seq, reflector_epoch = cursor.epoch,
+            "reflector forward listener: claimed and appended a forwarded bundle",
+        );
+        // No `session_id`/`local_node` context of our own here (this
+        // listener isn't tied to any one session task) — `from_session`
+        // is the closest real equivalent for the log line, and NUMA
+        // routing is a no-op today either way (see numa.rs's module doc).
+        deliver_or_queue(&from_session, &to_session, bundle, &bundle_id, cursor, sessions, 0).await;
     }
 }
 
@@ -1051,6 +1482,9 @@ fn actor_of(event: &SessionEvent) -> &str {
         SessionEvent::CrossSessionDelegationRequested { requested_by, .. } => requested_by,
         SessionEvent::CrossSessionDelegationReceived  { .. }    => "system",
         SessionEvent::CrossSessionDelegationResolved  { .. }    => "system",
+        SessionEvent::CrossSessionArtifactImportReceived { imported_by, .. } => imported_by,
+        SessionEvent::CrossSessionContextReceived { imported_by, .. } => imported_by,
+        SessionEvent::CrossSessionAnnotationReceived { authored_by, .. } => authored_by,
         SessionEvent::EffectProposed      { .. }              => "system",
         SessionEvent::EffectScouted       { .. }              => "system",
         SessionEvent::EffectAttested      { .. }              => "system",
@@ -1080,6 +1514,7 @@ fn actor_of(event: &SessionEvent) -> &str {
 // These replace the `machine_*` functions in the former `session_machine.rs`.
 
 /// Feed an actor connection event to the session task.
+#[autometrics]
 pub async fn task_actor_connected(
     handle:        &SessionTaskHandle,
     actor_id:      String,
@@ -1093,6 +1528,7 @@ pub async fn task_actor_connected(
 /// Feed an actor disconnection event to the session task.
 ///
 /// The machine uses this to interrupt pending approvals owned by the actor.
+#[autometrics]
 pub async fn task_actor_disconnected(
     handle:        &SessionTaskHandle,
     actor_id:      String,
@@ -1111,6 +1547,7 @@ pub async fn task_actor_disconnected(
 ///
 /// Hub already persists the outcome event; machine tracks votes for policy
 /// evaluation and coverage bisimulation.
+#[autometrics]
 pub async fn task_vote_cast(
     handle:      &SessionTaskHandle,
     approval_id: String,
@@ -1127,6 +1564,7 @@ pub async fn task_vote_cast(
 ///
 /// This arms the per-approval expiry timer.  Hub already persists the
 /// `ApprovalRequested` event; machine shadow-persists it.
+#[autometrics]
 pub async fn task_approval_create(
     handle:      &SessionTaskHandle,
     approval_id: String,
@@ -1152,6 +1590,7 @@ pub async fn task_approval_create(
 /// remains the authoritative writer; this keeps the machine's own
 /// `owner_id`/`eligible_approvers` bookkeeping correct without waiting for
 /// cold replay.
+#[autometrics]
 pub async fn task_ownership_transfer(handle: &SessionTaskHandle, from: String, to: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::OwnershipTransfer { from, to }))
@@ -1160,6 +1599,7 @@ pub async fn task_ownership_transfer(handle: &SessionTaskHandle, from: String, t
 
 /// Feed a session pause to the session task. Shadow-persisted — see
 /// `task_ownership_transfer`'s doc comment for why.
+#[autometrics]
 pub async fn task_admin_pause(handle: &SessionTaskHandle, by: String, reason: Option<String>) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::AdminPause { by, reason }))
@@ -1167,6 +1607,7 @@ pub async fn task_admin_pause(handle: &SessionTaskHandle, by: String, reason: Op
 }
 
 /// Feed a session resume to the session task. Shadow-persisted.
+#[autometrics]
 pub async fn task_admin_resume(handle: &SessionTaskHandle, by: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::AdminResume { by }))
@@ -1174,6 +1615,7 @@ pub async fn task_admin_resume(handle: &SessionTaskHandle, by: String) {
 }
 
 /// Feed a session archive to the session task. Shadow-persisted.
+#[autometrics]
 pub async fn task_admin_archive(handle: &SessionTaskHandle, by: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::AdminArchive { by }))
@@ -1182,6 +1624,7 @@ pub async fn task_admin_archive(handle: &SessionTaskHandle, by: String) {
 
 /// Feed an approval claim to the session task. Shadow-persisted — see
 /// `task_ownership_transfer`'s doc comment for why.
+#[autometrics]
 pub async fn task_approval_claim(handle: &SessionTaskHandle, approval_id: String, actor_id: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::ApprovalClaim { approval_id, actor_id }))
@@ -1190,6 +1633,7 @@ pub async fn task_approval_claim(handle: &SessionTaskHandle, approval_id: String
 
 /// Feed an approval cancellation to the session task. Shadow-persisted — see
 /// `task_ownership_transfer`'s doc comment for why.
+#[autometrics]
 pub async fn task_approval_cancel(handle: &SessionTaskHandle, approval_id: String, actor_id: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::ApprovalCancel { approval_id, actor_id }))
@@ -1197,6 +1641,7 @@ pub async fn task_approval_cancel(handle: &SessionTaskHandle, approval_id: Strin
 }
 
 /// Feed an approval delegation to the session task. Shadow-persisted.
+#[autometrics]
 pub async fn task_approval_delegate(handle: &SessionTaskHandle, approval_id: String, from: String, to: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::ApprovalDelegate { approval_id, from, to }))
@@ -1204,6 +1649,7 @@ pub async fn task_approval_delegate(handle: &SessionTaskHandle, approval_id: Str
 }
 
 /// Feed an approval dispute to the session task. Shadow-persisted.
+#[autometrics]
 pub async fn task_approval_dispute(
     handle:      &SessionTaskHandle,
     approval_id: String,
@@ -1219,6 +1665,7 @@ pub async fn task_approval_dispute(
 /// only — the real cross-session plumbing is the `Effect::Bundle` it
 /// triggers, not a `SessionMemory` field). `saga_id` is minted by the
 /// caller (route handler) — `crates/session` has no ulid dependency by design.
+#[autometrics]
 pub async fn task_cross_session_delegate(
     handle:            &SessionTaskHandle,
     saga_id:           String,
@@ -1239,6 +1686,7 @@ pub async fn task_cross_session_delegate(
 /// `ws.rs::handle_vote`'s cross-session-delegation hook to send B's
 /// decision back to A once B's own (completely normal) approval resolves;
 /// not specific to cross-session delegation, reusable for any saga.
+#[autometrics]
 pub async fn task_saga_ack(handle: &SessionTaskHandle, saga_id: String, step_idx: usize, outcome: SagaOutcome) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::SagaAck { saga_id, step_idx, outcome }))
@@ -1247,6 +1695,7 @@ pub async fn task_saga_ack(handle: &SessionTaskHandle, saga_id: String, step_idx
 
 /// Feed a message post to the session task. Shadow-persisted — see
 /// `task_ownership_transfer`'s doc comment for why.
+#[autometrics]
 pub async fn task_message_post(handle: &SessionTaskHandle, actor_id: String, content: String) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::MessagePost { actor_id, content }))
@@ -1255,6 +1704,7 @@ pub async fn task_message_post(handle: &SessionTaskHandle, actor_id: String, con
 
 /// Feed a context-entry addition to the session task. `entry_id` must be the
 /// same ID the real writer already minted. Shadow-persisted.
+#[autometrics]
 pub async fn task_context_add(
     handle:   &SessionTaskHandle,
     entry_id: String,
@@ -1268,6 +1718,7 @@ pub async fn task_context_add(
 }
 
 /// Feed a context-entry resolution to the session task. Shadow-persisted.
+#[autometrics]
 pub async fn task_context_resolve(
     handle:      &SessionTaskHandle,
     entry_id:    String,
@@ -1281,6 +1732,7 @@ pub async fn task_context_resolve(
 
 /// Feed an artifact creation to the session task. `artifact_id` must be the
 /// same ID the real writer's DB insert already assigned. Shadow-persisted.
+#[autometrics]
 pub async fn task_artifact_create(
     handle:        &SessionTaskHandle,
     artifact_id:   String,
@@ -1294,6 +1746,7 @@ pub async fn task_artifact_create(
 }
 
 /// Feed an artifact update to the session task. Shadow-persisted.
+#[autometrics]
 pub async fn task_artifact_update(
     handle:        &SessionTaskHandle,
     artifact_id:   String,
@@ -1309,6 +1762,7 @@ pub async fn task_artifact_update(
 /// Feed an artifact deletion to the session task. `name`/`artifact_type` are
 /// the caller's already-fetched values (see `SessionEvent::ArtifactDeleted`'s
 /// doc comment for why). Shadow-persisted.
+#[autometrics]
 pub async fn task_artifact_delete(
     handle:        &SessionTaskHandle,
     artifact_id:   String,
@@ -1436,7 +1890,7 @@ mod tests {
         .await
         .expect("failed to insert attach_event");
 
-        let hub                       = Arc::new(SessionHub::new(session_id.clone()));
+        let hub                       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
         let timers: Arc<DashMap<String, JoinHandle<()>>> = Arc::new(DashMap::new());
         let (self_tx, _self_rx)       = mpsc::channel(8);
         let sessions                  = Arc::new(DashMap::new());
@@ -1488,7 +1942,7 @@ mod tests {
     /// *next* step to spuriously pick up. Draining everything each time and
     /// asserting on the whole batch avoids that drift entirely.
     async fn drain_broadcasts(
-        rx:     &mut tokio::sync::broadcast::Receiver<Arc<String>>,
+        rx:     &mut tokio::sync::broadcast::Receiver<Utf8Bytes>,
         window: Duration,
     ) -> Vec<String> {
         let mut out = Vec::new();
@@ -1497,7 +1951,7 @@ mod tests {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() { break; }
             match tokio::time::timeout(remaining, rx.recv()).await {
-                Ok(Ok(msg)) => out.push((*msg).clone()),
+                Ok(Ok(msg)) => out.push(msg.to_string()),
                 _ => break, // timed out or channel closed — done draining
             }
         }
@@ -1591,7 +2045,7 @@ mod tests {
             .await
             .expect("failed to advance session_sequences past the seeded row");
 
-        let hub       = Arc::new(SessionHub::new(session_id.clone()));
+        let hub       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
         let sessions  = Arc::new(DashMap::new());
         let reflector = Arc::new(Reflector::new());
         let handle = spawn_session_task(
@@ -1789,7 +2243,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("failed to insert event #{i}: {e}"));
         }
 
-        let hub                       = Arc::new(SessionHub::new(session_id.clone()));
+        let hub                       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
         let timers: Arc<DashMap<String, JoinHandle<()>>> = Arc::new(DashMap::new());
         let (self_tx, _self_rx)       = mpsc::channel(8);
         let sessions                  = Arc::new(DashMap::new());
@@ -1904,7 +2358,10 @@ mod tests {
             .bind(&session_id).execute(&pool).await
             .expect("failed to advance session_sequences past the seeded row");
 
-        let state = Arc::new(crate::state::AppState::new(pool.clone(), None));
+        let prometheus_handle = crate::metrics_route::install_or_reuse_recorder();
+        let state = Arc::new(crate::state::AppState::new(
+            pool.clone(), None, prometheus_handle, ulid::Ulid::new().to_string(),
+        ));
         let hub   = state.get_or_create_hub(&session_id);
         // Register the task under AppState's own `sessions` map — unlike the
         // earlier tests' manually-constructed map, `create_approval_for_session`
@@ -2031,7 +2488,7 @@ mod tests {
         .expect("failed to create test session");
         let session_id = created.session.id.clone();
 
-        let hub       = Arc::new(SessionHub::new(session_id.clone()));
+        let hub       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
         let sessions  = Arc::new(DashMap::new());
         let reflector = Arc::new(Reflector::new());
         let handle = spawn_session_task(

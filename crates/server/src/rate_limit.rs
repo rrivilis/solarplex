@@ -49,6 +49,22 @@ use std::time::{Duration, Instant};
 const IDLE_BUCKET_TTL: Duration = Duration::from_secs(2 * 3600);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+/// Variant name only, from `Debug`, truncated at the first space/brace/paren
+/// -- e.g. `MessagePost { actor_id: "01J..." }` becomes `"MessagePost"`.
+/// Both `RateLimitKey` and `GlobalRateLimitKey` carry per-entity fields
+/// (actor ids, an IP, an OIDC sub) that must never become a Prometheus
+/// label value (unbounded cardinality, one time series per entity forever);
+/// this stays correct as either enum grows new variants without needing a
+/// hand-maintained match here, unlike an explicit label match would.
+fn key_metric_label<T: std::fmt::Debug>(key: &T) -> String {
+    let debug = format!("{key:?}");
+    debug
+        .split(|c: char| c == ' ' || c == '(' || c == '{')
+        .next()
+        .unwrap_or(&debug)
+        .to_string()
+}
+
 /// What's being rate-limited at Tier 2. See this module's doc comment for
 /// why these specifically can't live in any one session's `SessionMemory`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -146,9 +162,17 @@ impl GlobalLimiter {
         let Some(policy) = key.default_policy() else {
             return (Admission::Allowed, None);
         };
+        let label = key_metric_label(&key);
         let now = Instant::now();
         let mut bucket = self.buckets.entry(key).or_insert_with(|| FixedWindowBucket::fresh(now));
-        (bucket.check_and_consume(&policy, now), Some(policy))
+        let admission = bucket.check_and_consume(&policy, now);
+        metrics::counter!(
+            "rate_limit_admission_total",
+            "tier"   => "global",
+            "key"    => label,
+            "result" => if matches!(admission, Admission::Allowed) { "allowed" } else { "denied" },
+        ).increment(1);
+        (admission, Some(policy))
     }
 
     /// Evict buckets idle for at least `idle_for` — see `sweep_rate_limits`.
@@ -183,12 +207,20 @@ impl SessionRateLimiter {
         let Some(policy) = key.default_policy() else {
             return (Admission::Allowed, None);
         };
+        let label = key_metric_label(&key);
         let now = Instant::now();
         let mut bucket = self
             .buckets
             .entry((session_id.to_string(), key))
             .or_insert_with(|| FixedWindowBucket::fresh(now));
-        (bucket.check_and_consume(&policy, now), Some(policy))
+        let admission = bucket.check_and_consume(&policy, now);
+        metrics::counter!(
+            "rate_limit_admission_total",
+            "tier"   => "session",
+            "key"    => label,
+            "result" => if matches!(admission, Admission::Allowed) { "allowed" } else { "denied" },
+        ).increment(1);
+        (admission, Some(policy))
     }
 
     /// Evict buckets idle for at least `idle_for` — see `sweep_rate_limits`.

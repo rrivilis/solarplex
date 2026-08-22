@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 
-use session::effects::{BundleKind, SagaBundle};
+use session::effects::{BundleKind, ReflectorCursor, SagaBundle};
 use server::numa::session_numa_node;
 use server::reflector::Reflector;
 
@@ -92,7 +92,7 @@ fn bench_reflector(c: &mut Criterion) {
             BenchmarkId::new("replay_full", n),
             &n,
             |b, _| {
-                b.iter(|| black_box(r.replay(0)))
+                b.iter(|| black_box(r.replay(ReflectorCursor::zero())))
             },
         );
     }
@@ -101,7 +101,7 @@ fn bench_reflector(c: &mut Criterion) {
     // The consumer already saw all but the last 10 entries.
     for n in [100usize, 1_000, 10_000] {
         let r = Arc::new(reflector_with_n(n));
-        let cursor = (n - 10) as i64;
+        let cursor = ReflectorCursor { seq: (n - 10) as i64, epoch: 0, view: 0 };
         g.bench_with_input(
             BenchmarkId::new("replay_cursor_tail10", n),
             &n,

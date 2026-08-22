@@ -332,6 +332,16 @@ fn apply_logged(
         SessionEvent::CrossSessionDelegationRequested { .. } => (state, memory, vec![]),
         SessionEvent::CrossSessionDelegationReceived  { .. } => (state, memory, vec![]),
         SessionEvent::CrossSessionDelegationResolved  { .. } => (state, memory, vec![]),
+        // Same reasoning: the real artifact/import rows live in Postgres
+        // (artifacts, artifact_imports), created by session_task.rs's side
+        // effect hook. EventLog only here.
+        SessionEvent::CrossSessionArtifactImportReceived { .. } => (state, memory, vec![]),
+        // Same reasoning again, one level simpler: there's no relational
+        // table at all for either of these -- the target's own
+        // ContextEntryAdded (built by session_task.rs's side effect hook)
+        // is itself the durable write. EventLog only here.
+        SessionEvent::CrossSessionContextReceived { .. } => (state, memory, vec![]),
+        SessionEvent::CrossSessionAnnotationReceived { .. } => (state, memory, vec![]),
 
         // ── Effect algebra ────────────────────────────────────────────────────
 
@@ -1356,6 +1366,95 @@ fn live_bundle_received(
                         arguments,
                         target_approval_id: None,
                         received_at:        Utc::now(),
+                    }),
+                    session_updated_broadcast(&memory),
+                ];
+                return (state, memory, effects);
+            }
+            if message.get("kind").and_then(|k| k.as_str()) == Some("artifact_import") {
+                let get_str = |field: &str| message.get(field)
+                    .and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let source_seq = message.get("source_seq").and_then(|v| v.as_i64()).unwrap_or(0);
+                let link_id = message.get("link_id").and_then(|v| v.as_str()).map(str::to_string);
+                let source_created_at = message.get("source_created_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(Utc::now);
+                let effects = vec![
+                    // target_artifact_id is created and inserted synchronously,
+                    // in one server-side hook (session_task.rs) — no ack leg
+                    // back to the source, so unlike CrossSessionDelegationReceived
+                    // there is nothing to thread back into a later event.
+                    Effect::Persist(SessionEvent::CrossSessionArtifactImportReceived {
+                        source_session_id:  bundle.from_session.clone(),
+                        source_artifact_id: get_str("source_artifact_id"),
+                        source_seq,
+                        name:               get_str("name"),
+                        artifact_type:      get_str("artifact_type"),
+                        storage_ref:        get_str("storage_ref"),
+                        content_hash:       get_str("content_hash"),
+                        source_created_by:  get_str("source_created_by"),
+                        source_created_at,
+                        imported_by:        get_str("imported_by"),
+                        link_id,
+                        source_name:        get_str("source_name"),
+                        target_name:        get_str("target_name"),
+                        received_at:        Utc::now(),
+                    }),
+                    session_updated_broadcast(&memory),
+                ];
+                return (state, memory, effects);
+            }
+            if message.get("kind").and_then(|k| k.as_str()) == Some("context_summary_send") {
+                let get_str = |field: &str| message.get(field)
+                    .and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let kind = match message.get("entry_kind").and_then(|v| v.as_str()) {
+                    Some("hypothesis") => protocol::types::ContextEntryKind::Hypothesis,
+                    Some("question")   => protocol::types::ContextEntryKind::Question,
+                    Some("constraint") => protocol::types::ContextEntryKind::Constraint,
+                    Some("decision")   => protocol::types::ContextEntryKind::Decision,
+                    _                  => protocol::types::ContextEntryKind::Fact,
+                };
+                let link_id = message.get("link_id").and_then(|v| v.as_str()).map(str::to_string);
+                let source_authored_at = message.get("source_authored_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(Utc::now);
+                let effects = vec![
+                    Effect::Persist(SessionEvent::CrossSessionContextReceived {
+                        source_session_id:  bundle.from_session.clone(),
+                        source_entry_id:    get_str("source_entry_id"),
+                        kind,
+                        content:            get_str("content"),
+                        source_authored_by: get_str("source_authored_by"),
+                        source_authored_at,
+                        imported_by:        get_str("imported_by"),
+                        link_id,
+                        source_name:        get_str("source_name"),
+                        target_name:        get_str("target_name"),
+                        received_at:        Utc::now(),
+                    }),
+                    session_updated_broadcast(&memory),
+                ];
+                return (state, memory, effects);
+            }
+            if message.get("kind").and_then(|k| k.as_str()) == Some("annotation") {
+                let get_str = |field: &str| message.get(field)
+                    .and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let link_id = message.get("link_id").and_then(|v| v.as_str()).map(str::to_string);
+                let effects = vec![
+                    Effect::Persist(SessionEvent::CrossSessionAnnotationReceived {
+                        source_session_id: bundle.from_session.clone(),
+                        object_type:       get_str("object_type"),
+                        object_id:         get_str("object_id"),
+                        object_name:       get_str("object_name"),
+                        note:              get_str("note"),
+                        authored_by:       get_str("authored_by"),
+                        link_id,
+                        source_name:       get_str("source_name"),
+                        received_at:       Utc::now(),
                     }),
                     session_updated_broadcast(&memory),
                 ];

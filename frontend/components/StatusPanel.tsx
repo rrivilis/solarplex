@@ -21,6 +21,7 @@ interface Props {
   events: WsEnvelope[];
   connected: boolean;
   notMember?: boolean;
+  actorIdReserved?: boolean;
   phase?: ConnectionPhase;
   actorId: string;
   onTransfer: (to: string, note?: string) => Promise<void>;
@@ -64,7 +65,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-export default function StatusPanel({ sessionId, sessionName, snapshot, events, connected, notMember, phase, actorId, onTransfer, openManageSignal, mobileOpen, onMobileClose }: Props) {
+export default function StatusPanel({ sessionId, sessionName, snapshot, events, connected, notMember, actorIdReserved, phase, actorId, onTransfer, openManageSignal, mobileOpen, onMobileClose }: Props) {
   const containerRef = useModalA11y<HTMLElement>(mobileOpen, onMobileClose);
   const snapshotStatus = snapshot?.status ?? "active";
   const owner = snapshot?.owner;
@@ -236,7 +237,7 @@ export default function StatusPanel({ sessionId, sessionName, snapshot, events, 
           <p className="text-2xs text-muted mt-1 font-mono">{sessionId.slice(0, 12)}</p>
           <div className="flex items-center gap-1.5 mt-1">
             <span className={`w-1 h-1 rounded-full ${
-              connected ? "bg-accent-green" : (notMember || phase === "rejected") ? "bg-accent-red" : "bg-muted"
+              connected ? "bg-accent-green" : (notMember || actorIdReserved || phase === "rejected") ? "bg-accent-red" : "bg-muted"
             }`} />
             {/* aria-live: this text already existed, but its transitions
                 (Connected -> Reconnecting… mid-session, say) went
@@ -244,10 +245,11 @@ export default function StatusPanel({ sessionId, sessionName, snapshot, events, 
                 navigating back here manually. */}
             <span
               aria-live="polite"
-              className={`text-2xs ${(notMember || phase === "rejected") ? "text-accent-red" : "text-muted"}`}
+              className={`text-2xs ${(notMember || actorIdReserved || phase === "rejected") ? "text-accent-red" : "text-muted"}`}
             >
               {connected ? "Connected"
                 : notMember ? "Not a member"
+                : actorIdReserved ? "Name unavailable"
                 : phase === "rejected" ? "Connection rejected"
                 : phase === "connecting" ? "Connecting…"
                 : "Reconnecting…"}
@@ -256,6 +258,11 @@ export default function StatusPanel({ sessionId, sessionName, snapshot, events, 
           {notMember && (
             <p className="text-2xs text-muted mt-2 leading-relaxed">
               You are not a member of this session. Ask the owner to add you, or join via an invite link containing a token.
+            </p>
+          )}
+          {actorIdReserved && (
+            <p className="text-2xs text-muted mt-2 leading-relaxed">
+              That name is already registered to a signed-in account. Pick a different name, or sign in if it&rsquo;s yours.
             </p>
           )}
 

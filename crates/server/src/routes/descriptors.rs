@@ -22,6 +22,7 @@ use serde::Deserialize;
 use db::descriptors;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -30,6 +31,7 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 /// GET /api/descriptors — every local descriptor the caller currently holds.
+#[autometrics]
 async fn list_mine(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
@@ -57,6 +59,7 @@ struct ResolveBody {
 /// id. A local_index that's real for a different actor resolves to the same
 /// 404 as one that doesn't exist at all — never distinguish the two, or the
 /// error itself becomes an oracle for enumerating other actors' grants.
+#[autometrics]
 async fn resolve(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,

@@ -6,9 +6,9 @@
 //!
 //! ## Endpoints
 //!
-//! - `GET  /sessions/:id/approval-policies`        — list active policies
-//! - `POST /sessions/:id/approval-policies`        — create a policy
-//! - `DELETE /sessions/:id/approval-policies/:pid` — remove a policy
+//! - `GET  /sessions/{id}/approval-policies`        — list active policies
+//! - `POST /sessions/{id}/approval-policies`        — create a policy
+//! - `DELETE /sessions/{id}/approval-policies/{pid}` — remove a policy
 
 use std::sync::Arc;
 
@@ -24,14 +24,15 @@ use ulid::Ulid;
 
 use protocol::types::MemberRole;
 use crate::state::{AppState, PolicyDecision, StandingPolicy};
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/approval-policies",      get(list).post(create))
-        .route("/approval-policies/:pid", delete(remove))
+        .route("/approval-policies/{pid}", delete(remove))
 }
 
-// ── GET /sessions/:id/approval-policies ──────────────────────────────────────
+// ── GET /sessions/{id}/approval-policies ──────────────────────────────────────
 
 /// Two credential shapes accepted: a human's `sp_token` (dashboard reads),
 /// or an agent's `X-Session-Id`/`X-Actor-Id` headers (the shim needs its own
@@ -54,6 +55,7 @@ async fn require_member_or_shim(
     Ok(())
 }
 
+#[autometrics]
 async fn list(
     Path(session_id): Path<String>,
     headers:          HeaderMap,
@@ -79,7 +81,7 @@ async fn list(
     Json(policies).into_response()
 }
 
-// ── POST /sessions/:id/approval-policies ──────────────────────────────────────
+// ── POST /sessions/{id}/approval-policies ──────────────────────────────────────
 
 #[derive(Deserialize)]
 struct CreateBody {
@@ -92,6 +94,7 @@ struct CreateBody {
     decision:       String,
 }
 
+#[autometrics]
 async fn create(
     Path(session_id): Path<String>,
     State(state):     State<Arc<AppState>>,
@@ -127,8 +130,9 @@ async fn create(
     }))).into_response()
 }
 
-// ── DELETE /sessions/:id/approval-policies/:pid ───────────────────────────────
+// ── DELETE /sessions/{id}/approval-policies/{pid} ───────────────────────────────
 
+#[autometrics]
 async fn remove(
     Path((session_id, policy_id)): Path<(String, String)>,
     State(state):                   State<Arc<AppState>>,

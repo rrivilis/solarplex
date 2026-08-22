@@ -1,4 +1,4 @@
-//! `GET /api/agent-caps` / `DELETE /api/agent-caps/:id` — the Settings
+//! `GET /api/agent-caps` / `DELETE /api/agent-caps/{id}` — the Settings
 //! "active agent sessions" view: every live agent attach-credential across
 //! every session the signed-in actor owns, with a revoke action.
 //!
@@ -18,13 +18,15 @@ use axum::{
 use serde_json::json;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_mine))
-        .route("/:id", axum::routing::delete(revoke))
+        .route("/{id}", axum::routing::delete(revoke))
 }
 
+#[autometrics]
 async fn list_mine(
     headers:      HeaderMap,
     State(state): State<Arc<AppState>>,
@@ -50,6 +52,7 @@ async fn list_mine(
     }
 }
 
+#[autometrics]
 async fn revoke(
     headers:      HeaderMap,
     Path(id):     Path<String>,

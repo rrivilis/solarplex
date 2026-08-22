@@ -1,7 +1,7 @@
 //! `Effect` — the output alphabet of the session transition function.
 //!
 //! The runtime (server crate) interprets effects after every `transition()` call.
-//! The transition function never performs I/O directly — it only returns effects.
+//! The transition function never performs I/O directly, it only returns effects.
 //!
 //! ## The loggable / non-loggable split
 //!
@@ -21,10 +21,6 @@
 //! | `Send`    | Intra-session   | `actor_id`  | WebSocket sender map in SessionHub |
 //! | `Forward` | Inter-session   | `session_id`| Session task mailbox in AppState |
 //!
-//! In CBFEM terms: `Send` is within-component delivery; `Forward` is the DOF
-//! coupling edge that crosses component (session) boundaries.  The transition
-//! function emits `Send` when targeting an actor connected to this session and
-//! `Forward` when targeting another session node entirely.
 //!
 //! ## Runtime protocol
 //!
@@ -116,23 +112,39 @@ pub struct SagaBundle {
 
 /// A typed position in the global bundle reflector log.
 ///
-/// Replaces bare `i64` sequence numbers so that epoch mismatches (after
-/// compaction or shard migration) are caught at the type level rather than
-/// producing silent stale-cursor replays.
+/// Replaces bare `i64` sequence numbers so that epoch and view mismatches
+/// (after compaction, shard migration, or a membership change) are caught
+/// at the type level rather than producing silent stale-cursor replays.
 ///
-/// # Epoch semantics
+/// # Two independent staleness axes
 ///
-/// `epoch` is incremented by `Reflector::compact`.  A cursor from epoch `N`
-/// presented to a reflector at epoch `M > N` triggers full replay from seq 0
-/// rather than a delta replay that would miss entries pruned between epochs.
-/// This is the SLAM loop-closure equivalent: stale pose → relocalize.
+/// `epoch` and `view` are invalidated by different events and call for
+/// different recovery, which is why they're separate fields rather than one
+/// combined generation counter:
+///
+/// - **`epoch`** — incremented by `Reflector::compact`. A cursor from epoch
+///   `N` presented at epoch `M > N` means *this replica's own local history
+///   was pruned* out from under the cursor. Recovery: relocalize — fall
+///   back to full replay from seq 0 (or, on a replica that no longer has
+///   that history, ask one that does) so no live bundles are silently
+///   skipped. This is the SLAM loop-closure equivalent: stale pose →
+///   relocalize.
+/// - **`view`** — a membership generation. A stale view means *the set of
+///   replicas the caller should even be talking to has changed* — who
+///   currently owns what may be totally different, independent of whether
+///   any local history was pruned. Recovery: revalidate against current
+///   membership before trusting `epoch` at all. No membership protocol
+///   exists yet (single replica, view is always `0`), so this is currently
+///   a no-op check — the field and the distinction exist so a real
+///   membership layer has something to compare against later instead of
+///   overloading `epoch` for two unrelated kinds of staleness.
 ///
 /// # Observer-relative framing
 ///
 /// The pair `(session_id, ReflectorCursor)` is an observational frame: it
 /// identifies *who* is observing and *where* in the causal history they last
 /// looked.  Moving a cursor between nodes is cheaper than moving a bundle or
-/// saga — 12 bytes vs kilobytes — which makes cursor gossip the right primitive
+/// saga — bytes vs kilobytes — which makes cursor gossip the right primitive
 /// for partition healing and saga migration rendezvous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReflectorCursor {
@@ -142,16 +154,19 @@ pub struct ReflectorCursor {
     /// Reflector epoch — incremented on compaction / shard migration.
     /// Stale epoch → full replay (relocalize).
     pub epoch: u32,
+    /// Membership generation. Stale view → revalidate against current
+    /// membership. See the struct doc for why this is separate from `epoch`.
+    pub view:  u32,
 }
 
 impl ReflectorCursor {
-    /// The zero cursor: no bundles seen, epoch 0.  Pass to `replay` to drain
-    /// the entire live log from the beginning.
+    /// The zero cursor: no bundles seen, epoch 0, view 0.  Pass to `replay`
+    /// to drain the entire live log from the beginning.
     pub const fn zero() -> Self {
-        Self { seq: 0, epoch: 0 }
+        Self { seq: 0, epoch: 0, view: 0 }
     }
 
-    /// Advance this cursor to a new position (same epoch).
+    /// Advance this cursor to a new position (same epoch, same view).
     pub fn advance(self, seq: i64) -> Self {
         Self { seq, ..self }
     }
@@ -237,7 +252,7 @@ pub enum Effect {
     ///
     /// In CBFEM terms this is the DOF coupling edge across component boundaries:
     /// Session A emits `Forward { to_session: B }`; the runtime looks up B in
-    /// the session topology (`AppState::sessions`) and delivers the payload as
+    /// the session (`AppState::sessions`) and delivers the payload as
     /// `LiveEvent::ForwardedMessage { from_session: A, payload }` into B's mailbox.
     ///
     /// Primary use: saga step dispatch (coordinator → participant) and

@@ -29,6 +29,7 @@ use serde_json::json;
 use db::{actors, sessions};
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/", get(list_mine))
@@ -39,6 +40,7 @@ struct ActivityQuery {
     limit: Option<i64>,
 }
 
+#[autometrics]
 async fn list_mine(
     headers:      HeaderMap,
     Query(q):     Query<ActivityQuery>,

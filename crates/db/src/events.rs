@@ -266,11 +266,33 @@ pub async fn list_recent_across_sessions(
     limit:       i64,
 ) -> DbResult<Vec<EventRow>> {
     if session_ids.is_empty() { return Ok(Vec::new()); }
+    // LATERAL, not a flat `WHERE session_id = ANY($1) ORDER BY timestamp
+    // DESC LIMIT $2`: that shape can't be served by the events_session_timestamp
+    // (session_id, timestamp) index for a *global* top-N across multiple
+    // sessions — Postgres has to pull every matching row across every
+    // session in $1, sort the whole set, then take `limit`. For an actor
+    // in many long-lived sessions that's a full scan of their entire
+    // cross-session event history on every /api/activity load, not a
+    // bounded one.
+    //
+    // This form asks each session for its own top-`limit` (a real bounded
+    // index scan on events_session_timestamp per session — no session
+    // can ever contribute more than `limit` rows to the eventual global
+    // top-`limit`, so capping each side input at `limit` before the merge
+    // never discards a row that could legitimately make the final cut),
+    // then merges and re-limits the at-most `sessions.len() * limit` rows
+    // that requires materializing instead of the full per-session history.
     sqlx::query_as::<_, EventRow>(
-        "SELECT id, session_id, actor_id, type, payload, parent_event_id, seq, timestamp
-         FROM events
-         WHERE session_id = ANY($1)
-         ORDER BY timestamp DESC
+        "SELECT e.id, e.session_id, e.actor_id, e.type, e.payload, e.parent_event_id, e.seq, e.timestamp
+         FROM unnest($1::text[]) AS s(session_id)
+         CROSS JOIN LATERAL (
+             SELECT id, session_id, actor_id, type, payload, parent_event_id, seq, timestamp
+             FROM events
+             WHERE events.session_id = s.session_id
+             ORDER BY timestamp DESC
+             LIMIT $2
+         ) e
+         ORDER BY e.timestamp DESC
          LIMIT $2",
     )
     .bind(session_ids)

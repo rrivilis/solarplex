@@ -1,4 +1,5 @@
 mod artifact_scan;
+mod metrics_route;
 mod proxy;
 mod yara_scan;
 
@@ -58,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Open the pre-established IPC socket inherited from the shim (no connect, no handshake).
     let shim = proxy::ShimClient::from_inherited_fd(ADAPTER_IPC_FD)?;
-    proxy::serve(config, shim).await?;
+    let prometheus_handle = metrics_route::install_or_reuse_recorder();
+    proxy::serve(config, shim, prometheus_handle).await?;
     Ok(())
 }

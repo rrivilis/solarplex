@@ -2,11 +2,11 @@
 //!
 //! ## Endpoints
 //!
-//! - `POST /sessions/:id/propose`            — create a Tier-1 write proposal
-//! - `GET  /sessions/:id/proposals`          — list pending proposals
-//! - `POST /sessions/:id/proposals/:pid/commit` — atomic CAS commit
-//! - `POST /sessions/:id/attest`             — Tier-2 file-write attestation
-//! - `GET  /sessions/:id/attestations`       — list attestations (optionally mismatch-only)
+//! - `POST /sessions/{id}/propose`            — create a Tier-1 write proposal
+//! - `GET  /sessions/{id}/proposals`          — list pending proposals
+//! - `POST /sessions/{id}/proposals/{pid}/commit` — atomic CAS commit
+//! - `POST /sessions/{id}/attest`             — Tier-2 file-write attestation
+//! - `GET  /sessions/{id}/attestations`       — list attestations (optionally mismatch-only)
 //!
 //! ## Tier 1 commit path
 //!
@@ -43,12 +43,13 @@ use protocol::effects::Tier1Type;
 use protocol::types::MemberRole;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/propose",                    post(propose_handler))
         .route("/proposals",                  get(list_proposals_handler))
-        .route("/proposals/:pid/commit",      post(commit_handler))
+        .route("/proposals/{pid}/commit",      post(commit_handler))
         .route("/attest",                     post(attest_handler))
         .route("/attestations",               get(list_attestations_handler))
 }
@@ -61,7 +62,7 @@ pub fn sha256_hex(data: &str) -> String {
     format!("sha256:{:x}", hash)
 }
 
-// ── POST /sessions/:id/propose ────────────────────────────────────────────────
+// ── POST /sessions/{id}/propose ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct ProposeBody {
@@ -75,6 +76,7 @@ struct ProposeBody {
     ttl_secs: Option<i64>,
 }
 
+#[autometrics]
 async fn propose_handler(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -134,8 +136,9 @@ async fn propose_handler(
     }
 }
 
-// ── GET /sessions/:id/proposals ───────────────────────────────────────────────
+// ── GET /sessions/{id}/proposals ───────────────────────────────────────────────
 
+#[autometrics]
 async fn list_proposals_handler(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -153,13 +156,14 @@ async fn list_proposals_handler(
     }
 }
 
-// ── POST /sessions/:id/proposals/:pid/commit ──────────────────────────────────
+// ── POST /sessions/{id}/proposals/{pid}/commit ──────────────────────────────────
 
 #[derive(Deserialize)]
 struct CommitBody {
     actor_id: String,
 }
 
+#[autometrics]
 async fn commit_handler(
     State(state): State<Arc<AppState>>,
     Path((session_id, proposal_id)): Path<(String, String)>,
@@ -390,7 +394,7 @@ async fn commit_context_entry(
     Ok(event.id)
 }
 
-// ── POST /sessions/:id/attest ─────────────────────────────────────────────────
+// ── POST /sessions/{id}/attest ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct AttestBody {
@@ -405,6 +409,7 @@ struct AttestBody {
     actual_hash_after:    String,
 }
 
+#[autometrics]
 async fn attest_handler(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -456,7 +461,7 @@ async fn attest_handler(
     }
 }
 
-// ── GET /sessions/:id/attestations ───────────────────────────────────────────
+// ── GET /sessions/{id}/attestations ───────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct AttestationsQuery {
@@ -464,6 +469,7 @@ struct AttestationsQuery {
     limit:         Option<i64>,
 }
 
+#[autometrics]
 async fn list_attestations_handler(
     State(state):    State<Arc<AppState>>,
     Path(session_id): Path<String>,

@@ -6,14 +6,16 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use protocol::effects::{ExecutionManifest, ScoutManifest};
-#[cfg(target_os = "linux")]
-use protocol::effects::{FileEvent, FileOps};
+use protocol::effects::{ExecutionManifest, FileEvent, FileOps, ScoutManifest};
 
-#[cfg(target_os = "linux")]
+// The strace-output parsing below (through `is_failed_syscall`) is plain
+// string parsing with no Linux-specific API calls -- only `run_scout_linux`,
+// which actually spawns `strace`, needs the platform gate. Keeping the
+// parsers themselves portable means they compile and are unit-testable on
+// every dev platform, not just Linux.
+
 const MAX_EVENTS: usize = 1_000;
 
-#[cfg(target_os = "linux")]
 const NOISE_PREFIXES: &[&str] = &[
     "/proc/", "/sys/", "/dev/",
     "/usr/lib/", "/usr/lib64/", "/usr/share/",
@@ -134,7 +136,6 @@ async fn run_scout_linux(command: &str, timeout_secs: u64) -> ScoutManifest {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn parse_strace_output(content: &str) -> (Vec<String>, Vec<FileEvent>, Vec<String>, Vec<String>) {
     let mut reads = Vec::new(); let mut effects = Vec::new();
     let mut connects = Vec::new(); let mut execs = Vec::new();
@@ -180,10 +181,8 @@ fn parse_strace_output(content: &str) -> (Vec<String>, Vec<FileEvent>, Vec<Strin
     (reads, effects, connects, execs)
 }
 
-#[cfg(target_os = "linux")]
 fn is_noise(path: &str) -> bool { NOISE_PREFIXES.iter().any(|p| path.starts_with(p)) }
 
-#[cfg(target_os = "linux")]
 fn strip_pid_prefix(line: &str) -> &str {
     let line = line.trim_start();
     if line.starts_with('[') {
@@ -192,12 +191,68 @@ fn strip_pid_prefix(line: &str) -> &str {
     line.trim_start_matches(|c: char| c.is_ascii_digit() || c == ' ')
 }
 
-#[cfg(target_os = "linux")]
+// ── Quoted-string arguments ─────────────────────────────────────────────────
+//
+// strace renders a path/exec-arg string the same way a C string literal is
+// written: wrapped in `"..."`, with `\"` for a literal quote, `\\` for a
+// literal backslash, and `\n`/`\t`/`\r` for the common control characters.
+// The previous version of every parser below found the string's extent with
+// `s.find('"')` for the open and `s[q1..].find('"')` for the close -- with
+// no concept of escaping, an escaped quote inside the real path (e.g. a
+// file literally named `foo"bar`, which strace renders as `"foo\"bar"`) was
+// indistinguishable from the real closing quote, silently truncating the
+// path right there. Since this scout's whole job is building the sandbox's
+// `DeclaredEffects` policy from what it observed, a truncated path here
+// means the policy gets built from the wrong path -- a correctness bug with
+// real consequences, not just an edge case.
+
+/// One backslash-escape. Unrecognized escapes are kept as a literal
+/// two-character sequence rather than guessed at -- an escape this parser
+/// doesn't know about can then never silently change the string's meaning,
+/// unlike the old bug where an escaped quote silently changed where the
+/// string was read to end.
+fn escaped_char(input: &str) -> nom::IResult<&str, String> {
+    use nom::character::complete::{anychar, char};
+    use nom::sequence::preceded;
+    let (rest, c) = preceded(char('\\'), anychar)(input)?;
+    let resolved = match c {
+        '"'  => "\"".to_string(),
+        '\\' => "\\".to_string(),
+        'n'  => "\n".to_string(),
+        't'  => "\t".to_string(),
+        'r'  => "\r".to_string(),
+        other => format!("\\{other}"),
+    };
+    Ok((rest, resolved))
+}
+
+/// Parses one strace-quoted string argument out of `input`, skipping over
+/// anything before the opening quote (the syscall name and any preceding
+/// args, same as the old code's `s.find('"')`), and returns the unescaped
+/// content plus everything after the closing quote.
+fn quoted_string(input: &str) -> nom::IResult<&str, String> {
+    use nom::branch::alt;
+    use nom::bytes::complete::{is_not, take_until};
+    use nom::character::complete::char;
+    use nom::combinator::map;
+    use nom::multi::fold_many0;
+    use nom::sequence::delimited;
+
+    let (input, _) = take_until("\"")(input)?;
+    delimited(
+        char('"'),
+        fold_many0(
+            alt((map(is_not("\"\\"), |s: &str| s.to_string()), escaped_char)),
+            String::new,
+            |mut acc, piece| { acc.push_str(&piece); acc },
+        ),
+        char('"'),
+    )(input)
+}
+
 fn parse_openat(s: &str) -> Option<(String, FileOps)> {
     if is_failed_syscall(s) { return None; }
-    let q1 = s.find('"')? + 1;
-    let q2 = s[q1..].find('"')? + q1;
-    let path = s[q1..q2].to_string();
+    let (_, path) = quoted_string(s).ok()?;
     if path.is_empty() { return None; }
     let ops = FileOps {
         create: s.contains("O_CREAT"),
@@ -207,26 +262,19 @@ fn parse_openat(s: &str) -> Option<(String, FileOps)> {
     Some((path, ops))
 }
 
-#[cfg(target_os = "linux")]
 fn parse_unlink(s: &str) -> Option<String> {
     if is_failed_syscall(s) { return None; }
-    let q1 = s.find('"')? + 1;
-    let q2 = s[q1..].find('"')? + q1;
-    let path = s[q1..q2].to_string();
+    let (_, path) = quoted_string(s).ok()?;
     if path.is_empty() { None } else { Some(path) }
 }
 
-#[cfg(target_os = "linux")]
 fn parse_rename(s: &str) -> Option<(String, String)> {
     if is_failed_syscall(s) { return None; }
-    let q1 = s.find('"')? + 1; let q2 = s[q1..].find('"')? + q1;
-    let src = s[q1..q2].to_string();
-    let q3 = s[q2 + 1..].find('"')? + q2 + 2; let q4 = s[q3..].find('"')? + q3;
-    let dst = s[q3..q4].to_string();
+    let (rest, src) = quoted_string(s).ok()?;
+    let (_, dst) = quoted_string(rest).ok()?;
     if src.is_empty() || dst.is_empty() { None } else { Some((src, dst)) }
 }
 
-#[cfg(target_os = "linux")]
 fn parse_connect(s: &str) -> Option<String> {
     if is_failed_syscall(s) { return None; }
     if s.contains("AF_UNIX") || s.contains("AF_NETLINK") { return None; }
@@ -240,17 +288,117 @@ fn parse_connect(s: &str) -> Option<String> {
     Some(format!("{ip}:{}", &s[ps..pe]))
 }
 
-#[cfg(target_os = "linux")]
 fn parse_execve(s: &str) -> Option<String> {
     if is_failed_syscall(s) { return None; }
-    let q1 = s.find('"')? + 1; let q2 = s[q1..].find('"')? + q1;
-    let path = s[q1..q2].to_string();
+    let (_, path) = quoted_string(s).ok()?;
     if path.is_empty() { None } else { Some(path) }
 }
 
-#[cfg(target_os = "linux")]
 fn is_failed_syscall(s: &str) -> bool {
     s.rfind(" = ").map(|i| s[i + 3..].trim().starts_with('-')).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openat_extracts_path_and_flags() {
+        let line = r#"openat(AT_FDCWD, "/home/user/file.txt", O_RDONLY) = 3"#;
+        let (path, ops) = parse_openat(line).expect("should parse");
+        assert_eq!(path, "/home/user/file.txt");
+        assert!(!ops.write);
+        assert!(!ops.create);
+    }
+
+    #[test]
+    fn openat_extracts_write_and_create_flags() {
+        let line = r#"openat(AT_FDCWD, "/tmp/out.log", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 4"#;
+        let (path, ops) = parse_openat(line).expect("should parse");
+        assert_eq!(path, "/tmp/out.log");
+        assert!(ops.write);
+        assert!(ops.create);
+    }
+
+    #[test]
+    fn openat_returns_none_on_failed_syscall() {
+        let line = r#"openat(AT_FDCWD, "/root/secret", O_RDONLY) = -1 EACCES (Permission denied)"#;
+        assert!(parse_openat(line).is_none());
+    }
+
+    /// The actual bug: a path containing a literal `"` comes out of strace
+    /// as `\"` inside the quotes. The old `s.find('"')`-based parser had no
+    /// concept of this and truncated the path at the escaped quote instead
+    /// of the real closing one.
+    #[test]
+    fn openat_handles_escaped_quote_in_path_without_truncating() {
+        let line = r#"openat(AT_FDCWD, "/tmp/foo\"bar/file.txt", O_RDONLY) = 3"#;
+        let (path, _) = parse_openat(line).expect("should parse");
+        assert_eq!(path, "/tmp/foo\"bar/file.txt");
+    }
+
+    #[test]
+    fn openat_handles_escaped_backslash_in_path() {
+        let line = r#"openat(AT_FDCWD, "/tmp/foo\\bar", O_RDONLY) = 3"#;
+        let (path, _) = parse_openat(line).expect("should parse");
+        assert_eq!(path, "/tmp/foo\\bar");
+    }
+
+    #[test]
+    fn unlink_extracts_path() {
+        let line = r#"unlinkat(AT_FDCWD, "/tmp/stale.lock", 0) = 0"#;
+        assert_eq!(parse_unlink(line).as_deref(), Some("/tmp/stale.lock"));
+    }
+
+    #[test]
+    fn rename_extracts_both_paths_even_with_an_escaped_quote_in_the_first() {
+        let line = r#"renameat(AT_FDCWD, "/tmp/a\"b", AT_FDCWD, "/tmp/c") = 0"#;
+        let (src, dst) = parse_rename(line).expect("should parse");
+        assert_eq!(src, "/tmp/a\"b");
+        assert_eq!(dst, "/tmp/c");
+    }
+
+    #[test]
+    fn execve_extracts_the_executable_path() {
+        let line = r#"execve("/usr/bin/curl", ["curl", "-s", "http://example.com"], 0x7ffd) = 0"#;
+        assert_eq!(parse_execve(line).as_deref(), Some("/usr/bin/curl"));
+    }
+
+    #[test]
+    fn connect_extracts_ip_and_port() {
+        let line = r#"connect(3, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("93.184.216.34")}, 16) = 0"#;
+        assert_eq!(parse_connect(line).as_deref(), Some("93.184.216.34:443"));
+    }
+
+    #[test]
+    fn connect_ignores_af_unix() {
+        let line = r#"connect(3, {sa_family=AF_UNIX, sun_path="/run/foo.sock"}, 110) = 0"#;
+        assert!(parse_connect(line).is_none());
+    }
+
+    #[test]
+    fn is_noise_matches_configured_prefixes() {
+        assert!(is_noise("/proc/self/status"));
+        assert!(is_noise("/etc/ld.so.cache"));
+        assert!(!is_noise("/home/user/project/main.rs"));
+    }
+
+    #[test]
+    fn strip_pid_prefix_handles_multiprocess_format() {
+        assert_eq!(strip_pid_prefix("[pid 12345] openat(AT_FDCWD"), "openat(AT_FDCWD");
+        assert_eq!(strip_pid_prefix("openat(AT_FDCWD"), "openat(AT_FDCWD");
+    }
+
+    #[test]
+    fn parse_strace_output_end_to_end_with_an_escaped_quote() {
+        let log = "openat(AT_FDCWD, \"/tmp/weird\\\"name.txt\", O_RDONLY) = 3\n\
+                    openat(AT_FDCWD, \"/tmp/out.log\", O_WRONLY|O_CREAT, 0644) = 4\n";
+        let (reads, effects, _connects, _execs) = parse_strace_output(log);
+        assert_eq!(reads, vec!["/tmp/weird\"name.txt".to_string()]);
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].path, "/tmp/out.log");
+        assert!(effects[0].ops.create);
+    }
 }
 
 // ── Bounded issue pool ────────────────────────────────────────────────────────

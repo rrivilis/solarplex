@@ -1,4 +1,4 @@
-//! `GET /api/mailbox`, `POST /api/mailbox/:id/seen` — the receiver-specific
+//! `GET /api/mailbox`, `POST /api/mailbox/{id}/seen` — the receiver-specific
 //! read side of the `mailbox_routes` edge table. See `db::mailbox` for the
 //! write side (populated at invite-create time and backfilled on first
 //! login, both non-fatal best-effort); this route is purely resolve-and-
@@ -19,13 +19,15 @@ use db::{actors, invites, sessions};
 use protocol::types::EntityHandle;
 
 use crate::state::AppState;
+use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_mine))
-        .route("/:id/seen", post(mark_seen))
+        .route("/{id}/seen", post(mark_seen))
 }
 
+#[autometrics]
 async fn list_mine(headers: HeaderMap, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
         Ok(id)   => id,
@@ -101,6 +103,7 @@ async fn list_mine(headers: HeaderMap, State(state): State<Arc<AppState>>) -> im
     Json(out).into_response()
 }
 
+#[autometrics]
 async fn mark_seen(
     headers:      HeaderMap,
     Path(id):     Path<String>,

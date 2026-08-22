@@ -33,17 +33,51 @@ tracing-subscriber = { workspace = true }
 ulid = { workspace = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }
-axum = { version = "0.7", features = ["ws", "macros"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+# 0.8, not 0.7: pulls tokio-tungstenite 0.26 transitively, which changes
+# axum::extract::ws::Message::Text from String to Utf8Bytes (Binary from
+# Vec<u8> to Bytes) -- both cheap-clone via refcounting. ws.rs's broadcast
+# fan-out (SessionHub::broadcast / store_and_broadcast) was paying a real
+# String memcpy per connected client on every event; this is what fixes
+# that at the type level rather than requiring a manual workaround. Also
+# changes route path-param syntax (`/:id` -> `/{id}`, `/*rest` -> `/{*rest}`)
+# -- every `.route()` call site in routes/*.rs was migrated for this bump.
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "chrono", "json"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout"] }
-tokio-tungstenite = "0.21"
 futures-util = "0.3"
 openidconnect = { version = "3", features = ["reqwest"] }
 sha2 = "0.10"
 tlsh2 = { version = "1", features = ["diff"] }
+
+# Observability, Layer 1+2 (metrics facade + Prometheus exporter, autometrics
+# on top of the same recorder -- see the module docs on `metrics_route.rs` for
+# why these three versions have to stay aligned: autometrics' `metrics-0_24`
+# feature must match the `metrics` crate's own major version exactly, or
+# instrumented functions silently stop showing up in the exported output.
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+autometrics = { version = "3", features = ["metrics-0_24", "prometheus-exporter"] }
+
+# Error tracking (GlitchTip, a self-hosted Sentry-protocol-compatible
+# service -- see deploy/glitchtip/). Speaks the same wire protocol as
+# Sentry, so this is the official Sentry SDK pointed at a different DSN
+# host, not a GlitchTip-specific crate. Disabled unless GLITCHTIP_DSN is
+# set (main.rs) -- no traces_sample_rate is configured, this is wired for
+# error/panic capture only, not full performance/APM tracing.
+#
+# default-features = false + explicit feature list: sentry's default
+# transport is reqwest+native-tls, which on Linux means system OpenSSL
+# (openssl-sys, needs libssl-dev/openssl.pc present at build time) -- not
+# needed on Windows (native-tls uses schannel there) which is why this
+# didn't surface until a Linux/WSL build. Every other TLS-using dependency
+# in this workspace is already rustls-only (axum-server's tls-rustls
+# feature, openidconnect's reqwest integration) specifically so a build
+# never needs a system OpenSSL install -- this keeps sentry consistent
+# with that instead of being the one exception.
+sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

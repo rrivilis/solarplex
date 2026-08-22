@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
+use axum::extract::ws::Utf8Bytes;
 use dashmap::DashMap;
 use openidconnect::core::CoreClient;
 use sqlx::PgPool;
@@ -63,18 +65,72 @@ pub struct StandingPolicy {
 
 const CMS_DEPTH: usize = 4;
 const CMS_WIDTH: usize = 65536; // 2^16 — ~1 MB per row, 4 MB total
+const CMS_CELLS: usize = CMS_DEPTH * CMS_WIDTH;
 
 /// Number of artifacts that must be ingested before CMS scores are meaningful.
 pub const CMS_BASELINE_SAMPLES: u64 = 500;
 
+struct CmsCell {
+    value: AtomicU32,
+    /// Seqlock counter: odd while a write is in progress, even when stable.
+    seq: AtomicU32,
+}
+
+impl CmsCell {
+    fn new() -> Self {
+        Self { value: AtomicU32::new(0), seq: AtomicU32::new(0) }
+    }
+
+    /// Spins until it catches a stable (even, unchanged) `seq` around the
+    /// value read. This never blocks or consults any history.
+    #[inline]
+    fn read(&self) -> u32 {
+        loop {
+            let s1 = self.seq.load(Ordering::Acquire);
+            if s1 & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let value = self.value.load(Ordering::Relaxed);
+            let s2 = self.seq.load(Ordering::Acquire);
+            if s1 == s2 {
+                return value;
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Only ever called while holding `CmsState::writer`. This cell's own
+    /// `seq` parity is what stops readers from tearing the write, not
+    /// mutual exclusion between writers (there is only ever one).
+    #[inline]
+    fn increment(&self) {
+        let s = self.seq.load(Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(1), Ordering::Release); // now odd: write in progress
+        let old = self.value.load(Ordering::Relaxed);
+        self.value.store(old.saturating_add(1), Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(2), Ordering::Release); // back to even: stable
+    }
+}
+
 pub struct CmsState {
-    table:        Vec<Vec<u32>>,
-    pub samples:  u64,
+    table: Box<[CmsCell]>,
+    samples: AtomicU64,
+    writer: Mutex<()>,
 }
 
 impl CmsState {
     pub fn new() -> Self {
-        Self { table: vec![vec![0u32; CMS_WIDTH]; CMS_DEPTH], samples: 0 }
+        let table = (0..CMS_CELLS)
+            .map(|_| CmsCell::new())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { table, samples: AtomicU64::new(0), writer: Mutex::new(()) }
+    }
+
+    #[inline]
+    fn index(row: usize, col: usize) -> usize {
+        row * CMS_WIDTH + col
     }
 
     fn slot(trigram: &[u8], row: usize) -> usize {
@@ -88,24 +144,37 @@ impl CmsState {
         (h as usize) % CMS_WIDTH
     }
 
+    /// Number of committed artifacts currently represented by the CMS.
+    pub fn samples(&self) -> u64 {
+        self.samples.load(Ordering::Acquire)
+    }
+
     /// Feed artifact content into the sketch (call at artifact creation time).
-    pub fn insert(&mut self, content: &str) {
+    pub fn insert(&self, content: &str) {
+        let _writer = self.writer.lock().unwrap();
+
         let b = content.as_bytes();
         for i in 0..b.len().saturating_sub(2) {
             let tri = &b[i..i + 3];
             for row in 0..CMS_DEPTH {
                 let col = Self::slot(tri, row);
-                self.table[row][col] = self.table[row][col].saturating_add(1);
+                self.table[Self::index(row, col)].increment();
             }
         }
-        self.samples += 1;
+
+        let samples = self.samples.fetch_add(1, Ordering::Release) + 1;
+        // Gauge, not a counter: `samples` is already the authoritative
+        // monotonic total (`CmsState::samples()` reads the same atomic), so
+        // this just exposes that existing value rather than keeping a
+        // second, redundant Prometheus-side counter in sync with it.
+        metrics::gauge!("cms_samples_total").set(samples as f64);
     }
 
     /// Mean minimum frequency of trigrams in `content`.
     /// Returns `None` when baseline is not yet established.
     /// Low value → anomalous (rare n-grams).
     pub fn score(&self, content: &str) -> Option<f64> {
-        if self.samples < CMS_BASELINE_SAMPLES {
+        if self.samples.load(Ordering::Acquire) < CMS_BASELINE_SAMPLES {
             return None;
         }
         let b = content.as_bytes();
@@ -116,7 +185,10 @@ impl CmsState {
         let total: u64 = (0..n).map(|i| {
             let tri = &b[i..i + 3];
             (0..CMS_DEPTH)
-                .map(|row| self.table[row][Self::slot(tri, row)] as u64)
+                .map(|row| {
+                    let col = Self::slot(tri, row);
+                    self.table[Self::index(row, col)].read() as u64
+                })
                 .min()
                 .unwrap_or(0)
         }).sum();
@@ -144,12 +216,26 @@ pub struct LiveSnapshot {
 
 /// Per-session runtime hub. Holds all live WS connection state.
 pub struct SessionHub {
-    #[allow(dead_code)]
     pub session_id: String,
+    /// Cheap-clone pool handle, used by `broadcast_gated` to look up current
+    /// member roles for a sensitive event's fan-out — see `event_visibility`.
+    /// Set once at construction, not per-call, so `store_and_broadcast`'s
+    /// call sites don't all need to start threading a `&PgPool` through.
+    db: PgPool,
     /// Fan-out to every connected actor.
-    pub broadcast_tx: broadcast::Sender<Arc<String>>,
+    ///
+    /// `Utf8Bytes` (not `Arc<String>`): axum 0.8 / tokio-tungstenite 0.26
+    /// made `Message::Text` a `Utf8Bytes` (a `Bytes`-backed, refcounted
+    /// wrapper) instead of `String`. `Utf8Bytes::clone()` is already an
+    /// O(1) refcount bump on its own, same as `Arc::clone()` was — so the
+    /// outer `Arc` this replaced was redundant once the payload type itself
+    /// became cheap to clone. Before this, every subscriber in a session's
+    /// fan-out paid a real `String` memcpy on every broadcast
+    /// (`(*msg).clone()` dereferencing the old `Arc<String>`); now it's a
+    /// pointer/refcount copy, same cost as the `Arc` it replaced.
+    pub broadcast_tx: broadcast::Sender<Utf8Bytes>,
     /// Directed messages to a specific actor (e.g. approval.resolved to sidecar).
-    pub actor_senders: DashMap<String, mpsc::UnboundedSender<Arc<String>>>,
+    pub actor_senders: DashMap<String, mpsc::UnboundedSender<Utf8Bytes>>,
     /// Atomically-updated snapshot of committed session state.
     ///
     /// `None` until the first WS attach triggers a DB rebuild.  After that,
@@ -175,10 +261,11 @@ pub struct SessionHub {
 }
 
 impl SessionHub {
-    pub fn new(session_id: String) -> Self {
+    pub fn new(session_id: String, db: PgPool) -> Self {
         let (broadcast_tx, _) = broadcast::channel(BROADCAST_CAP);
         Self {
             session_id,
+            db,
             broadcast_tx,
             actor_senders: DashMap::new(),
             snapshot: ArcSwap::new(Arc::new(None)),
@@ -188,15 +275,55 @@ impl SessionHub {
     }
 
     /// Broadcast a JSON message to all connected actors.
-    pub fn broadcast(&self, msg: Arc<String>) {
+    pub fn broadcast(&self, msg: Utf8Bytes) {
         // send fails only if there are no subscribers — that's fine.
         let _ = self.broadcast_tx.send(msg);
     }
 
     /// Send a directed message to one actor (e.g. approval resolution to sidecar).
-    pub fn send_to(&self, actor_id: &str, msg: Arc<String>) {
+    pub fn send_to(&self, actor_id: &str, msg: Utf8Bytes) {
         if let Some(tx) = self.actor_senders.get(actor_id) {
             let _ = tx.send(msg);
+        }
+    }
+
+    /// Role-gated broadcast for a sensitive event type (see `event_visibility`).
+    /// Computes `full`/`redacted` once, not per subscriber, then routes each
+    /// live connection by its *current* role — looked up fresh from the DB
+    /// on every call rather than cached, so a role change (promotion or,
+    /// more importantly, demotion) takes effect on the very next gated event
+    /// instead of only after a reconnect. Gated events are rare enough
+    /// (approvals, delegation, rate-limit denials — not the chat/presence/
+    /// tool-execution hot path) that a DB round trip per call is the right
+    /// tradeoff against staleness, and getting this wrong in the
+    /// stale-permissive direction (a just-demoted actor still receiving
+    /// privileged content) is a real hole, not a rounding error.
+    ///
+    /// On a DB error, every connection is treated as failing the role check
+    /// (falls back to `redacted`, or nothing) rather than defaulting to
+    /// `full` — fail-closed, consistent with the rest of this codebase.
+    pub async fn broadcast_gated(
+        &self,
+        min_role: protocol::types::MemberRole,
+        full: Utf8Bytes,
+        redacted: Option<Utf8Bytes>,
+    ) {
+        use protocol::types::MemberRole;
+
+        let memberships = db::sessions::list_memberships(&self.db, &self.session_id)
+            .await
+            .unwrap_or_default();
+        for entry in self.actor_senders.iter() {
+            let actor_id = entry.key();
+            let role = memberships.iter()
+                .find(|m| &m.actor_id == actor_id)
+                .and_then(|m| m.role.parse::<MemberRole>().ok())
+                .unwrap_or(MemberRole::Observer);
+            if role.satisfies(&min_role) {
+                let _ = entry.value().send(full.clone());
+            } else if let Some(ref r) = redacted {
+                let _ = entry.value().send(r.clone());
+            }
         }
     }
 
@@ -238,6 +365,14 @@ pub struct PkceEntry {
     /// Validated at `oidc_start` time to be a same-origin relative path —
     /// never trust this as an absolute URL (open-redirect risk).
     pub return_to: String,
+    /// True when this flow was started by the Tauri desktop shell
+    /// (`?client=desktop`) via the system browser rather than an in-app
+    /// webview. Changes the callback's final redirect target from
+    /// `OIDC_FRONTEND_REDIRECT` to `DESKTOP_REDIRECT_URI` — a fixed,
+    /// server-side-configured custom-scheme URL, never anything
+    /// caller-supplied, for the same open-redirect reasons `return_to` is
+    /// restricted to a validated relative path instead of a raw URL.
+    pub desktop: bool,
 }
 
 /// OIDC runtime state shared across request handlers.
@@ -281,7 +416,7 @@ pub struct AppState {
     pub reflector: Arc<Reflector>,
     /// Global Count-Min Sketch for artifact n-gram anomaly scoring.
     /// Fed at artifact creation time; queried on reads after baseline is full.
-    pub cms: Mutex<CmsState>,
+    pub cms: CmsState,
     /// Tier-2 (user/tenant-scoped) rate limiter — see `crate::rate_limit`'s
     /// module doc for why these keys can't be scoped to any one session.
     pub rate_limits: crate::rate_limit::GlobalLimiter,
@@ -290,10 +425,29 @@ pub struct AppState {
     /// prevents the durable write rather than just auditing it after the
     /// fact. See `crate::rate_limit`'s module doc and `session::rate_limit`'s.
     pub session_rate_limits: crate::rate_limit::SessionRateLimiter,
+    /// Renders the current Prometheus exposition-format snapshot for
+    /// `GET /metrics` (see `metrics_route.rs`). The recorder side of this
+    /// handle is installed globally once at startup (`main.rs`), before
+    /// anything that might call `metrics::counter!`/`gauge!`/`histogram!`
+    /// or run an `#[autometrics]`-instrumented function -- there's no
+    /// sensible default the way `numa_nodes` has one, so this is a required
+    /// constructor argument, not a builder method.
+    pub prometheus_handle: metrics_exporter_prometheus::PrometheusHandle,
 }
 
 impl AppState {
-    pub fn new(db: PgPool, oidc: Option<OidcState>) -> Self {
+    /// `replica_id` should be stable across restarts once anything durable
+    /// depends on it (the `session_placements` directory) — see `main.rs`'s
+    /// `REPLICA_ID` env var and `Reflector::with_replica_id`'s doc. Required
+    /// here (not a builder default) for the same reason `prometheus_handle`
+    /// is: `Reflector` needs it at construction time, not after.
+    pub fn new(
+        db: PgPool,
+        oidc: Option<OidcState>,
+        prometheus_handle: metrics_exporter_prometheus::PrometheusHandle,
+        replica_id: String,
+    ) -> Self {
+        let reflector = Reflector::with_replica_id(replica_id, db.clone());
         Self {
             db,
             invoke_rate_limits:  DashMap::new(),
@@ -302,10 +456,11 @@ impl AppState {
             sessions:            Arc::new(DashMap::new()),
             oidc,
             numa_nodes:          1,
-            reflector:           Arc::new(Reflector::new()),
-            cms:                 Mutex::new(CmsState::new()),
+            reflector:           Arc::new(reflector),
+            cms:                 CmsState::new(),
             rate_limits:         crate::rate_limit::GlobalLimiter::new(),
             session_rate_limits: crate::rate_limit::SessionRateLimiter::new(),
+            prometheus_handle,
         }
     }
 
@@ -318,7 +473,7 @@ impl AppState {
     pub fn get_or_create_hub(&self, session_id: &str) -> Arc<SessionHub> {
         self.hubs
             .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(SessionHub::new(session_id.to_string())))
+            .or_insert_with(|| Arc::new(SessionHub::new(session_id.to_string(), self.db.clone())))
             .clone()
     }
 

@@ -22,3 +22,23 @@ clap     = { version = "4", features = ["derive", "env"] }
 reqwest  = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 regex    = "1"
 base64   = "0.22"
+# Atomic config/credential writes (config.rs::write_atomic) -- write-then-
+# rename so a crash or a concurrent `sp` invocation never observes a
+# truncated partial file.
+tempfile = "3"
+
+# spsh: TUI dashboard (Part 1 of the spsh/replication plan). `default =
+# ["derive", "crossterm"]` pulls in ratatui 0.30 transitively, re-exported as
+# `tuirealm::ratatui` — no separate `ratatui` dependency needed.
+tuirealm = "4"
+# Sibling crate to tuirealm in the same tui-realm repo -- reused for its
+# `Input` component (chat compose line, command-line overlay) rather than
+# hand-rolling a text-buffer-with-cursor widget twice.
+tui-realm-stdlib = "4"
+# spsh's live WS connection (Part 1 Step 3). Version matches crates/server's
+# own tokio-tungstenite dependency for consistency. No TLS feature enabled
+# yet -- wss:// (production) support is a follow-up once ws:// is verified
+# working; this crate has never made an outbound TLS connection before.
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+url = "2"

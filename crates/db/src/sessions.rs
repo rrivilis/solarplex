@@ -436,8 +436,6 @@ pub async fn transfer_ownership(pool: &PgPool, session_id: &str, from: &str, to:
 
 /// Atomically transfer session ownership within an existing transaction.
 ///
-/// Two actions per the unified graph rewrite algebra (THREAT_MODEL.md §4.3):
-///
 /// 1. **Display label update** — `session_memberships.role` is demoted/promoted
 ///    for `from`/`to` respectively.  This field is now a display label only;
 ///    the cap DAG is the authoritative authorization source.

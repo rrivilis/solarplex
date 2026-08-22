@@ -12,14 +12,63 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use server::{auth, gc, notifier, rate_limit, routes, state::AppState, ws};
+use server::{auth, gc, health, metrics_route, notifier, rate_limit, reflector, routes, session_task, state::AppState, ws};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Error tracking (GlitchTip, see deploy/glitchtip/) is opt-in: unset or
+    // empty GLITCHTIP_DSN means this stays a plain `None` and nothing below
+    // touches the network. Explicit opt-in rather than relying on the SDK's
+    // own empty-DSN handling, same posture as TLS_CERT_PATH/TLS_KEY_PATH
+    // and SOLARPLEX_REQUIRE_IMA elsewhere in this codebase. `_sentry_guard`
+    // must stay bound for the rest of `main` (not `_`) — dropping it early
+    // would flush and tear down the client before it has anything to do.
+    // Plain defaults (no ClientOptions override — release tagging etc. is a
+    // nice-to-have, not needed for "capture errors," and ClientOptions is
+    // #[non_exhaustive] so it can't be built with struct-literal syntax
+    // from outside the sentry crate anyway). Error/panic capture only, not
+    // full performance tracing — the default traces_sample_rate is 0.0.
+    let glitchtip_dsn = std::env::var("GLITCHTIP_DSN").ok().filter(|s| !s.is_empty());
+    let _sentry_guard = glitchtip_dsn.as_deref().map(sentry::init);
+
+    // Pretty-print when stdout is an interactive terminal (local dev,
+    // someone tailing this directly), JSON otherwise (piped to journald
+    // under systemd, or to a file) — structured fields are what make
+    // solarplex-alert-watch.sh's ERROR detection a real JSON parse instead
+    // of a brittle text grep (see that script's own comment for why it
+    // can't just use `journalctl -p err`), but a wall of raw JSON in a
+    // terminal a human is actually staring at is a real readability
+    // regression that auto-detection avoids paying in the one case (local
+    // dev) that never needed JSON in the first place. `is_terminal()`
+    // check happens once at startup, not per-line — this process's stdout
+    // doesn't change kind while it's running.
+    let fmt_layer: Box<dyn tracing_subscriber::Layer<_> + Send + Sync> =
+        if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            Box::new(tracing_subscriber::fmt::layer())
+        } else {
+            Box::new(tracing_subscriber::fmt::layer().json())
+        };
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "solarplex=debug,tower_http=debug".into()))
-        .with(tracing_subscriber::fmt::layer())
+            // `server` (the library crate -- lib.rs's own doc comment: "All
+            // modules live in lib.rs; this binary is a thin entry point")
+            // was missing here, meaning every tracing call in notifier.rs,
+            // reflector.rs, session_task.rs, ws.rs, routes/*.rs -- virtually
+            // the entire application -- was silently dropped below ERROR.
+            // `solarplex` only ever covered this file's own handful of
+            // direct calls. Found while checking whether the new placement-
+            // heartbeat/forward-listener log lines were showing up: they
+            // weren't, and neither was notifier.rs's own pre-existing
+            // startup line, which is what gave this away as a filter bug
+            // rather than something specific to the new code.
+            .unwrap_or_else(|_| "solarplex=debug,server=debug,tower_http=debug".into()))
+        .with(fmt_layer)
+        // ERROR-level events become GlitchTip issues, WARN-and-below become
+        // breadcrumbs attached to the next captured event — sentry's own
+        // default event_filter, not customized here. `Option<Layer>` is a
+        // real `Layer` impl, so this cleanly no-ops when GLITCHTIP_DSN is unset.
+        .with(glitchtip_dsn.is_some().then(sentry::integrations::tracing::layer))
         .init();
 
     // No fallback. A missing DATABASE_URL used to fall back silently to
@@ -55,13 +104,82 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    let state = Arc::new(AppState::new(pool.clone(), oidc).with_numa_nodes(numa_nodes));
+    // Installed before anything that could call `metrics::counter!`/`gauge!`/
+    // `histogram!` or run an `#[autometrics]`-instrumented function -- both
+    // just no-op against a missing global recorder rather than panicking,
+    // but a "no-op" observability layer is a silent failure worth avoiding
+    // by construction, not by remembering to order this call correctly.
+    let prometheus_handle = metrics_route::install_or_reuse_recorder();
+
+    // Stable replica identity for the durable session-placement directory
+    // (see db::session_placements and reflector.rs's ReplicationManager).
+    // Unset is fine for the overwhelmingly common single-replica case --
+    // there's no collision risk with only one process -- but the generated
+    // id is fresh every restart, which defeats heartbeat renewal's whole
+    // point the moment a second replica actually exists. Same posture as
+    // CORS_ALLOWED_ORIGINS below: warn and default rather than refuse to
+    // start, since unlike DATABASE_URL there's no wrong-database-shaped
+    // footgun here, just reduced correctness under a topology this
+    // deployment isn't using yet.
+    let replica_id = std::env::var("REPLICA_ID").unwrap_or_else(|_| {
+        tracing::warn!(
+            "REPLICA_ID not set — generating a random one for this process's lifetime. \
+             Fine for a single-replica deployment; set REPLICA_ID explicitly before running \
+             more than one replica against the same database."
+        );
+        ulid::Ulid::new().to_string()
+    });
+
+    let state = Arc::new(AppState::new(pool.clone(), oidc, prometheus_handle, replica_id).with_numa_nodes(numa_nodes));
 
     // Spawn background GC tasks (cap row compaction + snapshot ring-buffer).
     gc::spawn_gc_tasks(pool);
 
+    // Periodic Prometheus recorder upkeep -- evicts idle histogram/summary
+    // buckets so long-running-with-many-distinct-label-combos processes
+    // don't grow this unboundedly. Same "small periodic background task"
+    // shape as the GC tasks above, just for metrics memory instead of DB rows.
+    //
+    // Also samples live gauges here rather than instrumenting every insert/
+    // remove call site across `ws.rs`/`session_task.rs`/`reflector.rs`: these
+    // three are current-size-of-a-map snapshots, not events, so a periodic
+    // read is both simpler and just as accurate as updating on every mutation.
+    {
+        let handle = state.prometheus_handle.clone();
+        let sample_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                handle.run_upkeep();
+                metrics::gauge!("active_session_hubs").set(sample_state.hubs.len() as f64);
+                metrics::gauge!("active_session_tasks").set(sample_state.sessions.len() as f64);
+                metrics::gauge!("reflector_log_len").set(sample_state.reflector.len() as f64);
+            }
+        });
+    }
+
     // Spawn LISTEN/NOTIFY subscriber — wakes hub clients on Tier-1 commits.
     notifier::spawn_event_notifier(Arc::clone(&state));
+
+    // Renews this replica's session-placement claims and refreshes real
+    // cluster-membership awareness — see reflector.rs's module doc and
+    // spawn_placement_heartbeat's own doc for what this does and doesn't
+    // do yet.
+    reflector::spawn_placement_heartbeat(
+        state.db.clone(),
+        Arc::clone(&state.reflector),
+        Arc::clone(&state.sessions),
+    );
+
+    // Consumes bundles other replicas durably forward to this one — see
+    // reflector.rs's module doc and session_task.rs's
+    // spawn_reflector_forward_listener doc for the full mechanism.
+    session_task::spawn_reflector_forward_listener(
+        state.db.clone(),
+        Arc::clone(&state.reflector),
+        Arc::clone(&state.sessions),
+    );
 
     // Spawn the approval timeout sweeper
     let sweeper_state = state.clone();
@@ -92,14 +210,19 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api", routes::router())
+        // Unauthenticated, unrated, outside /api on purpose — see health.rs.
+        .route("/health", get(health::health))
+        // Same posture as /health — see metrics_route.rs on restricting real
+        // access to this at the network layer in production.
+        .route("/metrics", get(metrics_route::metrics))
         // OIDC auth routes at top-level /auth (not under /api — different auth semantics)
         .route("/auth/oidc/start",    get(auth::oidc_start))
         .route("/auth/oidc/callback", get(auth::oidc_callback))
         .route("/auth/oidc/logout",   post(auth::oidc_logout))
         .route("/auth/me",            get(auth::me).patch(auth::update_me))
         .route("/auth/sessions",      get(auth::list_sessions))
-        .route("/auth/sessions/:id",  delete(auth::revoke_session))
-        .route("/sessions/:session_id/stream", get(ws::handler))
+        .route("/auth/sessions/{id}",  delete(auth::revoke_session))
+        .route("/sessions/{session_id}/stream", get(ws::handler))
         .layer(cors_layer())
         // 10 MiB request body cap — generous for artifact content and DSL
         // s-expressions, small enough that no handler can be used to hold
@@ -107,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
         // unbounded (tower-http's `limit` feature wasn't even enabled).
         .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024))
         // 30s per-request wall clock. The one long-lived exception is the
-        // approval long-poll (`GET /api/approvals/:id/resolution`), which
+        // approval long-poll (`GET /api/approvals/{id}/resolution`), which
         // manages its own internal deadline (capped at 60s) and returns a
         // normal response well before this would fire regardless.
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
@@ -162,7 +285,7 @@ type App = IntoMakeServiceWithConnectInfo<Router, SocketAddr>;
 
 /// Binds and serves `app`, with TLS if `TLS_CERT_PATH`/`TLS_KEY_PATH` are
 /// both set, plain HTTP otherwise (the expected shape when a reverse proxy
-/// in front of this process terminates TLS — see deploy/nginx/ for a
+/// in front of this process terminates TLS — see deploy/caddy/ for a
 /// reference config). Either way, drains in-flight connections on
 /// SIGTERM/SIGINT instead of dropping them: a deploy or restart used to
 /// hard-kill whatever HTTP requests and WS connections happened to be live.
@@ -194,7 +317,7 @@ async fn serve(addr: SocketAddr, app: App) -> anyhow::Result<()> {
                 .await?;
         }
         (None, None) => {
-            tracing::info!(%addr, "listening (no TLS — set TLS_CERT_PATH + TLS_KEY_PATH, or terminate TLS at a reverse proxy; see deploy/nginx/)");
+            tracing::info!(%addr, "listening (no TLS — set TLS_CERT_PATH + TLS_KEY_PATH, or terminate TLS at a reverse proxy; see deploy/caddy/)");
             let listener = tokio::net::TcpListener::bind(addr).await?;
             axum::serve(listener, app)
                 .with_graceful_shutdown(shutdown_signal())

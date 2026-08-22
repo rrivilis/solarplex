@@ -20,6 +20,8 @@
 // blast-radius control.
 
 import { toast } from "sonner";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { API_BASE } from "./env";
 
@@ -67,11 +69,35 @@ function clearSpToken(): void {
  * Redirect to the OIDC login flow.
  * `returnTo` must be a same-origin relative path (e.g. "/invite/01J...") —
  * validated again server-side (`auth::is_safe_return_to`) before use.
+ *
+ * Inside the Tauri desktop shell this opens the flow in the system browser
+ * instead of navigating the app's own webview — RFC 8252's recommendation
+ * for native-app OAuth (the user's existing browser session/autofill/
+ * passkeys apply, and the app never sees credential entry), not just a
+ * workaround for embedded-webview blocks some providers apply on mobile.
+ * The server's callback (`?client=desktop` → `PkceEntry::desktop`) redirects
+ * back via a `solarplex-desktop://` deep link instead of this origin;
+ * `frontend/src-tauri/src/lib.rs`'s `on_open_url` catches that and forwards
+ * the token into this same webview by navigating to `/#sp_token=...`, which
+ * `captureSpTokenFromHash` below already knows how to pick up — no separate
+ * desktop capture path needed here.
  */
 export function signIn(returnTo?: string): void {
   if (typeof window === "undefined") return;
   const url = new URL(`${apiOrigin()}/auth/oidc/start`);
   if (returnTo) url.searchParams.set("return_to", returnTo);
+
+  if (isTauri()) {
+    url.searchParams.set("client", "desktop");
+    openUrl(url.toString()).catch(() => {
+      // System browser failed to launch (no default browser configured,
+      // etc.) — falling back to in-webview navigation still gets the user
+      // signed in, just without the system-browser benefits above.
+      window.location.href = url.toString();
+    });
+    return;
+  }
+
   window.location.href = url.toString();
 }
 

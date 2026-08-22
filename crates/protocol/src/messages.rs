@@ -299,6 +299,31 @@ pub enum WsPayload {
         seq: i64,
     },
 
+    /// Client -> server command: "I now have `tab` open in this session."
+    /// `tab: None` means the sender switched away from any tracked tab (or
+    /// is about to navigate away) -- receivers should stop showing them
+    /// against whichever tab they last reported. Same split-naming
+    /// convention as `MessagePost`/`MessagePosted`.
+    #[serde(rename = "presence.focus.set")]
+    PresenceFocusSet {
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+    },
+
+    /// Server -> every other connected client: `actor` now has `tab` open.
+    /// Same posture as `PresenceChanged`: ephemeral, no `seq`, never goes
+    /// through `stamp_append_snapshot`/the `events` table -- "who's looking
+    /// at what right now" is live-only UI state, not an auditable fact.
+    #[serde(rename = "presence.focus")]
+    PresenceFocus {
+        session_id: String,
+        actor: String,
+        timestamp: DateTime<Utc>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+    },
+
     #[serde(rename = "ownership.transferred")]
     OwnershipTransferred {
         session_id: String,
@@ -517,6 +542,8 @@ impl WsPayload {
             Self::ActorJoined { .. } => "actor.joined",
             Self::PresenceChanged { .. } => "presence.changed",
             Self::ActorDetached { .. } => "actor.detached",
+            Self::PresenceFocusSet { .. } => "presence.focus.set",
+            Self::PresenceFocus { .. } => "presence.focus",
             Self::OwnershipTransferred { .. } => "ownership.transferred",
             Self::ArtifactCreated { .. } => "artifact.created",
             Self::ArtifactUpdated { .. } => "artifact.updated",

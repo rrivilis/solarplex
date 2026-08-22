@@ -27,3 +27,9 @@ aho-corasick = "1"
 yara-x = "0.12"
 tlsh2 = { version = "1", features = ["diff"] }
 libc = "0.2"
+
+# Observability, Layer 1+2 -- same three deps, same version-pinning reasoning
+# as crates/server/Cargo.toml (see metrics_route.rs there for the long form).
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+autometrics = { version = "3", features = ["metrics-0_24", "prometheus-exporter"] }

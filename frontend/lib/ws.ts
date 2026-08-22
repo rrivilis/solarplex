@@ -45,7 +45,17 @@ export interface SessionState {
   /** True when the server rejected the WS connection with close code 4403
    *  (actor is not a member of this session). Stops reconnect attempts. */
   notMember:       boolean;
+  /** True when the server rejected the WS connection with close code 4406
+   *  (the anonymous-join actor_id is already registered to a real OIDC
+   *  identity). Stops reconnect attempts -- retrying with the same actor_id
+   *  can never succeed; the caller needs to pick a different name. */
+  actorIdReserved: boolean;
   phase:           ConnectionPhase;
+  /** Live-only "who's looking at what" (Part 4A) — actor_id -> the pane-tab
+   *  they last reported, or undefined if they've navigated away from any
+   *  tracked tab. Never persisted, never in `events` — same posture as the
+   *  attached/role flags `presence.changed` maintains. */
+  focusByActor:    Record<string, string | undefined>;
 }
 
 function appendEvent(events: WsEnvelope[], msg: WsEnvelope): WsEnvelope[] {
@@ -139,6 +149,8 @@ export function useSession(sessionId: string, actorId: string, token?: string | 
       messages:        [],
       connected:       false,
       notMember:       false,
+      actorIdReserved: false,
+      focusByActor:    {},
       // If we have stale content to show, treat the phase as "reconnecting"
       // (content visible, connecting in the background) rather than
       // "connecting" (which would otherwise be indistinguishable from a
@@ -176,7 +188,13 @@ export function useSession(sessionId: string, actorId: string, token?: string | 
      *  than a hard attempt cap, since we'd rather keep trying quietly than
      *  strand the user with no path back in. */
     function isTerminalCloseCode(code: number): boolean {
-      return code === 4403 /* not_member */ || code === 4404 /* session_not_found */;
+      // 4429 (too_many_new_joins) is deliberately NOT terminal -- it's a
+      // rate limit on new anonymous identities for this session, not a
+      // rejection of this one; the existing backoff-and-retry loop below
+      // is the correct handling once the window rolls over.
+      return code === 4403 /* not_member */
+        || code === 4404 /* session_not_found */
+        || code === 4406 /* actor_id_reserved */;
     }
 
     function scheduleReconnect() {
@@ -284,10 +302,14 @@ export function useSession(sessionId: string, actorId: string, token?: string | 
       // Mark it explicitly so the UI can show a proper "access denied" message
       // instead of a generic "Reconnecting..." indicator.
       const notMember = event.code === 4403;
+      // Code 4406 = this actor_id already belongs to a real OIDC-registered
+      // human -- see ws.rs::handle_ws. Clear the cached join_token too:
+      // retrying would just re-offer the same taken name.
+      const actorIdReserved = event.code === 4406;
       // Code 4405 = the cached join_token no longer matches the server's hash
       // (e.g. it was rotated elsewhere). Clear it so the retry mints a fresh
       // one instead of retrying the same dead token forever.
-      if (event.code === 4405 && typeof window !== "undefined") {
+      if ((event.code === 4405 || event.code === 4406) && typeof window !== "undefined") {
         sessionStorage.removeItem(`sol-human-jointoken-${sessionId}`);
       }
 
@@ -296,6 +318,7 @@ export function useSession(sessionId: string, actorId: string, token?: string | 
         ...s,
         connected: false,
         notMember,
+        actorIdReserved,
         phase: terminal ? "rejected" : "reconnecting",
       }));
 
@@ -628,6 +651,21 @@ export function useSession(sessionId: string, actorId: string, token?: string | 
           break;
         }
 
+        // Live-only "which pane-tab is this actor looking at" (Part 4A) —
+        // same posture as presence.changed: never appendEvent'd, no seq,
+        // server-side this is broadcast_presence_focus, not commit_event.
+        case "presence.focus": {
+          const focusId = msg.actor;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const p = msg as any;
+          const tab: string | undefined = p.tab;
+          setState(s => (focusId ? {
+            ...s,
+            focusByActor: { ...s.focusByActor, [focusId]: tab },
+          } : s));
+          break;
+        }
+
         // ── Ownership transfer ────────────────────────────────────────────────
         case "ownership.transferred": {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -745,7 +783,14 @@ export function useSession(sessionId: string, actorId: string, token?: string | 
     send({ type: "context.entry.resolve", session_id: sessionId, actor_id: actorId, entry_id: entryId, note });
   }, [send, sessionId, actorId]);
 
-  return { state, approve, deny, claim, sendMessage, addContextEntry, resolveContextEntry };
+  /** Report which pane-tab this client currently has open (Part 4A). Fire-
+   *  and-forget, live-only — omit `tab` (or pass undefined) to report "not
+   *  looking at anything tracked" (e.g. on unmount/tab-away). */
+  const setFocus = useCallback((tab?: string) => {
+    send({ type: "presence.focus.set", session_id: sessionId, tab });
+  }, [send, sessionId]);
+
+  return { state, approve, deny, claim, sendMessage, addContextEntry, resolveContextEntry, setFocus };
 }
 
 export async function fetchSessions() {

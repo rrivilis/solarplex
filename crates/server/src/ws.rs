@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -144,6 +144,54 @@ async fn handle_ws(
             match sessions::get_membership(&state.db, &session_id, &actor_id).await {
                 Ok(m) => m,
                 Err(_) => {
+                    // Reject an actor_id that already belongs to a real
+                    // OIDC-registered human before minting anything under
+                    // it — actor_id is never secret (it appears in every
+                    // broadcast event this actor's ever been part of), so
+                    // "pick the same string a real person uses" is a real
+                    // impersonation path via this anonymous, unauthenticated
+                    // path otherwise. Checked before the rate limit below so
+                    // a targeted collision attempt doesn't also spend down
+                    // the session's legitimate-join budget.
+                    match db::human_sessions::exists_for_actor(&state.db, &actor_id).await {
+                        Ok(true) => {
+                            tracing::warn!(session_id, actor_id, "WS rejected: actor_id reserved by an OIDC identity");
+                            let (mut sink, _) = socket.split();
+                            let _ = sink.send(Message::Close(Some(CloseFrame {
+                                code: 4406,
+                                reason: "actor_id_reserved".into(),
+                            }))).await;
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::error!(session_id, actor_id, "exists_for_actor: {e}"); return;
+                        }
+                    }
+
+                    // Bound how many distinct new identities one session's
+                    // shared join_token can mint — not a per-actor limit
+                    // (there's no actor yet), a per-session one. Checked
+                    // directly against the limiter rather than through
+                    // `check_rate_limit`: that helper commits a durable
+                    // `EffectRateLimited` event attributed to `actor_id`,
+                    // which doesn't fit here — this actor was never a member
+                    // and, on denial, still won't be.
+                    let (admission, policy) = state.session_rate_limits.check(&session_id, RateLimitKey::AnonymousJoin);
+                    if !matches!(admission, Admission::Allowed) {
+                        tracing::warn!(
+                            session_id, actor_id,
+                            policy = policy.map(|p| p.describe()).unwrap_or_default(),
+                            "WS rejected: too many new anonymous identities for this session",
+                        );
+                        let (mut sink, _) = socket.split();
+                        let _ = sink.send(Message::Close(Some(CloseFrame {
+                            code: 4429,
+                            reason: "too_many_new_joins".into(),
+                        }))).await;
+                        return;
+                    }
+
                     is_new_membership = true;
                     if let Err(e) = db::actors::ensure_human(&state.db, &actor_id, &actor_id).await {
                         tracing::error!(session_id, actor_id, "upsert actor: {e}"); return;
@@ -181,7 +229,7 @@ async fn handle_ws(
     };
 
     let hub = state.get_or_create_hub(&session_id);
-    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Arc<String>>();
+    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Utf8Bytes>();
     hub.actor_senders.insert(actor_id.clone(), write_tx.clone());
     let mut broadcast_rx = hub.broadcast_tx.subscribe();
     let write_tx_bcast = write_tx.clone();
@@ -214,13 +262,17 @@ async fn handle_ws(
             }
         };
         if let Ok(json) = serde_json::to_string(&snap_msg) {
-            let _ = ws_sink.send(Message::Text(json)).await;
+            let _ = ws_sink.send(Message::Text(Utf8Bytes::from(json))).await;
         }
     }
 
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = write_rx.recv().await {
-            if ws_sink.send(Message::Text((*msg).clone())).await.is_err() { break; }
+            // `msg` is already owned (recv() yields by value, not by
+            // reference) and `Utf8Bytes` clones are O(1) refcount bumps —
+            // no `.clone()` needed here at all, unlike the old `Arc<String>`
+            // dereference-then-clone this replaced.
+            if ws_sink.send(Message::Text(msg)).await.is_err() { break; }
         }
     });
     let bcast_task = tokio::spawn(async move {
@@ -294,7 +346,7 @@ async fn handle_ws(
                         "code": 4401,
                     });
                     if let Ok(json) = serde_json::to_string(&close_msg) {
-                        let _ = write_tx.send(Arc::new(json));
+                        let _ = write_tx.send(Utf8Bytes::from(json));
                     }
                     break;
                 }
@@ -384,6 +436,8 @@ async fn dispatch(
             handle_context_add(state, hub, session_id, actor_id, kind.clone(), content.clone()).await,
         WsPayload::ContextEntryResolve { entry_id, note, .. } =>
             handle_context_resolve(state, hub, session_id, actor_id, entry_id.clone(), note.clone()).await,
+        WsPayload::PresenceFocusSet { tab, .. } =>
+            broadcast_presence_focus(hub, session_id, actor_id, tab.clone()),
         _ => {}
     }
 }
@@ -430,7 +484,7 @@ async fn handle_approval_request(
         Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
     };
     if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
-    store_and_broadcast(hub, seq, new_snap, &stamped);
+    store_and_broadcast(hub, seq, new_snap, &stamped).await;
 
     // ── Session task: feed ApprovalCreate (after durable commit) ─────────────
     // Consolidates onto the same bridge create_approval_for_session (the REST
@@ -469,7 +523,7 @@ async fn handle_approval_claim(
         Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
     };
     if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
-    store_and_broadcast(hub, seq, new_snap, &stamped);
+    store_and_broadcast(hub, seq, new_snap, &stamped).await;
 
     // ── Session task: feed ApprovalClaim (after durable commit, shadow-
     // persisted — see task_approval_claim's doc comment) ─────────────────────
@@ -581,7 +635,7 @@ async fn handle_vote(
 
     // Post-commit: update ArcSwap + broadcast + send_resolved (after durable commit)
     if let Some((seq, new_snap, ev)) = broadcast_event {
-        store_and_broadcast(hub, seq, new_snap, &ev);
+        store_and_broadcast(hub, seq, new_snap, &ev).await;
     }
 
     // ── Session task: feed VoteCast (after durable commit) ───────────────────
@@ -672,7 +726,7 @@ async fn handle_approval_cancel(
         Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
     };
     if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
-    store_and_broadcast(hub, seq, new_snap, &stamped);
+    store_and_broadcast(hub, seq, new_snap, &stamped).await;
 
     // ── Session task: feed ApprovalCancel (after durable commit, shadow-
     // persisted — see task_approval_cancel's doc comment) ────────────────────
@@ -818,7 +872,7 @@ async fn handle_ownership_transfer(
         Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
     };
     if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
-    store_and_broadcast(hub, seq, new_snap, &stamped);
+    store_and_broadcast(hub, seq, new_snap, &stamped).await;
 }
 
 // ── Tier-1 rate-limit gating (WS-originated commands) ──────────────────────
@@ -884,7 +938,7 @@ async fn commit_event(
     if let Err(e) = tx.commit().await {
         tracing::error!(session_id, "commit_event commit: {e}"); return;
     }
-    store_and_broadcast(hub, seq, new_snap, &stamped);
+    store_and_broadcast(hub, seq, new_snap, &stamped).await;
 }
 
 /// Create an approval request record + emit `ApprovalRequested` event atomically.
@@ -963,7 +1017,7 @@ pub(crate) async fn create_approval_for_session(
     }
 
     if let Some(hub) = hub_opt {
-        store_and_broadcast(&hub, seq, new_snap, &stamped);
+        store_and_broadcast(&hub, seq, new_snap, &stamped).await;
     }
 
     // ── Session task: arm per-approval expiry timer ───────────────────────────
@@ -1058,7 +1112,7 @@ pub(crate) async fn emit_to_session(
     let _ = db::events::notify_session(&state.db, session_id, seq).await;
 
     if let Some(hub) = hub_opt {
-        store_and_broadcast(&hub, seq, new_snap, &stamped);
+        store_and_broadcast(&hub, seq, new_snap, &stamped).await;
     }
 }
 
@@ -1070,7 +1124,12 @@ pub(crate) async fn emit_to_session(
 ///
 /// Returns `(seq, new_snapshot)` for the caller to store into ArcSwap after commit.
 /// The caller must still call `tx.commit()`.
-async fn stamp_append_snapshot(
+///
+/// `pub(crate)`: also called directly from `session_task.rs`'s cross-session
+/// side-effect hooks, which already hold `db`/`hub` and don't have `state`
+/// (see `emit_via_task`) — same durable pipeline `emit_to_session` uses, so
+/// these events get real EventRows and cross-replica delivery picks them up.
+pub(crate) async fn stamp_append_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     current: Option<&SessionSnapshot>,
     session_id: &str,
@@ -1128,7 +1187,7 @@ async fn stamp_append_snapshot(
 
 /// Read the current in-memory snapshot (if warm) before opening a transaction.
 /// Calling this before `db.begin()` avoids any borrow conflict with the tx.
-fn current_snap(hub: &Arc<SessionHub>) -> Option<SessionSnapshot> {
+pub(crate) fn current_snap(hub: &Arc<SessionHub>) -> Option<SessionSnapshot> {
     hub.snapshot.load_full().as_ref().as_ref().map(|l| l.state.clone())
 }
 
@@ -1148,7 +1207,7 @@ fn current_snap(hub: &Arc<SessionHub>) -> Option<SessionSnapshot> {
 /// removed from the event log. This closes the gap the same way
 /// `create_approval_for_session`/`emit_to_session` already did for their
 /// REST-reachable callers.
-async fn warm_snap(state: &Arc<AppState>, hub: &Arc<SessionHub>, session_id: &str) -> Option<SessionSnapshot> {
+pub(crate) async fn warm_snap(state: &Arc<AppState>, hub: &Arc<SessionHub>, session_id: &str) -> Option<SessionSnapshot> {
     if let Some(s) = current_snap(hub) {
         return Some(s);
     }
@@ -1164,11 +1223,25 @@ async fn warm_snap(state: &Arc<AppState>, hub: &Arc<SessionHub>, session_id: &st
     }
 }
 
-/// Update ArcSwap and broadcast — called ONLY after a successful tx.commit().
-fn store_and_broadcast(hub: &Arc<SessionHub>, seq: i64, new_snap: SessionSnapshot, event: &WsMessage) {
+/// Update ArcSwap and broadcast — called ONLY after a successful tx.commit()
+/// (or, from `notifier.rs`, after replaying an already-committed event onto
+/// a different replica's hub — same invariant, the durable write already
+/// happened, this just needs to be reflected locally).
+pub(crate) async fn store_and_broadcast(hub: &Arc<SessionHub>, seq: i64, new_snap: SessionSnapshot, event: &WsMessage) {
     hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: new_snap })));
-    if let Ok(json) = serde_json::to_string(event) {
-        hub.broadcast(Arc::new(json));
+    let Ok(json) = serde_json::to_string(event) else { return };
+    match crate::event_visibility::min_role(&event.payload) {
+        // Unrestricted — exactly today's behavior, zero added cost.
+        None => hub.broadcast(Utf8Bytes::from(json)),
+        // See `event_visibility` + `SessionHub::broadcast_gated` — a below-
+        // bar connection gets `redacted` if there's a safe residual, else
+        // nothing at all.
+        Some(min_role) => {
+            let redacted = crate::event_visibility::redact(event)
+                .and_then(|m| serde_json::to_string(&m).ok())
+                .map(Utf8Bytes::from);
+            hub.broadcast_gated(min_role, Utf8Bytes::from(json), redacted).await;
+        }
     }
 }
 
@@ -1194,7 +1267,24 @@ fn broadcast_presence(hub: &Arc<SessionHub>, session_id: &str, actor_id: &str, a
         timestamp: Utc::now(), attached, role,
     });
     if let Ok(json) = serde_json::to_string(&msg) {
-        hub.broadcast(Arc::new(json));
+        hub.broadcast(Utf8Bytes::from(json));
+    }
+}
+
+/// Live-only "which pane-tab is this actor looking at" signal (Part 4A).
+/// Same posture as `broadcast_presence`: no snapshot mutation (there's no
+/// per-actor-focus field in `SessionSnapshot`, and it doesn't need one --
+/// this is transient UI state, not replayable), no durable write, just a
+/// direct hub broadcast so every other connected client (including a
+/// linked-session viewer via `session_links`'s auto-granted access to the
+/// same hub) sees it live.
+fn broadcast_presence_focus(hub: &Arc<SessionHub>, session_id: &str, actor_id: &str, tab: Option<String>) {
+    let msg = WsMessage::new(Ulid::new().to_string(), WsPayload::PresenceFocus {
+        session_id: session_id.to_string(), actor: actor_id.to_string(),
+        timestamp: Utc::now(), tab,
+    });
+    if let Ok(json) = serde_json::to_string(&msg) {
+        hub.broadcast(Utf8Bytes::from(json));
     }
 }
 
@@ -1289,16 +1379,34 @@ async fn build_snapshot_from_tables(
 
     let hub = state.hubs.get(session_id);
     let members: Vec<_> = memberships.iter().map(|m| {
-        let attached = hub.as_ref().map_or(false, |h| h.actor_senders.contains_key(&m.actor_id));
+        let role = match m.role.as_str() {
+            "owner"        => MemberRole::Owner,
+            "collaborator" => MemberRole::Collaborator,
+            "agent"        => MemberRole::Agent,
+            _              => MemberRole::Observer,
+        };
+        // Agents never hold a WS connection to `/stream` (only human
+        // browsers do -- see `sweep_stale_agents`'s doc comment a bit
+        // further down this file), so `actor_senders` can never reflect
+        // their liveness. Checking it unconditionally for every role meant
+        // a cold-rebuilt snapshot (session_snapshots row missing/dirty)
+        // showed every agent as permanently unattached regardless of real
+        // status -- the live incremental path (`apply_event` on a real
+        // `ActorJoined`/heartbeat) was correct, only this from-scratch
+        // rebuild path had the wrong signal. Mirrors the same
+        // heartbeat-plus-staleness-threshold check `sweep_stale_agents`
+        // itself uses to decide when an agent is actually gone.
+        let attached = match role {
+            MemberRole::Agent => hub.as_ref().map_or(false, |h| {
+                h.agent_heartbeats.get(&m.actor_id)
+                    .map_or(false, |t| t.elapsed() < Duration::from_secs(AGENT_STALE_THRESHOLD_SECS))
+            }),
+            _ => hub.as_ref().map_or(false, |h| h.actor_senders.contains_key(&m.actor_id)),
+        };
         protocol::types::SessionMember {
             actor_id: m.actor_id.clone(),
             name: String::new(), // enriched in make_snapshot_msg
-            role: match m.role.as_str() {
-                "owner"        => MemberRole::Owner,
-                "collaborator" => MemberRole::Collaborator,
-                "agent"        => MemberRole::Agent,
-                _              => MemberRole::Observer,
-            },
+            role,
             attached, status: None,
         }
     }).collect();
@@ -1608,7 +1716,7 @@ async fn send_resolved(
         escalated_to: None,
     });
     if let Ok(json) = serde_json::to_string(&msg) {
-        hub.send_to(sidecar_actor_id, Arc::new(json));
+        hub.send_to(sidecar_actor_id, Utf8Bytes::from(json));
     }
 }
 
@@ -1782,7 +1890,7 @@ async fn fire_scheduled_transfer(state: &Arc<AppState>, artifact: db::artifacts:
 
     // Post-commit: update ArcSwap and broadcast to all connected clients.
     if let Some(hub) = hub_opt {
-        store_and_broadcast(&hub, seq, new_snap, &stamped);
+        store_and_broadcast(&hub, seq, new_snap, &stamped).await;
     }
 
     tracing::info!(

@@ -112,3 +112,31 @@ export async function getDigest(sessionId: string): Promise<SessionDigest> {
   if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
   return res.json();
 }
+
+// ── Context-summary-send (Part 4B) ───────────────────────────────────────────
+//
+// Push one of your own session's existing context entries into a linked
+// session's context log, with provenance. There's no server-side re-read —
+// the caller already has the entry's own fields from its own live
+// state.contextEntries, so they're sent as-is (see crates/server/src/
+// routes/sessions.rs::send_context_entry's doc comment for why).
+
+export async function sendContextEntry(
+  targetSessionId: string,
+  sourceSessionId: string,
+  entry: { id: string; kind: string; content: string; actor_id: string; timestamp: string },
+): Promise<void> {
+  const res = await authFetch(`${API_BASE}/sessions/${targetSessionId}/context/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_session_id: sourceSessionId,
+      source_entry_id: entry.id,
+      kind: entry.kind,
+      content: entry.content,
+      source_authored_by: entry.actor_id,
+      source_authored_at: entry.timestamp,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+}

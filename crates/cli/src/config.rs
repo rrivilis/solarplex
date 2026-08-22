@@ -1,7 +1,39 @@
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+/// Write `contents` to `path` atomically: write to a sibling temp file in
+/// the same directory (so the final rename is same-filesystem, hence
+/// atomic on both POSIX and Windows), fsync it, then rename it over the
+/// destination. A crash mid-write, or two `sp` invocations racing (e.g. a
+/// background `sp watch` and a foreground `sp login`), can therefore only
+/// ever leave the old complete file or the new complete file on disk --
+/// never a truncated partial one.
+///
+/// `mode`, when `Some` (Unix only), is applied via `OpenOptions` on the temp
+/// file *before* any content is written, not `set_permissions` after the
+/// fact -- so a secret-bearing file (credentials.json) is never briefly
+/// world-readable in the window between write and chmod.
+fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<()> {
+    let dir = path.parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file().set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+
+    tmp.write_all(contents)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| anyhow::anyhow!("persisting {}: {}", path.display(), e.error))?;
+    Ok(())
+}
 
 /// Runtime context — assembled from env vars, config file, and CLI flags.
 #[derive(Debug, Clone)]
@@ -148,7 +180,7 @@ pub fn save_cursor(session_id: &str, cursor: SavedCursor) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    Ok(std::fs::write(&path, serde_json::to_string(&cursor)?)?)
+    write_atomic(&path, serde_json::to_string(&cursor)?.as_bytes(), None)
 }
 
 /// Fish-sourceable env file written alongside the JSON config.
@@ -230,24 +262,18 @@ pub fn load_token() -> Option<String> {
 }
 
 /// Persist the sp_token issued by `sp login`. `0600` on Unix so other local
-/// users can't read a live bearer credential off disk; Windows gets the
-/// default ACL for the user's own APPDATA (no equivalent narrowing attempted
-/// here — same tradeoff the frontend documents for localStorage).
+/// users can't read a live bearer credential off disk, applied at temp-file
+/// creation time (see `write_atomic`) so the file is never briefly
+/// world-readable before narrowing. Windows gets the default ACL for the
+/// user's own APPDATA (no equivalent narrowing attempted here, same
+/// tradeoff the frontend documents for localStorage).
 pub fn save_token(sp_token: &str) -> Result<()> {
     let path = credentials_path().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(&Credentials { sp_token: sp_token.to_string() })?;
-    std::fs::write(&path, json)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(())
+    write_atomic(&path, json.as_bytes(), Some(0o600))
 }
 
 /// Remove the stored sp_token (`sp logout`). Not finding one to remove is
@@ -276,7 +302,7 @@ pub fn save(cfg: &FileConfig) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(cfg)?;
-    std::fs::write(&path, json)?;
+    write_atomic(&path, json.as_bytes(), None)?;
 
     // Write fish companion
     if let Some(fish_path) = fish_env_path() {
@@ -285,7 +311,7 @@ pub fn save(cfg: &FileConfig) -> Result<()> {
         if let Some(ref v) = cfg.session_id { lines.push(format!("set -gx SOLARPLEX_SESSION_ID {v:?}")); }
         if let Some(ref v) = cfg.actor_id   { lines.push(format!("set -gx SOLARPLEX_ACTOR_ID {v:?}")); }
         if let Some(ref v) = cfg.ui         { lines.push(format!("set -gx SOLARPLEX_UI {v:?}")); }
-        std::fs::write(fish_path, lines.join("\n") + "\n")?;
+        write_atomic(&fish_path, (lines.join("\n") + "\n").as_bytes(), None)?;
     }
 
     // Write POSIX companion (bash/zsh/Oils-OSH)
@@ -295,7 +321,7 @@ pub fn save(cfg: &FileConfig) -> Result<()> {
         if let Some(ref v) = cfg.session_id { lines.push(format!("export SOLARPLEX_SESSION_ID={}", posix_quote(v))); }
         if let Some(ref v) = cfg.actor_id   { lines.push(format!("export SOLARPLEX_ACTOR_ID={}", posix_quote(v))); }
         if let Some(ref v) = cfg.ui         { lines.push(format!("export SOLARPLEX_UI={}", posix_quote(v))); }
-        std::fs::write(posix_path, lines.join("\n") + "\n")?;
+        write_atomic(&posix_path, (lines.join("\n") + "\n").as_bytes(), None)?;
     }
 
     Ok(())

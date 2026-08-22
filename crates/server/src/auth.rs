@@ -14,9 +14,13 @@
 //!    - Verifies ID token signature and nonce (replay prevention)
 //!    - Maps `(sub, provider)` → `actor_id` (creates actor on first login)
 //!    - Issues an opaque Solarplex `sp_token` in `human_sessions` (7-day TTL)
-//!    - 302-redirects to `OIDC_FRONTEND_REDIRECT#sp_token=<token>`
+//!    - 302-redirects to `OIDC_FRONTEND_REDIRECT#sp_token=<token>` — or, when
+//!      `/start` was called with `?client=desktop` (the Tauri shell opening
+//!      this flow in the system browser instead of its own webview), to
+//!      `DESKTOP_REDIRECT_URI#sp_token=<token>` instead (default
+//!      `solarplex-desktop://auth`, handled by `frontend/src-tauri`).
 //!
-//! 3. `POST /auth/oidc/logout` — revokes a single session token.
+//! 3. `POST /auth/oidc/logout` revokes a single session token.
 //!
 //! # Trust boundary
 //!
@@ -91,7 +95,7 @@ pub async fn init_oidc(cfg: OidcConfig) -> anyhow::Result<OidcState> {
 
     let provider_metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
         .await
-        .context("OIDC provider discovery failed — check OIDC_ISSUER_URL and network")?;
+        .context("OIDC provider discovery failed, check OIDC_ISSUER_URL and network")?;
 
     let client = CoreClient::from_provider_metadata(
         provider_metadata,
@@ -115,9 +119,15 @@ pub async fn init_oidc(cfg: OidcConfig) -> anyhow::Result<OidcState> {
 pub struct StartQuery {
     /// Same-origin relative path to land on after a successful login, e.g.
     /// `/invite/01J...`. Invalid values are silently dropped in favor of the
-    /// default post-login redirect — a malformed return_to should never
+    /// default post-login redirect; a malformed return_to should never
     /// break the ability to log in at all.
     return_to: Option<String>,
+    /// Set to exactly `"desktop"` by the Tauri shell (see `frontend/lib/auth.ts`'s
+    /// `signIn()`) when it opens this URL in the system browser instead of its
+    /// own webview. See `PkceEntry::desktop`'s doc comment for why the final
+    /// redirect target is resolved server-side rather than trusting this value
+    /// itself as (or as a pointer to) a redirect URL.
+    client: Option<String>,
 }
 
 /// Whether `path` is safe to place unmodified into a same-origin redirect.
@@ -133,12 +143,12 @@ fn is_safe_return_to(path: &str) -> bool {
 }
 
 /// Best-effort client IP for rate limiting the two pre-authentication OIDC
-/// routes below — there is no actor_id to key on yet, so this is the only
+/// routes below. There is no actor_id to key on yet, so this is the only
 /// identity available. `X-Forwarded-For` is only trusted when
 /// `TRUST_PROXY_HEADERS=1` is set (the deploy's own responsibility to set,
 /// only when the server genuinely sits behind a reverse proxy that
 /// overwrites that header rather than passing a client-supplied one
-/// through) — otherwise any caller could spoof it to get a fresh bucket on
+/// through), otherwise any caller could spoof it to get a fresh bucket on
 /// every request, defeating the limit entirely.
 fn client_ip(connect_info: &SocketAddr, headers: &HeaderMap) -> String {
     let trust_proxy = std::env::var("TRUST_PROXY_HEADERS").ok().as_deref() == Some("1");
@@ -187,8 +197,9 @@ pub async fn oidc_start(
     let return_to = query.return_to
         .filter(|p| is_safe_return_to(p))
         .unwrap_or_default();
+    let desktop = query.client.as_deref() == Some("desktop");
 
-    // Store (verifier, nonce, return_to) keyed by state param; TTL = 10 minutes
+    // Store (verifier, nonce, return_to, desktop) keyed by state param; TTL = 10 minutes
     oidc.pending.insert(
         csrf_token.secret().clone(),
         PkceEntry {
@@ -196,6 +207,7 @@ pub async fn oidc_start(
             nonce_secret:    nonce.secret().to_string(),
             expires:         Instant::now() + Duration::from_secs(600),
             return_to,
+            desktop,
         },
     );
 
@@ -233,7 +245,7 @@ pub async fn oidc_callback(
         None    => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
     };
     // This is the expensive half of the pair (a real round trip to the
-    // provider, plus a DB write) and the actual brute-force target — same
+    // provider, plus a DB write) and the actual brute-force target. Same
     // bucket as `oidc_start` (see `GlobalRateLimitKey::OidcAttempt`'s doc).
     let ip = client_ip(&connect_info, &headers);
     if let Some(res) = crate::rate_limit::gate_global(
@@ -257,16 +269,17 @@ pub async fn oidc_callback(
     // DashMap::remove is single-use: a replayed state param finds no entry.
     let entry = match oidc.pending.remove(&state_param) {
         Some((_, e)) => e,
-        None         => return bad("unknown or expired state — possible CSRF or replay"),
+        None         => return bad("unknown or expired state, possible CSRF or replay"),
     };
 
     if entry.expires < Instant::now() {
         // Entry was present but already past TTL (rare after lazy sweep)
-        return bad("login flow expired — please start again");
+        return bad("login flow expired, please start again");
     }
 
     // Extract before verifier_secret/nonce_secret are moved out of `entry` below.
     let return_to = entry.return_to.clone();
+    let desktop    = entry.desktop;
 
     // ── Code exchange + PKCE verification ────────────────────────────────────
     let token_response = oidc.client
@@ -293,7 +306,7 @@ pub async fn oidc_callback(
     let claims = match id_token.claims(&oidc.client.id_token_verifier(), &nonce) {
         Ok(c)  => c,
         Err(e) => {
-            // Nonce mismatch, signature failure, audience mismatch — all land here
+            // Nonce mismatch, signature failure, audience mismatch all land here
             tracing::warn!("ID token verification failed: {e}");
             return (StatusCode::UNAUTHORIZED, "ID token verification failed").into_response();
         }
@@ -323,9 +336,25 @@ pub async fn oidc_callback(
         return (StatusCode::INTERNAL_SERVER_ERROR, "session creation failed").into_response();
     }
 
-    // ── Redirect to frontend ──────────────────────────────────────────────────
+    // ── Redirect back ──────────────────────────────────────────────────────────
     // Fragment (#) keeps the token off server access logs and browser history.
-    // The frontend reads location.hash and stores in sessionStorage / memory.
+    //
+    // The desktop shell opened this whole flow in the *system* browser, not
+    // its own webview (see PkceEntry::desktop's doc comment for why) — so
+    // "redirect back to the frontend origin" doesn't apply here, there's no
+    // app open at that origin in this browser. Instead redirect to a fixed
+    // custom-scheme URL the OS hands off to the desktop app, which captures
+    // the token and navigates its own webview to `/#sp_token=...` (see
+    // frontend/src-tauri/src/lib.rs's `on_open_url`). Deliberately a fixed
+    // server-side default, not caller-supplied. Same reasoning as
+    // `is_safe_return_to` restricting `return_to` to a relative path instead
+    // of trusting a raw URL from the request.
+    if desktop {
+        let desktop_redirect = std::env::var("DESKTOP_REDIRECT_URI")
+            .unwrap_or_else(|_| "solarplex-desktop://auth".to_string());
+        return Redirect::temporary(&format!("{desktop_redirect}#sp_token={sp_token}")).into_response();
+    }
+
     // `return_to` was already validated as a safe same-origin relative path
     // at /start time (see `is_safe_return_to`); appended, not substituted, so
     // this still works when OIDC_FRONTEND_REDIRECT points at a full origin
@@ -359,7 +388,7 @@ pub async fn oidc_logout(
 
 /// Resolve the caller's own identity from a verified sp_token. The frontend
 /// uses this to show a real name/avatar in place of the `?actor=` param it
-/// used before real auth existed — unrelated to the mailbox work; this is
+/// used before real auth existed, unrelated to the mailbox work; this is
 /// just "who am I", not "what's addressed to me".
 pub async fn me(
     State(app):  State<Arc<AppState>>,
@@ -387,7 +416,7 @@ pub struct UpdateMeBody {
     name: String,
 }
 
-/// Let a signed-in actor set their own display name — the OIDC provider's
+/// Let a signed-in actor set their own display name. The OIDC provider's
 /// `name`/`email` claim is only ever a *first-login* default
 /// (`sub_to_actor_id`), with no way to change it afterward until now.
 /// `upsert_human`'s `ON CONFLICT (id) DO UPDATE SET name` is already exactly
@@ -419,7 +448,7 @@ pub async fn update_me(
 
 // ── GET /auth/sessions ────────────────────────────────────────────────────────
 
-/// Sign-in history — every active `sp_token` for the caller's own actor,
+/// Sign-in history. Every active `sp_token` for the caller's own actor,
 /// Google/GitHub "devices" style. `human_sessions` already tracked
 /// everything this needs (issued_at/last_seen/provider) from the original
 /// OIDC login work; this is purely a new read + a revoke action over
@@ -434,7 +463,7 @@ pub async fn list_sessions(
     };
     // Best-effort: a missing/malformed header here would already have
     // failed require_sp_auth above, so this is just recovering the same raw
-    // token to compute which row (if any) is "this device" — never fatal.
+    // token to compute which row (if any) is "this device".
     let current_hash = extract_bearer(&headers).map(|t| db::human_sessions::hash_token(&t));
 
     match db::human_sessions::list_for_actor(&app.db, &actor_id).await {
@@ -455,7 +484,7 @@ pub async fn list_sessions(
 
 // ── DELETE /auth/sessions/:id ─────────────────────────────────────────────────
 
-/// Revoke one sign-in — "sign out this device" from the sign-in history
+/// Revoke one sign-in for "sign out this device" from the sign-in history
 /// view. `id` here is the hash `list_sessions` returned, not a raw token;
 /// scoped to the caller's own actor_id, so this can never revoke someone
 /// else's session no matter what id is passed.
@@ -479,7 +508,7 @@ pub async fn revoke_session(
 
 /// Validate an `sp_token` presented on a WebSocket upgrade request.
 ///
-/// Called in the HTTP upgrade phase — before any WebSocket handshake.
+/// Called in the HTTP upgrade phase before any WebSocket handshake.
 /// Sanitizes the token format first (rejects obviously malformed values before
 /// touching the database), then does a single SELECT that checks expiry
 /// atomically at the DB level.
@@ -496,7 +525,7 @@ pub async fn validate_sp_token(
         .await
         .map_err(|_| anyhow!("invalid or expired sp_token"))?;
 
-    // Touch last_seen in background — non-blocking, non-fatal
+    // Touch last_seen in background. Non-blocking, non-fatal
     let pool_clone  = pool.clone();
     let token_clone = raw_token.to_string();
     tokio::spawn(async move {
@@ -511,7 +540,7 @@ pub async fn validate_sp_token(
 // Shared by any REST handler that needs a verified human identity rather
 // than a self-asserted actor_id in the request body. Originally lived only
 // in routes/approvals.rs; promoted here once more handlers needed the exact
-// same extraction — one implementation, not N copies that can drift.
+// same extraction via one implementation, not N copies that can drift.
 
 /// Extract a Bearer sp_token from the Authorization header.
 pub fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -537,12 +566,12 @@ pub async fn require_sp_auth(
 
 /// Verify the request carries a valid sp_token *and* that the resolved
 /// actor is a member of `session_id` with at least `min_role`'s authority.
-/// The shared gate for every session-scoped GET — a valid token alone is
+/// The shared gate for every session-scoped GET, because a valid token alone is
 /// not the boundary: an authenticated stranger must not be able to read a
 /// session's data just by knowing its ULID.
 ///
 /// "Member" here also covers lazily-auto-granted Observer access via a
-/// full-visibility `session_links` row — see `require_membership_or_linked_
+/// full-visibility `session_links` row, see `require_membership_or_linked_
 /// access`'s doc comment. That auto-grant only ever satisfies an
 /// Observer-ceiling `min_role`, so this stays the correct gate for
 /// Collaborator+ endpoints too, unchanged.
@@ -564,18 +593,17 @@ pub async fn require_session_member(
     }
 }
 
-/// Validate a live capability token as the caller's credential — the agent
+/// Validate a live capability token as the caller's credential, the agent
 /// equivalent of `require_sp_auth`/`require_session_member` for humans.
-/// Agents never hold an sp_token (OIDC is human-only — see this module's
+/// Agents never hold an sp_token (OIDC is human-only, see this module's
 /// top doc comment); the cap they were issued at attach time is the only
 /// credential they have. Same trust-boundary checks `routes::invoke`
 /// already applies for tool calls (not-found, wrong session, expired,
 /// revoked, epoch-superseded), reused here for the session-lifecycle
-/// endpoints agents call outside the invoke path — those never validated
-/// the cap at all before this.
+/// endpoints agents call outside the invoke path.
 ///
 /// Returns the actor_id from the *validated cap row*, never from a
-/// caller-supplied body field — the whole point is that the caller doesn't
+/// caller-supplied body field. The whole point is that the caller doesn't
 /// get to assert who they are just by typing a different actor_id.
 pub async fn require_cap_auth(
     db:         &sqlx::PgPool,
@@ -598,19 +626,18 @@ pub async fn require_cap_auth(
     let current_epoch = db::epochs::current(db, session_id).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
     if cap.epoch != current_epoch {
-        return Err((StatusCode::GONE, "cap epoch superseded — re-attach required").into_response());
+        return Err((StatusCode::GONE, "cap epoch superseded, re-attach required").into_response());
     }
     Ok(cap.actor_id)
 }
 
 /// Shared gate for endpoints both humans (browser/CLI, sp_token) and agents
-/// (sidecar, cap_id) call — session messages and context entries being the
+/// (sidecar, cap_id) call, session messages and context entries being the
 /// first two. Tries the sp_token path first when an `Authorization` header
 /// is present (so a human never falls through to a cap check just because
 /// their token happens to be invalid); otherwise falls back to `cap_id`.
 /// Returns the verified actor_id from whichever credential was actually
-/// presented — never from a caller-supplied body field, which was the whole
-/// bug this closes (see `post_message`/`add_context`).
+/// presented.
 pub async fn require_sp_or_cap_auth(
     db:         &sqlx::PgPool,
     headers:    &axum::http::HeaderMap,
@@ -630,7 +657,7 @@ pub async fn require_sp_or_cap_auth(
     }
 }
 
-/// Token format guard — validates before any DB query.
+/// Token format guard, validates before any DB query.
 ///
 /// Accepts ULID-format strings (26 chars, Crockford base32) plus up to 128
 /// chars for future format flexibility.  Rejects:
@@ -644,7 +671,7 @@ pub fn validate_token_format(token: &str) -> anyhow::Result<()> {
         bail!("sp_token is empty");
     }
     if token.len() > 128 {
-        bail!("sp_token too long ({} chars — max 128)", token.len());
+        bail!("sp_token too long ({} max chars 128)", token.len());
     }
     if token.bytes().any(|b| b < 0x20 || b == 0x7f) {
         bail!("sp_token contains control characters");
@@ -678,10 +705,10 @@ async fn sub_to_actor_id(
         return Ok(actor_id);
     }
 
-    // First login only — an existing identity above never reaches this
+    // First login only. An existing identity above never reaches this
     // check, so a returning user's every-day sign-in is never rate-limited
     // by it. Tier 2 (crate::rate_limit) because this happens before any
-    // actor — let alone session — exists to scope the check to.
+    // actor, let alone session, exists to scope the check to.
     let (admission, policy) = app.rate_limits.check(
         crate::rate_limit::GlobalRateLimitKey::ActorCreate {
             sub: sub.to_string(), provider: provider.to_string(),
@@ -694,7 +721,7 @@ async fn sub_to_actor_id(
         );
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
-            "too many new sign-ups from this identity — try again later",
+            "too many new sign-ups from this identity, try again later",
         ).into_response());
     }
 
@@ -711,7 +738,7 @@ async fn sub_to_actor_id(
     // One-time catch-up: named invites addressed to this email may have
     // been created before this actor existed to route them to (see the
     // write-time population in routes::sessions::create_invite, which only
-    // fires when the email already resolves to a known actor). Non-fatal —
+    // fires when the email already resolves to a known actor). Non-fatal since
     // a missed mailbox entry doesn't block login; the invite is still
     // reachable by its link either way.
     if let Some(email) = actor.email.as_deref().filter(|e| !e.is_empty()) {
@@ -775,7 +802,7 @@ mod tests {
             // already expired
             Instant::now() - Duration::from_secs((-ttl_offset_secs) as u64)
         };
-        PkceEntry { verifier_secret: "v".into(), nonce_secret: "n".into(), expires, return_to: String::new() }
+        PkceEntry { verifier_secret: "v".into(), nonce_secret: "n".into(), expires, return_to: String::new(), desktop: false }
     }
 
     // ── PKCE pending state ────────────────────────────────────────────────────
@@ -846,7 +873,7 @@ mod tests {
         // Replay: entry is gone
         assert!(
             pending.remove("state123").is_none(),
-            "replayed state param must be rejected — entry consumed on first use"
+            "replayed state param must be rejected, entry consumed on first use"
         );
     }
 

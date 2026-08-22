@@ -1,8 +1,8 @@
-//! Authorization checks — one named predicate per action, expressed as plain
+//! Authorization checks with one named predicate per action, expressed as plain
 //! Rust rather than a policy-engine DSL.
 //!
 //! This is deliberately the same shape a declarative policy language (Rego,
-//! Cedar) would use — one composable rule per action — so that if this ever
+//! Cedar) would use (one composable rule per action) so that if this ever
 //! needs to generalize across many more actions/resources, promoting it is
 //! a natural migration, not a rewrite. It isn't worth that machinery yet for
 //! a handful of checks on one endpoint.
@@ -23,7 +23,7 @@ use protocol::types::MemberRole;
 /// authenticate via sp_token, not a held cap), so there's no existing
 /// authority object to attenuate against for a non-owner inviter. Owners are
 /// already treated as unconstrained root elsewhere (`issue_attach_token`
-/// mints root caps the same way) — restricting cap-staging invites to
+/// mints root caps the same way). Restricting cap-staging invites to
 /// Owner-only reuses that existing trust boundary instead of inventing a new
 /// definition of "invitable scope" for roles that don't hold caps.
 pub fn can_create_invite(
@@ -33,7 +33,7 @@ pub fn can_create_invite(
 ) -> Result<(), String> {
     if !caller_role.can_invite_as(target_role) {
         return Err(format!(
-            "{caller_role:?} cannot invite a member in as {target_role:?} — \
+            "{caller_role:?} cannot invite a member in as {target_role:?} \
              you can't delegate authority you don't hold"
         ));
     }

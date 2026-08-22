@@ -142,6 +142,23 @@ pub async fn revoke_all(pool: &PgPool, actor_id: &str) -> DbResult<u64> {
     Ok(result.rows_affected())
 }
 
+/// Whether `actor_id` has ever completed an OIDC sign-in — unlike
+/// `list_for_actor`, this has no `expires_at > NOW()` filter: an actor whose
+/// every sp_token has since expired is still a real, previously-registered
+/// identity, and its actor_id shouldn't become squattable again just
+/// because nobody's currently signed in. Used to reject the anonymous
+/// join_token WS path from self-registering under an actor_id that already
+/// belongs to a real OIDC-backed human — see `ws.rs::handle_ws`.
+pub async fn exists_for_actor(pool: &PgPool, actor_id: &str) -> DbResult<bool> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM human_sessions WHERE actor_id = $1 LIMIT 1",
+    )
+    .bind(actor_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Find the actor_id for a given OIDC (sub, provider) pair, if one exists.
 ///
 /// Used during OIDC callback to re-use an existing actor rather than creating
