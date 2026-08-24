@@ -49,11 +49,16 @@ const STATUS_CFG: Record<string, { dot: string; label: string; color: string; gl
 };
 
 const AGENT_CFG: Record<string, { dot: string; label: string; color: string }> = {
-  running: { dot: "bg-accent-green",             label: "Running", color: "text-accent-green" },
-  waiting: { dot: "bg-accent-amber",             label: "Waiting", color: "text-accent-amber" },
-  blocked: { dot: "bg-accent-red",               label: "Blocked", color: "text-accent-red"   },
-  error:   { dot: "bg-accent-red animate-pulse", label: "Error",   color: "text-accent-red"   },
-  idle:    { dot: "bg-surface-4",                label: "Idle",    color: "text-muted"        },
+  running:  { dot: "bg-accent-green",             label: "Running",  color: "text-accent-green" },
+  waiting:  { dot: "bg-accent-amber",             label: "Waiting",  color: "text-accent-amber" },
+  blocked:  { dot: "bg-accent-red",               label: "Blocked",  color: "text-accent-red"   },
+  error:    { dot: "bg-accent-red animate-pulse", label: "Error",    color: "text-accent-red"   },
+  idle:     { dot: "bg-surface-4",                label: "Idle",     color: "text-muted"        },
+  // A detached agent's last-known `status` (often "running" — it rarely
+  // gets a clean shutdown to idle first) is stale the moment it detaches
+  // and must never be shown as if it were still live — same reasoning as
+  // `humans`' `.attached` dimming below, just missing here until now.
+  detached: { dot: "bg-surface-4",                label: "Detached", color: "text-muted"        },
 };
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
@@ -79,7 +84,10 @@ export default function StatusPanel({ sessionId, sessionName, snapshot, events, 
   const pendingCount = snapshot?.pending_approvals.length ?? 0;
   const attachedCount = humans.filter(h => h.attached).length;
 
-  const agentCounts = agents.reduce<Record<string, number>>((acc, a) => {
+  // Only a currently-attached agent's status means anything live — a
+  // detached one's last-known status (recorded before it went away, often
+  // "running") is stale and must not count toward "N running" here.
+  const agentCounts = agents.filter(a => a.attached).reduce<Record<string, number>>((acc, a) => {
     const s = a.status ?? "idle";
     acc[s] = (acc[s] ?? 0) + 1;
     return acc;
@@ -430,7 +438,7 @@ export default function StatusPanel({ sessionId, sessionName, snapshot, events, 
               </div>
               <div className="space-y-1">
                 {agents.map(a => {
-                  const cfg = AGENT_CFG[a.status ?? "idle"] ?? AGENT_CFG.idle;
+                  const cfg = a.attached ? (AGENT_CFG[a.status ?? "idle"] ?? AGENT_CFG.idle) : AGENT_CFG.detached;
                   return (
                     <div key={a.actor_id} className="flex items-center gap-2">
                       <span className={`w-2 h-2 rounded-full shrink-0 ${cfg.dot}`} />

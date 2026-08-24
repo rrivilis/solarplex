@@ -149,7 +149,14 @@ export function eventSummary(event: WsEnvelope, actorNames: Record<string, strin
 // ── Internal WS plumbing — not real activity log entries ──────────────────────
 // Saga events (actor "system") are cross-session-delegation/reflector
 // plumbing — meaningful for debugging the coordination protocol, not for a
-// lay user's view of "what happened in this session."
+// lay user's view of "what happened in this session." `agent.status.changed`
+// and `approval.timed_out` belong here too even though they're ordinary,
+// non-plumbing SessionEvents: an agent's Waiting/Running/Idle status fires on
+// every single tool call, and a timeout is just the transient state a still-
+// pending approval passes through — real signal for the live status badges
+// (StatusPanel) elsewhere, but pure noise as its own Activity Log row. Still
+// fully present in the event log / DB for debugging; only excluded from this
+// user-facing rendering.
 export const INTERNAL_WS = new Set([
   "session.snapshot",
   "saga_begun",
@@ -157,4 +164,6 @@ export const INTERNAL_WS = new Set([
   "saga_step_acked",
   "saga_compensated",
   "saga_terminated",
+  "agent.status.changed",
+  "approval.timed_out",
 ]);

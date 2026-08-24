@@ -601,7 +601,7 @@ async fn handle_persist(
     // event's own doc comment. All of these events stay shadow-persisted
     // (EventLog only, matches ApprovalDelegated's precedent); this runs
     // regardless, since it's not what decides real- vs shadow-persist.
-    handle_cross_session_side_effects(session_id, &event, db, hub, sessions).await;
+    handle_cross_session_side_effects(session_id, &event, db, hub, sessions, reflector).await;
 
     if is_machine_autonomous(&event) {
         // Phase 5: real DB write for machine-owned events.
@@ -673,7 +673,9 @@ async fn handle_cross_session_side_effects(
     db:         &PgPool,
     hub:        &Arc<SessionHub>,
     sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector:  &Arc<Reflector>,
 ) {
+    let replica_id = reflector.replica_id();
     match event {
         // Fired in B (the target session): create B's real, completely
         // normal ApprovalRequest — decided via B's own approval_policy,
@@ -848,7 +850,7 @@ async fn handle_cross_session_side_effects(
                     artifact_type: Some(new_artifact.r#type.clone()),
                 },
             });
-            emit_via_task(db, hub, session_id, imported_by, artifact_event).await;
+            emit_via_task(db, hub, session_id, imported_by, artifact_event, replica_id).await;
 
             // Audit note — resolve display names first, same fix
             // routes/sessions.rs's original handler applied (raw ULIDs in a
@@ -874,7 +876,7 @@ async fn handle_cross_session_side_effects(
                     content: note.clone(), authored_by: Some(imported_by.clone()),
                 },
             });
-            emit_via_task(db, hub, session_id, imported_by, context_event).await;
+            emit_via_task(db, hub, session_id, imported_by, context_event, replica_id).await;
 
             tracing::info!(
                 session_id, %source_session_id, artifact_id = %new_artifact.id,
@@ -907,7 +909,7 @@ async fn handle_cross_session_side_effects(
                     content: note, authored_by: Some(imported_by.clone()),
                 },
             });
-            emit_via_task(db, hub, session_id, imported_by, context_event).await;
+            emit_via_task(db, hub, session_id, imported_by, context_event, replica_id).await;
             tracing::info!(
                 session_id, %source_session_id, %target_name,
                 "context summary send: delivered via reflector",
@@ -935,7 +937,7 @@ async fn handle_cross_session_side_effects(
                     content: full_note, authored_by: Some(authored_by.clone()),
                 },
             });
-            emit_via_task(db, hub, session_id, authored_by, context_event).await;
+            emit_via_task(db, hub, session_id, authored_by, context_event, replica_id).await;
             tracing::info!(
                 session_id, %source_session_id, %object_name,
                 "annotation: delivered via reflector",
@@ -960,6 +962,7 @@ async fn emit_via_task(
     session_id: &str,
     actor_id:   &str,
     event:      WsMessage,
+    replica_id: &str,
 ) {
     let snap_ref = crate::ws::current_snap(hub);
     let mut tx = match db.begin().await {
@@ -975,7 +978,7 @@ async fn emit_via_task(
     if let Err(e) = tx.commit().await {
         tracing::error!(session_id, "emit_via_task: commit: {e}"); return;
     }
-    let _ = db::events::notify_session(db, session_id, seq).await;
+    let _ = db::events::notify_session(db, session_id, seq, replica_id).await;
     crate::ws::store_and_broadcast(hub, seq, new_snap, &stamped).await;
 }
 

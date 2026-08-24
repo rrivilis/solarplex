@@ -610,23 +610,44 @@ pub async fn require_cap_auth(
     session_id: &str,
     cap_id:     &str,
 ) -> Result<String, axum::response::Response> {
+    require_cap_auth_typed(db, session_id, cap_id).await
+        .map_err(|(status, reason)| (status, reason).into_response())
+}
+
+/// Same checks as `require_cap_auth`, but a typed, `Clone`able verdict
+/// instead of a `Response` — a `Response` can't be cached or awaited by
+/// more than one caller. Needed by `agent_heartbeat` (routes/sessions.rs)
+/// for its negative cache + singleflight coalescing: a permanently-dead
+/// cap (not found, wrong session, expired, revoked, epoch-superseded — none
+/// of these ever recover) can be remembered and replayed without hitting
+/// the DB again. The one behavioral difference from `require_cap_auth`: the
+/// two transient-DB-error branches report a generic "internal error"
+/// instead of the specific `e.to_string()`, since that error variant is
+/// deliberately never cached (see the `status != INTERNAL_SERVER_ERROR`
+/// guard at the call site) and a `'static` reason is what makes this type
+/// cheaply cacheable in the first place.
+pub async fn require_cap_auth_typed(
+    db:         &sqlx::PgPool,
+    session_id: &str,
+    cap_id:     &str,
+) -> Result<String, (StatusCode, &'static str)> {
     let cap = db::tokens::get_cap(db, cap_id).await.map_err(|e| match e {
-        db::DbError::NotFound => (StatusCode::UNAUTHORIZED, "cap not found").into_response(),
-        e => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        db::DbError::NotFound => (StatusCode::UNAUTHORIZED, "cap not found"),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     })?;
     if cap.session_id != session_id {
-        return Err((StatusCode::FORBIDDEN, "cap does not belong to this session").into_response());
+        return Err((StatusCode::FORBIDDEN, "cap does not belong to this session"));
     }
     if cap.expires_at < Utc::now() {
-        return Err((StatusCode::GONE, "cap expired").into_response());
+        return Err((StatusCode::GONE, "cap expired"));
     }
     if cap.revoked_at.is_some() {
-        return Err((StatusCode::GONE, "cap revoked").into_response());
+        return Err((StatusCode::GONE, "cap revoked"));
     }
     let current_epoch = db::epochs::current(db, session_id).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "internal error"))?;
     if cap.epoch != current_epoch {
-        return Err((StatusCode::GONE, "cap epoch superseded, re-attach required").into_response());
+        return Err((StatusCode::GONE, "cap epoch superseded, re-attach required"));
     }
     Ok(cap.actor_id)
 }

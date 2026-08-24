@@ -22,4 +22,34 @@ toml = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
+# seccompiler stays exactly as before for the classic BASELINE_DENY/
+# NETWORK_DENY/SUBPROCESS_DENY filter -- it has no SECCOMP_RET_USER_NOTIF
+# variant and no way to request SECCOMP_FILTER_FLAG_NEW_LISTENER (confirmed
+# against its own docs, not assumed), so it can't build the notify filter on
+# its own. It doesn't need to: seccomp filters layer -- the kernel evaluates
+# every attached filter per syscall and the most-restrictive return value
+# wins (ERRNO outranks USER_NOTIF outranks ALLOW, per the kernel's own
+# documented precedence order in seccomp_filter.rst). So the existing
+# seccompiler-built deny filter stays completely untouched and a small,
+# separate, hand-rolled BPF filter with NEW_LISTENER is layered on top just
+# for the path syscalls that need live mediation -- reusing the exact filter
+# shape already validated end-to-end on a real kernel via the seccomp-notify
+# C test harness earlier this project, not a new design. See
+# notify.rs/sandbox_entry.rs's `apply_seccomp_notify`.
 seccompiler = "0.5"
+# Raw io_uring bindings (tokio-rs/io-uring), not tokio-uring/glommio/monoio --
+# those are full alternative async runtimes, the wrong shape for a single
+# boring reactor loop in a trusted supervisor process. See notify.rs.
+io-uring = "0.7"
+# Slab-indexed outstanding-operation tracking for io_uring CQE user_data --
+# standard pattern in this ecosystem (tokio-uring/glommio/monoio all use
+# this shape). See notify.rs.
+slab = "0.4"
+# default-features = false: drops the `remote` feature (containerregistry
+# pull stack -- tokio/reqwest/a TLS stack we'd be duplicating). The sandbox
+# rootfs source is a local OCI layout or docker overlay2 directory only
+# (SOLARPLEX_SANDBOX_ROOTFS_SRC) -- no network access at guardian startup,
+# matching the "explicit env var, no surprise network calls" posture already
+# used everywhere else in this crate. Pull the image with `skopeo`/`docker`
+# ahead of time if a remote registry is the actual source.
+oci2rootfs = { version = "0.2", default-features = false }

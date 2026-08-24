@@ -33,6 +33,14 @@ use crate::Config;
 pub struct ShimClient {
     write_tx: mpsc::UnboundedSender<ipc::AdapterMessage>,
     pending:  Arc<DashMap<String, oneshot::Sender<ipc::ProposalDecision>>>,
+    /// Separate correlation map for `ServerCall`/`ServerCallResult` — see
+    /// `server_call`'s doc. Kept distinct from `pending` rather than unifying
+    /// into one enum-valued map: the two request kinds have unrelated
+    /// timeout/retry shapes (90s single-shot for a human approval decision
+    /// vs. a plain HTTP-call timeout for a server-authority op), and keeping
+    /// them separate means a bug in one dispatch path can't cross-deliver
+    /// into the other's waiters by id collision.
+    pending_calls: Arc<DashMap<String, oneshot::Sender<ipc::ServerCallResponse>>>,
 }
 
 impl ShimClient {
@@ -62,6 +70,9 @@ impl ShimClient {
             let pending: Arc<DashMap<String, oneshot::Sender<ipc::ProposalDecision>>> =
                 Arc::new(DashMap::new());
             let pending_rx = pending.clone();
+            let pending_calls: Arc<DashMap<String, oneshot::Sender<ipc::ServerCallResponse>>> =
+                Arc::new(DashMap::new());
+            let pending_calls_rx = pending_calls.clone();
 
             // Background writer: serializes all outgoing frames.
             let (write_tx, mut write_rx) = mpsc::unbounded_channel::<ipc::AdapterMessage>();
@@ -83,6 +94,11 @@ impl ShimClient {
                             }
                         }
                         Ok(ipc::ShimMessage::ExecDoneAck) => {} // fire-and-forget
+                        Ok(ipc::ShimMessage::ServerCallResult(r)) => {
+                            if let Some((_, tx)) = pending_calls_rx.remove(&r.id) {
+                                let _ = tx.send(r);
+                            }
+                        }
                         Err(e) => {
                             if e.kind() != std::io::ErrorKind::UnexpectedEof {
                                 tracing::error!("shim reader error: {e}");
@@ -93,7 +109,7 @@ impl ShimClient {
                 }
             });
 
-            Ok(Self { write_tx, pending })
+            Ok(Self { write_tx, pending, pending_calls })
         }
         #[cfg(not(unix))]
         anyhow::bail!("ShimClient requires Unix domain sockets");
@@ -124,6 +140,35 @@ impl ShimClient {
                     scout: None, exec_result: None, tier2_ctx: None,
                     error: Some("shim IPC timeout".to_string()),
                 }
+            }
+        }
+    }
+
+    /// Perform a server-authority operation via the shim, which holds the
+    /// actual cap material (see `ipc::ServerCall`'s doc comment). Replaces
+    /// what used to be a direct `reqwest::Client::new()` call made from
+    /// inside this (untrusted) process using `cap_id` out of its own Config.
+    pub async fn server_call(&self, call: ipc::ServerCall) -> Result<serde_json::Value, String> {
+        let id = ulid::Ulid::new().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.pending_calls.insert(id.clone(), tx);
+
+        let send_ok = self.write_tx.send(ipc::AdapterMessage::ServerCall(
+            ipc::ServerCallRequest { id: id.clone(), call },
+        )).is_ok();
+        if !send_ok {
+            self.pending_calls.remove(&id);
+            return Err("shim IPC channel closed".to_string());
+        }
+
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
+            Ok(Ok(resp)) => match resp.error {
+                Some(e) => Err(e),
+                None    => Ok(resp.body.unwrap_or(serde_json::Value::Null)),
+            },
+            _ => {
+                self.pending_calls.remove(&id);
+                Err("shim IPC timeout".to_string())
             }
         }
     }
@@ -321,6 +366,14 @@ struct ProxyState {
     shim:       ShimClient,
     sse_streams: Arc<DashMap<String, mpsc::UnboundedSender<String>>>,
     prometheus_handle: PrometheusHandle,
+    /// Guards `notify_connected` on the `initialize` path (see `intercept`)
+    /// so it fires at most once per adapter process, not once per
+    /// `initialize` call. A client can legitimately re-send `initialize`
+    /// against the same still-running adapter (e.g. every `/mcp` reconnect)
+    /// -- without this, each one re-announced as a brand new `ActorJoined`,
+    /// flooding the session's chat/activity view with repeat "X joined the
+    /// session" lines for one agent that never actually left.
+    announced_once: std::sync::atomic::AtomicBool,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -352,6 +405,7 @@ pub async fn serve(config: Config, shim: ShimClient, prometheus_handle: Promethe
         config, api_base, upstream, shim,
         sse_streams: Arc::new(DashMap::new()),
         prometheus_handle,
+        announced_once: std::sync::atomic::AtomicBool::new(false),
     });
 
     // Same periodic-upkeep shape as crates/server/src/main.rs — evicts idle
@@ -555,15 +609,60 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                 Ok(resp) => {
                     let resp = maybe_inject_meta_tools(&resp);
 
-                    // Register tool manifest with server after tools/list.
+                    // Presence: a real MCP client just completed the protocol
+                    // handshake. `notify_connected` used to fire only from
+                    // `handle_sse_open` (GET /sse) -- correct for a client
+                    // that opens the classic two-channel SSE transport, but
+                    // a client using this adapter's other, equally valid
+                    // transport (plain POST, JSON response returned directly
+                    // -- see the `else` branch below where no `stream=` key
+                    // matches an open SSE stream) never calls `/sse` at all,
+                    // so it never got counted as attached even though every
+                    // tool call was working end-to-end. `initialize` is that
+                    // transport's actual "a client is here" milestone, the
+                    // same role `/sse` plays for the other one -- confirmed
+                    // directly: a real session showed successful invoke/
+                    // approval/heartbeat traffic with zero agents ever
+                    // shown attached in the UI, because this call was
+                    // missing. No corresponding disconnect signal exists
+                    // for this transport (no persistent connection to hang
+                    // a close event on) -- `sweep_stale_agents`'s heartbeat-
+                    // staleness sweep is the fallback that already covers
+                    // that, same as it does for a crashed/killed process on
+                    // the SSE side.
+                    //
+                    // `announced_once` guards against re-announcing: a
+                    // client can legitimately re-send `initialize` against
+                    // this same still-running adapter (every `/mcp`
+                    // reconnect does) -- without the guard, each one fired a
+                    // fresh `ActorJoined`, flooding the chat/activity view
+                    // with repeat "X joined the session" lines for an agent
+                    // that never actually left. One adapter process = one
+                    // agent lifetime = at most one join announcement.
+                    if rpc_method == "initialize"
+                        && state.announced_once.compare_exchange(
+                            false, true,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        ).is_ok()
+                    {
+                        state.shim.notify_connected();
+                    }
+
+                    // Register tool manifest with server after tools/list --
+                    // via the shim now, not a direct HTTP call with cap_id
+                    // out of this process's own Config. See ServerCall's doc.
                     if rpc_method == "tools/list" {
                         if let Some(tools) = resp.get("result").and_then(|r| r.get("tools")) {
-                            let api  = state.api_base.clone();
-                            let sid  = state.config.session_id.clone();
-                            let aid  = state.config.actor_id.clone();
-                            let cid  = state.config.cap_id.clone();
-                            let ts   = tools.clone();
-                            tokio::spawn(async move { register_methods(&api, &sid, &aid, cid.as_deref(), &ts).await; });
+                            let state_ref = Arc::clone(&state);
+                            let ts        = tools.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = state_ref.shim.server_call(
+                                    ipc::ServerCall::RegisterMethods { methods: ts },
+                                ).await {
+                                    tracing::warn!("register_methods failed: {e}");
+                                }
+                            });
                         }
                     }
 
@@ -703,7 +802,9 @@ async fn post_exec_hooks(
         tier2:        tier2_notice,
     });
 
-    // Auto-artifact: write_file → create a Solarplex artifact.
+    // Auto-artifact: write_file → create a Solarplex artifact. Via the shim
+    // now, not a direct HTTP call with session_id/actor_id read out of this
+    // (untrusted) process's own Config -- see ServerCall's doc.
     if call.tool == "write_file" {
         if let (Some(path), Some(content)) = (
             call.args.get("path").and_then(|v| v.as_str()),
@@ -711,54 +812,17 @@ async fn post_exec_hooks(
         ) {
             let artifact_name = std::path::Path::new(path)
                 .file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
-            let url = format!(
-                "{}/api/sessions/{}/artifacts",
-                state.api_base, state.config.session_id
-            );
-            let actor_id = state.config.actor_id.clone();
-            let content  = content.to_string();
+            let content     = content.to_string();
+            let state_ref   = Arc::clone(state);
             tokio::spawn(async move {
-                let client = reqwest::Client::new();
-                match client.post(&url).json(&json!({
-                    "created_by":    actor_id,
-                    "name":          artifact_name,
-                    "artifact_type": "document",
-                    "content":       content,
-                })).send().await {
-                    Ok(r) if r.status().is_success() =>
-                        tracing::info!("auto-artifact created from write_file"),
-                    Ok(r) =>
-                        tracing::warn!("auto-artifact API error: {}", r.status()),
-                    Err(e) =>
-                        tracing::error!("auto-artifact request failed: {e}"),
+                match state_ref.shim.server_call(ipc::ServerCall::CreateArtifact {
+                    name: artifact_name, artifact_type: "document".to_string(), content,
+                }).await {
+                    Ok(_)  => tracing::info!("auto-artifact created from write_file"),
+                    Err(e) => tracing::warn!("auto-artifact request failed: {e}"),
                 }
             });
         }
-    }
-}
-
-/// Register the adapter's known tools with the Solarplex server.
-async fn register_methods(api_base: &str, session_id: &str, actor_id: &str, cap_id: Option<&str>, tools: &serde_json::Value) {
-    let Some(cap_id) = cap_id else {
-        tracing::warn!("register_methods skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)");
-        return;
-    };
-    let methods: Vec<serde_json::Value> = tools.as_array().cloned().unwrap_or_default()
-        .into_iter()
-        .map(|t| json!({
-            "name":              t["name"].as_str().unwrap_or(""),
-            "description":       t.get("description"),
-            "input_schema":      t.get("inputSchema").cloned().unwrap_or_default(),
-            "requires_approval": true,
-        }))
-        .collect();
-    if methods.is_empty() { return; }
-    let url = format!("{api_base}/api/sessions/{session_id}/methods");
-    if let Err(e) = reqwest::Client::new().post(&url)
-        .json(&json!({ "actor_id": actor_id, "cap_id": cap_id, "methods": methods }))
-        .send().await
-    {
-        tracing::warn!("register_methods failed: {e}");
     }
 }
 
@@ -1125,52 +1189,40 @@ async fn handle_meta_tool(
 ) -> Option<Response> {
     let id       = rpc.get("id").cloned().unwrap_or(json!(null));
     let api_base = &state.api_base;
-    let session_id = &state.config.session_id;
-    let actor_id   = &state.config.actor_id;
 
     match tool.tool.as_str() {
         // solarplex_session_info is answered pre-gate now -- see
         // `build_session_info_response` and its call site in `intercept`.
         // Unreachable here.
 
+        // All of these used to be direct `reqwest::Client::new()` calls made
+        // from inside this (untrusted) process, reading `cap_id` straight
+        // out of this process's own Config. Now routed through the shim,
+        // which holds the actual cap material, via `ServerCall` -- see that
+        // type's doc comment in protocol::ipc. Response formatting logic is
+        // unchanged; only the data-fetching mechanism moved.
         "solarplex_create_artifact" => {
             let name    = tool.args.get("name").and_then(|v| v.as_str()).unwrap_or("artifact");
             let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let kind    = tool.args.get("type").and_then(|v| v.as_str()).unwrap_or("document");
             let sha256  = compute_sha256(content);
             crate::artifact_scan::spawn_artifact_scan(content.to_string(), sha256, api_base.clone());
-            let authored_by = if state.config.cap_id.is_some() { "agent" } else { "human" };
-            let url = format!("{api_base}/api/sessions/{session_id}/artifacts");
-            let result = reqwest::Client::new().post(&url)
-                .json(&json!({
-                    "created_by":    actor_id,
-                    "cap_id":        state.config.cap_id,
-                    "name":          name,
-                    "artifact_type": kind,
-                    "content":       content,
-                    "authored_by":   authored_by,
-                }))
-                .send().await;
-            let body = match result {
-                Ok(r) if r.status().is_success() => {
-                    let artifact = r.json::<serde_json::Value>().await.unwrap_or(json!({}));
-                    json!({ "jsonrpc": "2.0", "id": id, "result": { "content": [{ "type": "text",
-                        "text": format!("Artifact '{}' created (id: {})", name,
-                            artifact.get("id").and_then(|v| v.as_str()).unwrap_or("?")) }] }})
-                }
-                Ok(r) => json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": format!("API error {}", r.status()) } }),
+            let body = match state.shim.server_call(ipc::ServerCall::CreateArtifact {
+                name: name.to_string(), artifact_type: kind.to_string(), content: content.to_string(),
+            }).await {
+                Ok(artifact) => json!({ "jsonrpc": "2.0", "id": id, "result": { "content": [{ "type": "text",
+                    "text": format!("Artifact '{}' created (id: {})", name,
+                        artifact.get("id").and_then(|v| v.as_str()).unwrap_or("?")) }] }}),
                 Err(e) => json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }),
+                    "error": { "code": -32000, "message": e } }),
             };
             Some(json_response(body))
         }
 
         "solarplex_list_artifacts" => {
-            let url = format!("{api_base}/api/sessions/{session_id}/artifacts");
-            match reqwest::Client::new().get(&url).send().await {
-                Ok(r) => {
-                    let artifacts = r.json::<Vec<serde_json::Value>>().await.unwrap_or_default();
+            match state.shim.server_call(ipc::ServerCall::ListArtifacts).await {
+                Ok(v) => {
+                    let artifacts: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
                     let summary = artifacts.iter().map(|a| format!(
                         "- **{}** (id: `{}`, type: {}, by: {})",
                         a.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
@@ -1183,7 +1235,7 @@ async fn handle_meta_tool(
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
                 Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }))),
+                    "error": { "code": -32000, "message": e } }))),
             }
         }
 
@@ -1193,26 +1245,21 @@ async fn handle_meta_tool(
             let resolved_id: Option<String> = if let Some(id_str) = artifact_id {
                 Some(id_str.to_string())
             } else if let Some(name_str) = name_query {
-                let url       = format!("{api_base}/api/sessions/{session_id}/artifacts");
                 let name_lower = name_str.to_lowercase();
-                match reqwest::Client::new().get(&url).send().await {
-                    Ok(r) => r.json::<Vec<serde_json::Value>>().await.ok()
-                        .and_then(|list| list.into_iter().find(|a|
-                            a.get("name").and_then(|v| v.as_str())
-                                .map_or(false, |n| n.to_lowercase().contains(&name_lower))
-                        ).and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))),
-                    Err(_) => None,
-                }
+                state.shim.server_call(ipc::ServerCall::ListArtifacts).await.ok()
+                    .and_then(|v| v.as_array().cloned())
+                    .and_then(|list| list.into_iter().find(|a|
+                        a.get("name").and_then(|v| v.as_str())
+                            .map_or(false, |n| n.to_lowercase().contains(&name_lower))
+                    ).and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())))
             } else { None };
 
             match resolved_id {
                 None => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                     "error": { "code": -32602, "message": "Provide 'id' or 'name'." } }))),
                 Some(art_id) => {
-                    let url = format!("{api_base}/api/sessions/{session_id}/artifacts/{art_id}");
-                    match reqwest::Client::new().get(&url).send().await {
-                        Ok(r) if r.status().is_success() => {
-                            let a = r.json::<serde_json::Value>().await.unwrap_or(json!({}));
+                    match state.shim.server_call(ipc::ServerCall::ReadArtifact { id: art_id }).await {
+                        Ok(a) => {
                             let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                             let raw  = a.get("storage_ref").and_then(|v| v.as_str()).unwrap_or("");
                             let sha256 = compute_sha256(raw);
@@ -1223,42 +1270,32 @@ async fn handle_meta_tool(
                             Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                                 "result": { "content": [{ "type": "text", "text": text }] } })))
                         }
-                        Ok(r) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                            "error": { "code": -32000, "message": format!("API {}", r.status()) } }))),
                         Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                            "error": { "code": -32000, "message": e.to_string() } }))),
+                            "error": { "code": -32000, "message": e } }))),
                     }
                 }
             }
         }
 
         "solarplex_update_artifact" => {
-            let art_id  = tool.args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let url = format!("{api_base}/api/sessions/{session_id}/artifacts/{art_id}");
-            match reqwest::Client::new().patch(&url)
-                .json(&json!({ "content": content, "cap_id": state.config.cap_id }))
-                .send().await
-            {
-                Ok(r) if r.status().is_success() => {
-                    let a = r.json::<serde_json::Value>().await.unwrap_or(json!({}));
+            let art_id  = tool.args.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            match state.shim.server_call(ipc::ServerCall::UpdateArtifact { id: art_id, content }).await {
+                Ok(a) => {
                     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                         "result": { "content": [{ "type": "text", "text": format!("Artifact '{}' updated.", name) }] } })))
                 }
-                Ok(r) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": format!("API {}", r.status()) } }))),
                 Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }))),
+                    "error": { "code": -32000, "message": e } }))),
             }
         }
 
         "solarplex_read_feed" => {
             let limit = tool.args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30);
-            let url = format!("{api_base}/api/sessions/{session_id}/events?limit={limit}");
-            match reqwest::Client::new().get(&url).send().await {
-                Ok(r) => {
-                    let events = r.json::<Vec<serde_json::Value>>().await.unwrap_or_default();
+            match state.shim.server_call(ipc::ServerCall::ReadFeed { limit }).await {
+                Ok(v) => {
+                    let events: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
                     let lines  = events.iter().map(|e| {
                         let actor   = e.get("actor_id").and_then(|v| v.as_str()).unwrap_or("?");
                         let etype   = e.get("type").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1281,20 +1318,13 @@ async fn handle_meta_tool(
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
                 Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }))),
+                    "error": { "code": -32000, "message": e } }))),
             }
         }
 
         "solarplex_post_message" => {
             let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let url = format!("{api_base}/api/sessions/{session_id}/messages");
-            // actor_id is no longer trusted by the server for identity — it
-            // derives the real actor from cap_id (see require_sp_or_cap_auth).
-            // Still sent for now so older servers mid-rollout don't break.
-            if let Err(e) = reqwest::Client::new().post(&url)
-                .json(&json!({ "actor_id": actor_id, "cap_id": state.config.cap_id, "content": content }))
-                .send().await
-            {
+            if let Err(e) = state.shim.server_call(ipc::ServerCall::PostMessage { content }).await {
                 tracing::warn!("post_message failed: {e}");
             }
             Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1302,15 +1332,9 @@ async fn handle_meta_tool(
         }
 
         "solarplex_add_context" => {
-            let kind_str    = tool.args.get("kind").and_then(|v| v.as_str()).unwrap_or("fact");
-            let content     = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let authored_by = if state.config.cap_id.is_some() { "agent" } else { "human" };
-            let url = format!("{api_base}/api/sessions/{session_id}/context");
-            if let Err(e) = reqwest::Client::new().post(&url)
-                .json(&json!({ "actor_id": actor_id, "cap_id": state.config.cap_id, "kind": kind_str,
-                    "content": content, "authored_by": authored_by }))
-                .send().await
-            {
+            let kind_str = tool.args.get("kind").and_then(|v| v.as_str()).unwrap_or("fact").to_string();
+            let content  = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if let Err(e) = state.shim.server_call(ipc::ServerCall::AddContext { kind: kind_str, content }).await {
                 tracing::warn!("add_context failed: {e}");
             }
             Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1319,10 +1343,9 @@ async fn handle_meta_tool(
 
         "solarplex_read_context" => {
             let kind_filter = tool.args.get("kind").and_then(|v| v.as_str());
-            let url = format!("{api_base}/api/sessions/{session_id}/events?limit=200");
-            match reqwest::Client::new().get(&url).send().await {
-                Ok(r) => {
-                    let events = r.json::<Vec<serde_json::Value>>().await.unwrap_or_default();
+            match state.shim.server_call(ipc::ServerCall::ReadFeed { limit: 200 }).await {
+                Ok(v) => {
+                    let events: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
                     let lines: Vec<String> = events.iter()
                         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("context.entry.added"))
                         .filter(|e| {
@@ -1351,15 +1374,14 @@ async fn handle_meta_tool(
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
                 Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }))),
+                    "error": { "code": -32000, "message": e } }))),
             }
         }
 
         "solarplex_read_whiteboard" => {
-            let url = format!("{api_base}/api/sessions/{session_id}/artifacts");
-            match reqwest::Client::new().get(&url).send().await {
-                Ok(r) => {
-                    let artifacts = r.json::<Vec<serde_json::Value>>().await.unwrap_or_default();
+            match state.shim.server_call(ipc::ServerCall::ListArtifacts).await {
+                Ok(v) => {
+                    let artifacts: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
                     let wb = artifacts.iter().find(|a|
                         a.get("type").and_then(|v| v.as_str()) == Some("whiteboard")
                     );
@@ -1372,43 +1394,30 @@ async fn handle_meta_tool(
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
                 Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }))),
+                    "error": { "code": -32000, "message": e } }))),
             }
         }
 
         "solarplex_write_whiteboard" => {
             let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let list_url = format!("{api_base}/api/sessions/{session_id}/artifacts");
-            let existing_id: Option<String> = match reqwest::Client::new().get(&list_url).send().await {
-                Ok(r) => r.json::<Vec<serde_json::Value>>().await.ok()
-                    .and_then(|list| list.into_iter()
-                        .find(|a| a.get("type").and_then(|v| v.as_str()) == Some("whiteboard"))
-                        .and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
-                    ),
-                Err(_) => None,
-            };
-            let client = reqwest::Client::new();
+            let existing_id: Option<String> = state.shim.server_call(ipc::ServerCall::ListArtifacts).await.ok()
+                .and_then(|v| v.as_array().cloned())
+                .and_then(|list| list.into_iter()
+                    .find(|a| a.get("type").and_then(|v| v.as_str()) == Some("whiteboard"))
+                    .and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                );
             let result = if let Some(art_id) = existing_id {
-                let url = format!("{api_base}/api/sessions/{session_id}/artifacts/{art_id}");
-                client.patch(&url)
-                    .json(&json!({ "content": content, "cap_id": state.config.cap_id }))
-                    .send().await
+                state.shim.server_call(ipc::ServerCall::UpdateArtifact { id: art_id, content }).await
             } else {
-                client.post(&list_url).json(&json!({
-                    "created_by":    actor_id,
-                    "cap_id":        state.config.cap_id,
-                    "name":          "whiteboard",
-                    "artifact_type": "whiteboard",
-                    "content":       content,
-                })).send().await
+                state.shim.server_call(ipc::ServerCall::CreateArtifact {
+                    name: "whiteboard".to_string(), artifact_type: "whiteboard".to_string(), content,
+                }).await
             };
             match result {
-                Ok(r) if r.status().is_success() => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
+                Ok(_) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                     "result": { "content": [{ "type": "text", "text": "Whiteboard updated." }] } }))),
-                Ok(r) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": format!("API {}", r.status()) } }))),
                 Err(e) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
-                    "error": { "code": -32000, "message": e.to_string() } }))),
+                    "error": { "code": -32000, "message": e } }))),
             }
         }
 

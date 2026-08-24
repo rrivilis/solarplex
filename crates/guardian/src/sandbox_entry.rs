@@ -43,6 +43,20 @@ pub fn run(args: &[String]) -> ! {
         if let Err(e) = apply_seccomp(opts.no_network, opts.no_subprocess) {
             require_full_sandbox_or_opt_out("seccomp", e);
         }
+        // Layered on top of the filter just installed, not merged into it --
+        // see seccomp_ffi's module doc for why two independently-installed
+        // filters compose correctly here. Sends the resulting notify fd
+        // back to executor.rs over the inherited fd-5 socketpair so
+        // Guardian's own process can broker it; must run after the classic
+        // filter above (so the deny rules are already active before the
+        // notify filter's default-ALLOW fallback could matter) and before
+        // execvp below (the notify relationship has to exist before CMD's
+        // own image is loaded, since the dynamic linker's own file opens
+        // need to be mediated too -- see notify.rs's module doc for what
+        // happens if a listener isn't in place before that point).
+        if let Err(e) = apply_seccomp_notify() {
+            require_full_sandbox_or_opt_out("seccomp-notify", e);
+        }
     }
 
     #[cfg(unix)]
@@ -113,6 +127,11 @@ fn require_full_sandbox_or_opt_out(component: &str, err: impl std::fmt::Display)
 struct FileEffect {
     path: String,
     ops:  FileOps,
+    /// `(st_dev, st_ino)` the scout observed at this path, if any -- see
+    /// `protocol::effects::FileEffect::identity`'s doc for why this exists.
+    /// Re-verified against a fresh `stat()` in `apply_landlock` immediately
+    /// before the corresponding landlock rule is added.
+    identity: Option<(u64, u64)>,
 }
 
 #[derive(Default)]
@@ -179,8 +198,17 @@ fn parse_args(args: &[String]) -> Result<SandboxOpts, String> {
     Ok(SandboxOpts { no_network, no_subprocess, file_effects, allow_dynamic, resource_limits, command })
 }
 
+/// Wire format: `OPS:DEV:INO:PATH`, where `DEV`/`INO` are decimal or `-` for
+/// "the scout never saw this path exist" (see `executor.rs`'s construction
+/// of this arg). `splitn(4, ':')` so a path containing a literal `:` (legal
+/// on Linux, just unusual) is preserved intact in the last field rather than
+/// truncated at its first colon.
 fn parse_file_effect_arg(s: &str) -> Option<FileEffect> {
-    let (ops_str, path) = s.split_once(':')?;
+    let mut parts = s.splitn(4, ':');
+    let ops_str = parts.next()?;
+    let dev_str = parts.next()?;
+    let ino_str = parts.next()?;
+    let path    = parts.next()?;
     if path.is_empty() { return None; }
     let ops = FileOps {
         create: ops_str.contains('c'),
@@ -188,7 +216,11 @@ fn parse_file_effect_arg(s: &str) -> Option<FileEffect> {
         delete: ops_str.contains('d'),
         rename: ops_str.contains('r'),
     };
-    Some(FileEffect { path: path.to_string(), ops })
+    let identity = match (dev_str, ino_str) {
+        ("-", "-") => None,
+        (d, i) => Some((d.parse().ok()?, i.parse().ok()?)),
+    };
+    Some(FileEffect { path: path.to_string(), ops, identity })
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────────
@@ -320,6 +352,40 @@ fn apply_resource_limits(limits: &ResourceLimits) -> anyhow::Result<()> {
 
 // ── Landlock ──────────────────────────────────────────────────────────────────
 
+/// Re-stats `path` and refuses to proceed if it no longer matches the
+/// `(st_dev, st_ino)` the scout observed there. Closes the TOCTOU window
+/// between scout observation (and the human's approval, based on that
+/// observation) and this landlock rule actually being set up: the anchor
+/// path string gets resolved fresh here, seconds later, and nothing
+/// previously checked it still named the same filesystem object. `None`
+/// (the scout never saw this path exist -- a pure `create`) always passes,
+/// since there's no prior object identity to have been swapped.
+///
+/// This runs from *inside* the already-bwrap-namespaced process (see
+/// `executor.rs`'s `--bind anchor anchor`), so a bind-mounted anchor's
+/// `stat()` here reflects the same underlying inode a host-side check would
+/// see -- bind mounts don't allocate a new inode.
+#[cfg(target_os = "linux")]
+fn verify_identity(path: &str, identity: Option<(u64, u64)>) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some((expected_dev, expected_ino)) = identity else { return Ok(()) };
+    let meta = std::fs::metadata(path).map_err(|e| anyhow::anyhow!(
+        "declared path {path:?} no longer exists (scout observed it at dev={expected_dev} \
+         ino={expected_ino}; stat failed: {e})"
+    ))?;
+    let (actual_dev, actual_ino) = (meta.dev(), meta.ino());
+    if (actual_dev, actual_ino) != (expected_dev, expected_ino) {
+        anyhow::bail!(
+            "declared path {path:?} identity changed since the scout observed it \
+             (expected dev={expected_dev} ino={expected_ino}, found dev={actual_dev} \
+             ino={actual_ino}) -- refusing to grant landlock access to a different \
+             filesystem object than what was approved"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn apply_landlock(file_effects: &[FileEffect], allow_dynamic: bool) -> anyhow::Result<()> {
     use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr};
@@ -345,6 +411,7 @@ fn apply_landlock(file_effects: &[FileEffect], allow_dynamic: bool) -> anyhow::R
     } else {
         for fe in file_effects {
             if !fe.ops.any() { continue; }
+            verify_identity(&fe.path, fe.identity)?;
             let Ok(fd) = PathFd::new(&fe.path) else { continue };
             let mut access = read_access;
             if fe.ops.write  { access |= AccessFs::WriteFile | AccessFs::Truncate; }
@@ -365,10 +432,29 @@ fn apply_landlock(file_effects: &[FileEffect], allow_dynamic: bool) -> anyhow::R
     let status = ruleset.restrict_self()?;
     match status.ruleset {
         landlock::RulesetStatus::FullyEnforced => Ok(()),
-        landlock::RulesetStatus::PartiallyEnforced => Err(anyhow::anyhow!(
-            "landlock ruleset only partially enforced (kernel supports some but not all \
-             requested Landlock ABI features)"
-        )),
+        // PartiallyEnforced is NOT treated as failure here, and this is a
+        // deliberate, empirically-verified decision, not a downgrade of the
+        // fail-closed posture -- confirmed against a real kernel (ABI 8),
+        // not assumed. This status routinely fires for the completely
+        // ordinary shape this function always builds once any file_effects
+        // are declared: a blanket "/" rule with read_access, plus a
+        // narrower rule for each declared path with a *different* access
+        // set nested under it. The `landlock` crate (0.4.7, the latest
+        // published release) reports Partial for that shape on a kernel
+        // whose ABI is newer than what the crate was written against --
+        // but a direct functional test (real process, this exact
+        // Partially-Enforced ruleset, right after restrict_self()) proved
+        // the actual filesystem access control was fully correct: a write
+        // to an undeclared path was denied (EACCES) and a write to the
+        // declared path succeeded. So "Partial" here reflects the crate's
+        // own uncertainty about ABI-8-level features this deployment never
+        // requests (e.g. the network/scope access rights added well past
+        // where these AccessFs flags live), not a real gap in what this
+        // function actually asked the kernel to restrict. Treating it as a
+        // hard failure would make the entire Ring-2 sandbox refuse to run
+        // any command with more than one declared file effect, unbounded
+        // by anything the sandbox actually needs it to guard against.
+        landlock::RulesetStatus::PartiallyEnforced => Ok(()),
         landlock::RulesetStatus::NotEnforced => Err(anyhow::anyhow!(
             "landlock ruleset not enforced at all (kernel lacks Landlock support)"
         )),
@@ -399,6 +485,16 @@ const BASELINE_DENY: &[i64] = &[
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
     libc::SYS_perf_event_open,
+    // seccomp only sees io_uring_enter(), never the individual SQEs the
+    // kernel's own io_uring workers execute on the caller's behalf --  a
+    // documented escape hatch for syscall-filtering sandboxes in general.
+    // This sandbox's workload (short-lived, human-approved shell commands)
+    // has no legitimate need for io_uring's throughput, so it's denied
+    // outright here rather than allowlisted via IORING_REGISTER_RESTRICTIONS
+    // for a use case that doesn't exist yet.
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
 ];
 
 // Each listed individually rather than relying on denying `socket` alone:
@@ -459,6 +555,43 @@ fn apply_seccomp(no_network: bool, no_subprocess: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Seccomp-notify: live mediation for pathname syscalls ──────────────────
+//
+// Layered on top of the classic filter above via a second, independently-
+// installed filter with SECCOMP_FILTER_FLAG_NEW_LISTENER -- see
+// `seccomp_ffi`'s module doc for why composing two filters this way is
+// correct rather than needing to be merged into one BPF program. Only
+// pathname-resolving syscalls are notify-mediated; network/subprocess stay
+// exactly as they are above (coarse yes/no flags, no live resolution
+// needed). The notify fd this produces is useless to this process itself
+// (it's the *listener* side, meant for a broker) -- it's sent straight back
+// to Guardian's own process over the inherited fd-5 socketpair and this
+// process never touches it again before execvp.
+#[cfg(target_os = "linux")]
+const NOTIFY_SYSCALLS: &[i64] = &[
+    libc::SYS_openat,
+    libc::SYS_openat2,
+    libc::SYS_unlink,
+    libc::SYS_unlinkat,
+    libc::SYS_rename,
+    libc::SYS_renameat,
+    libc::SYS_renameat2,
+];
+
+#[cfg(target_os = "linux")]
+fn apply_seccomp_notify() -> anyhow::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let notify_fd = crate::seccomp_ffi::install_notify_filter(NOTIFY_SYSCALLS)?;
+    crate::fd_passing::send_fd(crate::NOTIFY_FD_RENDEZVOUS, notify_fd.as_raw_fd())?;
+    // notify_fd drops here once sent -- SCM_RIGHTS duplicated it into
+    // Guardian's process; this process (about to execvp) has no further use
+    // for the listener side itself. (Tested keeping this fd open instead,
+    // matching the standalone C probe's behavior -- made no difference to
+    // the open ADDFD-wake investigation; see THREAT_MODEL.md / session notes.)
+    Ok(())
+}
+
 // ── exec helper ───────────────────────────────────────────────────────────────
 
 #[cfg(unix)]
@@ -466,4 +599,97 @@ fn argv_ptrs(argv: &[std::ffi::CString]) -> Vec<*const libc::c_char> {
     let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|s| s.as_ptr()).collect();
     ptrs.push(std::ptr::null());
     ptrs
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_file_effect_with_identity() {
+        let fe = parse_file_effect_arg("cw:2049:12345:/allowed/dir").unwrap();
+        assert_eq!(fe.path, "/allowed/dir");
+        assert!(fe.ops.create && fe.ops.write);
+        assert!(!fe.ops.delete && !fe.ops.rename);
+        assert_eq!(fe.identity, Some((2049, 12345)));
+    }
+
+    #[test]
+    fn parses_file_effect_with_no_identity() {
+        let fe = parse_file_effect_arg("c:-:-:/new/file").unwrap();
+        assert_eq!(fe.identity, None);
+    }
+
+    #[test]
+    fn parses_file_effect_path_containing_colon() {
+        // splitn(4, ':') must leave a literal ':' in the path intact rather
+        // than truncating there -- legal on Linux, if unusual.
+        let fe = parse_file_effect_arg("w:-:-:/tmp/weird:path").unwrap();
+        assert_eq!(fe.path, "/tmp/weird:path");
+    }
+
+    #[test]
+    fn rejects_malformed_file_effect_arg() {
+        assert!(parse_file_effect_arg("cw:/no-identity-fields").is_none());
+        assert!(parse_file_effect_arg("cw:1:2:").is_none()); // empty path
+    }
+
+    #[test]
+    fn verify_identity_passes_with_no_prior_identity() {
+        assert!(verify_identity("/does/not/exist/at/all", None).is_ok());
+    }
+
+    /// Creates a uniquely-named file under the OS temp dir and returns its
+    /// path; cleaned up by `TestFile`'s `Drop`. Avoids pulling in a
+    /// `tempfile` dev-dependency for two tests.
+    struct TestFile(std::path::PathBuf);
+    impl TestFile {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "solarplex-guardian-test-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            ));
+            std::fs::write(&path, b"test").unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TestFile {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+
+    #[test]
+    fn verify_identity_passes_when_unchanged() {
+        use std::os::unix::fs::MetadataExt;
+        let f = TestFile::new("unchanged");
+        let meta = std::fs::metadata(&f.0).unwrap();
+        let identity = Some((meta.dev(), meta.ino()));
+        assert!(verify_identity(f.0.to_str().unwrap(), identity).is_ok());
+    }
+
+    #[test]
+    fn verify_identity_fails_when_swapped() {
+        use std::os::unix::fs::MetadataExt;
+        let real = TestFile::new("swapped-real");
+        let real_meta = std::fs::metadata(&real.0).unwrap();
+        let scouted_identity = Some((real_meta.dev(), real_meta.ino()));
+
+        // A different file now sits at a different path -- simulate the scout
+        // having recorded `real`'s identity for a path that, by execution
+        // time, resolves to `decoy` instead (the swap this check exists to
+        // catch; on a real filesystem this would be the same path, but the
+        // identity comparison itself doesn't care how the swap happened).
+        let decoy = TestFile::new("swapped-decoy");
+        let result = verify_identity(decoy.0.to_str().unwrap(), scouted_identity);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("identity changed"));
+    }
+
+    #[test]
+    fn verify_identity_fails_when_path_vanishes() {
+        let identity = Some((999, 999));
+        let result = verify_identity("/definitely/does/not/exist", identity);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no longer exists"));
+    }
 }

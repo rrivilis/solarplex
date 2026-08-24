@@ -158,6 +158,12 @@ impl FileOps {
 pub struct FileEvent {
     pub path: String,
     pub ops:  FileOps,
+    /// `(st_dev, st_ino)` of `path` as of scout completion, if it existed at
+    /// that moment. `None` for a path the scout only ever saw created
+    /// (nothing to stat yet). This is the identity the human's approval is
+    /// implicitly based on — see `FileEffect::identity`'s doc for why it's
+    /// re-verified at execution time instead of just carried along inertly.
+    pub identity: Option<(u64, u64)>,
 }
 
 /// Declared file access for a specific path pattern (PathPattern + permitted ops).
@@ -166,6 +172,20 @@ pub struct FileEvent {
 pub struct FileEffect {
     pub path: PathPattern,
     pub ops:  FileOps,
+    /// Carried from the scout's `FileEvent::identity` for this path (see that
+    /// field's doc). The gap this closes: `PathPattern`'s anchor is a string,
+    /// re-resolved fresh by both `executor.rs`'s bwrap bind and
+    /// `sandbox_entry.rs`'s `PathFd::new` — seconds after the scout observed
+    /// it and after the human approved based on that observation. Neither
+    /// resolution step previously checked it was still the same filesystem
+    /// object; a path swapped out for a symlink or a different file in that
+    /// window got a landlock grant for whatever now sits at that name, not
+    /// what was actually shown to the human. `sandbox_entry.rs` re-stats the
+    /// anchor immediately before adding its landlock rule and refuses
+    /// (fail-closed, same posture as every other setup step there) if the
+    /// live `(dev, ino)` doesn't match. `None` means the scout never saw
+    /// this path exist (a pure `create`), so there's nothing to compare.
+    pub identity: Option<(u64, u64)>,
 }
 
 /// A filesystem access pattern used in `DeclaredEffects`.
@@ -234,13 +254,19 @@ impl DeclaredEffects {
     /// a CREATE and a WRITE to the same path across the exec tree, the declared
     /// effect grants both.
     pub fn from_scout(scout: &ScoutManifest) -> Self {
-        // Union: merge FileOps for repeated paths.
-        let mut map: std::collections::HashMap<String, FileOps> = std::collections::HashMap::new();
+        // Union: merge FileOps for repeated paths. Identity should agree
+        // across repeated events for the same path within one scout run
+        // (nothing else touches the filesystem between them); last-write-
+        // wins if it somehow doesn't, since fold order isn't meaningful here.
+        let mut map: std::collections::HashMap<String, (FileOps, Option<(u64, u64)>)> =
+            std::collections::HashMap::new();
         for fe in &scout.file_effects {
-            map.entry(fe.path.clone()).or_default().merge(&fe.ops);
+            let entry = map.entry(fe.path.clone()).or_default();
+            entry.0.merge(&fe.ops);
+            if fe.identity.is_some() { entry.1 = fe.identity; }
         }
         let file_effects = map.into_iter()
-            .map(|(path, ops)| FileEffect { path: PathPattern(path), ops })
+            .map(|(path, (ops, identity))| FileEffect { path: PathPattern(path), ops, identity })
             .collect();
 
         DeclaredEffects {

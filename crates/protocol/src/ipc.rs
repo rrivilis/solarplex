@@ -56,6 +56,51 @@ pub enum AdapterMessage {
     /// (`Poll::Ready(None)` in `handle_sse_open`). Same trust reasoning as
     /// `ClientConnected` — the shim is the one that tells the server.
     ClientDisconnected,
+    /// A server-authority operation the adapter wants performed on its
+    /// behalf. See `ServerCall`'s doc for why this exists.
+    ServerCall(ServerCallRequest),
+}
+
+/// A server-authority operation the (untrusted) adapter wants performed on
+/// its behalf: the shim holds the actual cap material and makes the real
+/// HTTP call. Correlated by `id`, matched against
+/// `ShimMessage::ServerCallResult`.
+///
+/// Replaces what used to be direct `reqwest::Client::new()` calls made from
+/// inside the adapter itself, each one reading `cap_id` straight out of the
+/// adapter's own `Config` (a live credential sitting in the one process
+/// the threat model already documents as an untrusted relay with no
+/// authority of its own, "cannot... hold session token"). The adapter
+/// having `cap_id` in hand and using it directly for HTTP was that
+/// documented boundary being violated in practice, not just in spirit.
+/// After this, `cap_id` lives and is used in exactly one process: the shim.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerCallRequest {
+    pub id:   String,
+    pub call: ServerCall,
+}
+
+/// One server-authority operation. Deliberately a small, closed set of
+/// primitives: richer behavior (whiteboard read/write as a specially-typed
+/// artifact, feed vs. context-entry filtering) is adapter-side orchestration
+/// over these, formatting data it already legitimately received back from a
+/// call it made, not a reason to grow this enum. The adapter never
+/// supplies a cap_id in any variant; the shim always uses its own.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ServerCall {
+    RegisterMethods { methods: serde_json::Value },
+    ListArtifacts,
+    ReadArtifact { id: String },
+    CreateArtifact { name: String, artifact_type: String, content: String },
+    UpdateArtifact { id: String, content: String },
+    PostMessage { content: String },
+    AddContext { kind: String, content: String },
+    /// Also backs `solarplex_read_context`: the adapter requests the raw
+    /// event feed and filters client-side for `context.entry.added`, same
+    /// as it always has; that filtering is response formatting, not an
+    /// authorization decision, so it doesn't need its own IPC op.
+    ReadFeed { limit: u64 },
 }
 
 /// Adapter requests that the shim gate this tool call through the approval flow.
@@ -113,6 +158,16 @@ pub struct Tier2Notice {
 pub enum ShimMessage {
     Decision(ProposalDecision),
     ExecDoneAck,
+    ServerCallResult(ServerCallResponse),
+}
+
+/// Result of a `ServerCall`, matched to its request by `id`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerCallResponse {
+    pub id:    String,
+    /// Raw JSON body from the server on success.
+    pub body:  Option<serde_json::Value>,
+    pub error: Option<String>,
 }
 
 /// Shim's decision on a ProposalRequest, matched by id.

@@ -119,10 +119,10 @@ async fn main() -> anyhow::Result<()> {
     // guessing.
     if config.cap_id.is_none() {
         anyhow::bail!(
-            "shim: no cap_id — SOLARPLEX_TOKEN was not exchanged (or SOLARPLEX_CAP_ID wasn't \
+            "shim: no cap_id. SOLARPLEX_TOKEN was not exchanged (or SOLARPLEX_CAP_ID wasn't \
              otherwise set). Every supported deployment goes through the attach-token exchange; \
              starting from SOLARPLEX_SESSION_ID/SOLARPLEX_ACTOR_ID alone is not a supported \
-             configuration — see .env.example."
+             configuration; see .env.example."
         );
     }
 
@@ -151,7 +151,9 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
             loop {
                 interval.tick().await;
-                heartbeat_session.heartbeat().await;
+                if !heartbeat_session.heartbeat().await {
+                    break;
+                }
             }
         });
     }
@@ -234,7 +236,7 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     let guardian = GuardianHandle {
         socket: Arc::new(tokio::sync::Mutex::new(guardian_stream)),
     };
-    tracing::info!("shim: guardian spawned — authority socket at child fd {GUARDIAN_IPC_FD}");
+    tracing::info!("shim: guardian spawned, authority socket at child fd {GUARDIAN_IPC_FD}");
 
     // ── Adapter socketpair ────────────────────────────────────────────────────
     let (adapter_sv0, adapter_sv1) = StdUnixStream::pair()?;
@@ -285,7 +287,7 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     // Wrap the shim's end of the adapter socket as a tokio stream.
     adapter_sv0.set_nonblocking(true)?;
     let adapter_stream = tokio::net::UnixStream::from_std(adapter_sv0)?;
-    tracing::info!("shim: adapter spawned — authority socket at child fd {ADAPTER_IPC_FD}");
+    tracing::info!("shim: adapter spawned, authority socket at child fd {ADAPTER_IPC_FD}");
 
     // ── Scout pool ────────────────────────────────────────────────────────────
     let scout_pool = Arc::new(scout::ScoutPool::spawn(&scout::ScoutPoolConfig::default()));
@@ -377,6 +379,22 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
                 ipc::AdapterMessage::ClientDisconnected => {
                     let sess = session.clone();
                     tokio::spawn(async move { sess.detach().await; });
+                }
+                // Server-authority call on the adapter's behalf — see
+                // ServerCall's doc comment for why this exists instead of
+                // the adapter calling the server directly.
+                ipc::AdapterMessage::ServerCall(req) => {
+                    let sess = session.clone();
+                    let tx   = write_tx2.clone();
+                    tokio::spawn(async move {
+                        let (body, error) = match sess.dispatch_server_call(req.call).await {
+                            Ok(v)  => (Some(v), None),
+                            Err(e) => (None, Some(e)),
+                        };
+                        let _ = tx.send(ipc::ShimMessage::ServerCallResult(
+                            ipc::ServerCallResponse { id: req.id, body, error },
+                        ));
+                    });
                 }
             }
         }

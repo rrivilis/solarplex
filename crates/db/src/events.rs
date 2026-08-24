@@ -216,14 +216,22 @@ pub async fn append_batch_raw_in_tx<'a>(
 /// Fire a pg_notify wakeup for observers after a Tier-1 commit.
 ///
 /// Uses a single `session_events` channel for all sessions; payload is
-/// `{session_id}:{seq}`.  The server-side notifier parses this and wakes
-/// any connected WebSocket clients via the hub broadcast channel.
+/// `{session_id}:{seq}:{replica_id}`, `replica_id` being whichever replica
+/// made this write. Postgres delivers a NOTIFY to every listening session
+/// *including the one that issued it* -- the server-side notifier uses
+/// `replica_id` to recognize and skip its own writes, since the replica
+/// that made a write already broadcasts it synchronously in the same
+/// request; without that check, every write in even a single-replica
+/// deployment gets delivered to connected clients twice (confirmed
+/// directly: duplicate `status_changed`/message events in a real session).
+/// Cross-replica delivery -- the actual purpose of this channel -- still
+/// works exactly as before for every *other* listening replica.
 ///
 /// Called outside the transaction (non-transactional notify) so a slow
 /// notify cannot block the commit path.
-pub async fn notify_session(pool: &PgPool, session_id: &str, seq: i64) -> DbResult<()> {
+pub async fn notify_session(pool: &PgPool, session_id: &str, seq: i64, replica_id: &str) -> DbResult<()> {
     sqlx::query("SELECT pg_notify('session_events', $1)")
-        .bind(format!("{session_id}:{seq}"))
+        .bind(format!("{session_id}:{seq}:{replica_id}"))
         .execute(pool)
         .await
         .map_err(DbError::from)?;

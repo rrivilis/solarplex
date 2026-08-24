@@ -652,6 +652,22 @@ struct IssueAttachTokenBody {
 fn default_agent_role() -> String { "agent".into() }
 fn default_ttl() -> u64 { 900 }
 
+/// Deterministic per-cap `SIDECAR_PORT`, FNV-1a hash of the cap id into
+/// `20000..=29999` — same hashing approach as `numa::session_numa_node`.
+/// Every generated `launch_cmd` used to hardcode the literal port 7777, so
+/// two agents minted around the same time collided on the one port Claude
+/// Code's MCP client actually connects to: whichever shim/adapter held it
+/// last silently became "the" session with zero signal that identity had
+/// switched. A cap id is a ULID, unique per mint, so hashing it spreads
+/// concurrent agents across the range without any server-side allocation
+/// table or locking to maintain.
+fn cap_sidecar_port(cap_id: &str) -> u16 {
+    const OFFSET: u64 = 14_695_981_039_346_656_037;
+    const PRIME:  u64 = 1_099_511_628_211;
+    let hash = cap_id.bytes().fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64);
+    20_000 + (hash % 10_000) as u16
+}
+
 #[autometrics]
 async fn issue_attach_token(
     Path(id): Path<String>,
@@ -704,6 +720,7 @@ async fn issue_attach_token(
                 tracing::warn!(cap_id = %row.id, actor_id = %row.actor_id, "descriptor grant failed: {e}");
             }
             let perms = tokens::parse_permissions(&row);
+            let sidecar_port = cap_sidecar_port(&row.id);
             Json(serde_json::json!({
                 "token":        row.id,
                 "session_id":   row.session_id,
@@ -712,16 +729,33 @@ async fn issue_attach_token(
                 "observed_seq": row.observed_seq,
                 "permissions":  perms,
                 "parent_cap":   row.parent_cap,
+                // Structured, not just embedded in `launch_cmd`'s shell text --
+                // the UI needs this on its own to tell the caller what to point
+                // their MCP client at, without regex-scraping a shell snippet
+                // for a value that's no longer the same fixed 7777 every time.
+                "sidecar_port": sidecar_port,
                 // `shim` is the entry point — it does the SOLARPLEX_TOKEN exchange and
                 // spawns the guardian + sidecar as children over an inherited IPC fd.
                 // Running `sidecar` (solarplex-adapter) directly cannot work: it has no
                 // token exchange of its own and expects that fd to already exist.
                 // Fish syntax (`set -gx`) matches the shell integration everywhere else
                 // in the CLI — see config::save's fish companion file.
+                //
+                // SIDECAR_PORT used to be the literal string "7777" here, every single
+                // time, for every agent -- confirmed as a real, reproducible bug, not
+                // theoretical: minting a second agent while (or shortly after) a first
+                // one's shim/adapter was still bound to that port meant Claude Code's
+                // *unchanged* MCP client config silently kept talking to whichever
+                // process actually held the port -- no error, no signal, nothing to
+                // tell the agent its session/actor identity had switched out from
+                // under it. Derived per-cap here instead (deterministic FNV-1a hash of
+                // the cap id into 20000..=29999) so two live agents can never collide
+                // on the port that's supposed to identify which one you're talking to.
                 "launch_cmd": format!(
-                    "set -gx SOLARPLEX_TOKEN \"{}\"\nset -gx UPSTREAM_MCP_CMD \"npx -y @modelcontextprotocol/server-filesystem {}\"\nset -gx SIDECAR_PORT \"7777\"\ncargo run -p shim",
+                    "set -gx SOLARPLEX_TOKEN \"{}\"\nset -gx UPSTREAM_MCP_CMD \"npx -y @modelcontextprotocol/server-filesystem {}\"\nset -gx SIDECAR_PORT \"{}\"\ncargo run -p shim",
                     row.id,
                     body.mcp_path.as_deref().unwrap_or("/path/to/allowed/dir"),
+                    sidecar_port,
                 ),
             })).into_response()
         }
@@ -862,6 +896,10 @@ async fn add_context(
 pub struct EventsQuery {
     pub after_seq: Option<i64>,
     pub limit: Option<i64>,
+    /// Agent credential (sidecar callers have no sp_token) — same
+    /// `require_sp_or_cap_auth` dual path every write endpoint already
+    /// uses, carried in the query string since a GET has no body.
+    pub cap_id: Option<String>,
 }
 
 #[autometrics]
@@ -871,7 +909,9 @@ async fn list_events(
     Query(q): Query<EventsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let actor_id = match crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer).await {
+    let actor_id = match crate::auth::require_sp_or_cap_auth(
+        &state.db, &headers, &id, q.cap_id.as_deref(), MemberRole::Observer,
+    ).await {
         Ok(actor_id) => actor_id,
         Err(res) => return res,
     };
@@ -950,13 +990,23 @@ pub struct CreateArtifactBody {
     pub cap_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct SessionReadQuery {
+    /// Agent credential (sidecar callers have no sp_token) — see
+    /// `EventsQuery::cap_id`'s doc comment.
+    cap_id: Option<String>,
+}
+
 #[autometrics]
 async fn list_artifacts(
     Path(id): Path<String>,
     headers:  HeaderMap,
+    Query(q): Query<SessionReadQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer).await {
+    if let Err(res) = crate::auth::require_sp_or_cap_auth(
+        &state.db, &headers, &id, q.cap_id.as_deref(), MemberRole::Observer,
+    ).await {
         return res;
     }
     match db::artifacts::list(&state.db, &id).await {
@@ -1337,9 +1387,12 @@ async fn annotate_object(
 async fn get_artifact(
     Path((session_id, artifact_id)): Path<(String, String)>,
     headers: HeaderMap,
+    Query(q): Query<SessionReadQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer).await {
+    if let Err(res) = crate::auth::require_sp_or_cap_auth(
+        &state.db, &headers, &session_id, q.cap_id.as_deref(), MemberRole::Observer,
+    ).await {
         return res;
     }
     match db::artifacts::get(&state.db, &artifact_id).await {
@@ -1668,6 +1721,16 @@ async fn agent_status(
 /// only liveness signal the server has for them — `sweep_stale_agents`
 /// (ws.rs) checks these timestamps and emits `ActorDetached` for any actor
 /// whose heartbeat has lapsed, so a crashed shim stops showing as "active".
+///
+/// A client has no way to be forced to stop calling this once its cap dies
+/// (expired, revoked, epoch-superseded) — observed directly: a single
+/// orphaned client produced a continuous flood of 410s against this
+/// endpoint for over 24 hours, each one a full DB round-trip via
+/// `require_cap_auth`. `state.dead_heartbeat_caps` remembers a permanently-
+/// dead verdict so later calls for the same cap_id short-circuit before
+/// touching the DB at all; `state.inflight_heartbeat_checks` coalesces
+/// near-simultaneous calls for a not-yet-known cap_id (retry overlap,
+/// timer jitter) onto a single lookup instead of each racing their own.
 #[derive(Deserialize)]
 struct AgentHeartbeatBody {
     #[allow(dead_code)]
@@ -1681,9 +1744,28 @@ async fn agent_heartbeat(
     State(state): State<Arc<AppState>>,
     Json(body): Json<AgentHeartbeatBody>,
 ) -> impl IntoResponse {
-    let actor_id = match crate::auth::require_cap_auth(&state.db, &id, &body.cap_id).await {
-        Ok(a)    => a,
-        Err(res) => return res,
+    if let Some(dead) = state.dead_heartbeat_caps.get(&body.cap_id) {
+        return (*dead).into_response();
+    }
+
+    let cell = state.inflight_heartbeat_checks
+        .entry(body.cap_id.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+        .clone();
+    let result = cell.get_or_init(|| {
+        crate::auth::require_cap_auth_typed(&state.db, &id, &body.cap_id)
+    }).await.clone();
+    state.inflight_heartbeat_checks.remove(&body.cap_id);
+
+    let actor_id = match result {
+        Ok(a) => a,
+        Err(err) => {
+            let (status, _) = err;
+            if status != StatusCode::INTERNAL_SERVER_ERROR {
+                state.dead_heartbeat_caps.insert(body.cap_id.clone(), err);
+            }
+            return err.into_response();
+        }
     };
     let hub = state.get_or_create_hub(&id);
     hub.agent_heartbeats.insert(actor_id, Instant::now());
@@ -1824,9 +1906,12 @@ async fn shell_complete(
 async fn list_methods(
     Path(id): Path<String>,
     headers:  HeaderMap,
+    Query(q): Query<SessionReadQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer).await {
+    if let Err(res) = crate::auth::require_sp_or_cap_auth(
+        &state.db, &headers, &id, q.cap_id.as_deref(), MemberRole::Observer,
+    ).await {
         return res;
     }
     match db::methods::list_for_session(&state.db, &id).await {

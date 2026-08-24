@@ -121,8 +121,18 @@ async fn run_scout_linux(command: &str, timeout_secs: u64) -> ScoutManifest {
     for fe in file_events {
         effect_map.entry(fe.path).or_default().merge(&fe.ops);
     }
-    let mut file_effects: Vec<FileEvent> = effect_map.into_iter()
-        .map(|(path, ops)| FileEvent { path, ops }).collect();
+    // One stat pass per unique path, taken as of scout completion -- the
+    // identity `sandbox_entry.rs` will re-check immediately before granting
+    // the corresponding landlock rule, seconds from now after the human has
+    // approved. `None` for a path that doesn't exist yet (a pure `create`):
+    // nothing to pin an identity to, and that's fine, there's nothing for a
+    // TOCTOU swap to exploit on a path with no prior object at it.
+    let mut file_effects: Vec<FileEvent> = Vec::with_capacity(effect_map.len());
+    for (path, ops) in effect_map {
+        let identity = tokio::fs::metadata(&path).await.ok()
+            .map(|m| (std::os::unix::fs::MetadataExt::dev(&m), std::os::unix::fs::MetadataExt::ino(&m)));
+        file_effects.push(FileEvent { path, ops, identity });
+    }
     file_effects.sort_by(|a, b| a.path.cmp(&b.path));
 
     let total     = reads.len() + file_effects.len() + connects.len() + execs.len();
@@ -147,7 +157,7 @@ fn parse_strace_output(content: &str) -> (Vec<String>, Vec<FileEvent>, Vec<Strin
         if call.starts_with("openat(") {
             if let Some((path, ops)) = parse_openat(call) {
                 if !is_noise(&path) {
-                    if ops.any() { effects.push(FileEvent { path, ops }); }
+                    if ops.any() { effects.push(FileEvent { path, ops, identity: None }); }
                     else { reads.push(path); }
                     count += 1;
                 }
@@ -155,18 +165,18 @@ fn parse_strace_output(content: &str) -> (Vec<String>, Vec<FileEvent>, Vec<Strin
         } else if call.starts_with("unlinkat(") || call.starts_with("unlink(") {
             if let Some(path) = parse_unlink(call) {
                 if !is_noise(&path) {
-                    effects.push(FileEvent { path, ops: FileOps { delete: true, ..Default::default() } });
+                    effects.push(FileEvent { path, ops: FileOps { delete: true, ..Default::default() }, identity: None });
                     count += 1;
                 }
             }
         } else if call.starts_with("renameat(") || call.starts_with("rename(") {
             if let Some((src, dst)) = parse_rename(call) {
                 if !is_noise(&src) {
-                    effects.push(FileEvent { path: src, ops: FileOps { rename: true, delete: true, ..Default::default() } });
+                    effects.push(FileEvent { path: src, ops: FileOps { rename: true, delete: true, ..Default::default() }, identity: None });
                     count += 1;
                 }
                 if !is_noise(&dst) {
-                    effects.push(FileEvent { path: dst, ops: FileOps { rename: true, create: true, ..Default::default() } });
+                    effects.push(FileEvent { path: dst, ops: FileOps { rename: true, create: true, ..Default::default() }, identity: None });
                     count += 1;
                 }
             }

@@ -1,6 +1,25 @@
 mod executor;
+// SCM_RIGHTS fd passing for the fd-5 seccomp-notify rendezvous -- used by
+// both executor.rs (parent side) and sandbox_entry.rs (child side), both
+// Linux-only call sites, but the helpers themselves are plain libc/sockets
+// with nothing target_os-gated inside them.
+#[cfg(target_os = "linux")]
+mod fd_passing;
+// The io_uring-based process supervisor -- see its own module doc.
+#[cfg(target_os = "linux")]
+mod notify;
 mod resource_policy;
+// Entirely Linux-specific (loopback mounts, /proc/mounts, the oci2rootfs
+// dependency itself is only pulled in for target_os = "linux" — see
+// Cargo.toml). Only `executor.rs`'s Linux-gated `exec_sandboxed` calls in.
+#[cfg(target_os = "linux")]
+mod rootfs;
 mod sandbox_entry;
+// Raw seccomp-notify FFI (struct layouts, ioctl codes, BPF construction) --
+// see its own module doc for why this is hand-rolled rather than built on
+// a crate.
+#[cfg(target_os = "linux")]
+mod seccomp_ffi;
 mod verify;
 
 use anyhow::Result;
@@ -11,6 +30,16 @@ use protocol::ipc;
 // Matches GUARDIAN_IPC_FD in shim/src/main.rs.
 const GUARDIAN_IPC_FD: i32 = 4;
 
+// executor.rs dup2's one end of a socketpair to this fd in the sandboxed
+// child before exec-ing bwrap. sandbox_entry.rs (running as that child,
+// post-bwrap) sends the seccomp-notify fd back over it via SCM_RIGHTS once
+// installed — the same inherited-fd-is-authority pattern as
+// GUARDIAN_IPC_FD/fd 3 (shim<->adapter) above, applied one level further
+// in. pub(crate): read by both executor.rs (the parent side) and
+// sandbox_entry.rs (the child side).
+#[cfg(target_os = "linux")]
+pub(crate) const NOTIFY_FD_RENDEZVOUS: i32 = 5;
+
 /// Guardian entry point.
 ///
 /// Two modes:
@@ -19,14 +48,30 @@ const GUARDIAN_IPC_FD: i32 = 4;
 /// - (default): open the pre-established IPC socket at fd GUARDIAN_IPC_FD,
 ///   process GuardianRequests from the shim, independently verify + fetch each
 ///   approved command from the server, then execute under sandbox.
-#[tokio::main]
-async fn main() -> Result<()> {
+// Deliberately not `#[tokio::main]`: that macro builds a multi-threaded
+// runtime (extra OS threads) before any of this function's own body runs,
+// including the sandbox-entry check below. sandbox_entry::run() installs a
+// SECCOMP_FILTER_FLAG_NEW_LISTENER filter without TSYNC (thread-scoped by
+// design) and then execvp's -- it never awaits anything, so it has no need
+// for tokio at all, and running it with an extra live worker thread already
+// present at seccomp-install/execve time is exactly the kind of surprising
+// state a security-sensitive exec path shouldn't carry, whether or not it
+// is presently the cause of any specific bug. The tokio runtime is built
+// manually below, only for the non-sandbox-entry (outer request loop) path.
+fn main() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.get(1).map(|s| s.as_str()) == Some("sandbox-entry") {
         sandbox_entry::run(&raw_args[2..]);
         // run() diverges (exec or exit); this line is unreachable.
     }
 
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -250,3 +295,4 @@ fn error_response(req: ipc::GuardianRequest, msg: &str) -> ipc::GuardianResponse
         error:       Some(msg.to_string()),
     }
 }
+

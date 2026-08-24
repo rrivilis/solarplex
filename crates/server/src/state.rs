@@ -4,10 +4,11 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use axum::extract::ws::Utf8Bytes;
+use axum::http::StatusCode;
 use dashmap::DashMap;
 use openidconnect::core::CoreClient;
 use sqlx::PgPool;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, OnceCell};
 
 // ── Invoke rate limiting ──────────────────────────────────────────────────────
 
@@ -391,6 +392,22 @@ pub struct AppState {
     pub db: PgPool,
     /// Per-cap-id invoke rate buckets.  Keyed by cap_id; reset every 60 s.
     pub invoke_rate_limits: DashMap<String, RateBucket>,
+    /// Negative cache for caps `agent_heartbeat` (routes/sessions.rs) has
+    /// found to be permanently dead — not found, wrong session, expired,
+    /// revoked, or epoch-superseded. None of these ever recover, so once
+    /// seen the verdict is remembered forever and replayed without another
+    /// DB round-trip. A cap found to still be alive is never inserted here
+    /// — see `inflight_heartbeat_checks` for why re-validating a live cap
+    /// on every call is still correct (and required).
+    pub dead_heartbeat_caps: DashMap<String, (StatusCode, &'static str)>,
+    /// Singleflight coalescing for the `agent_heartbeat` DB-backed check,
+    /// keyed by cap_id. Exists only to dedupe genuinely concurrent
+    /// heartbeats for the same cap_id (client retry overlap, timer jitter)
+    /// onto one lookup — the cell is removed as soon as it resolves, so a
+    /// live cap is still freshly re-checked (expiry/revocation) on every
+    /// later call. Permanent verdicts move into `dead_heartbeat_caps`
+    /// instead, which is what actually stops the DB load, not this map.
+    pub inflight_heartbeat_checks: DashMap<String, Arc<OnceCell<Result<String, (StatusCode, &'static str)>>>>,
     /// Per-session standing approval policies.  Keyed by session_id.
     /// First matching policy wins; human gate is bypassed for auto_approve entries.
     pub approval_policies: DashMap<String, Vec<StandingPolicy>>,
@@ -450,16 +467,18 @@ impl AppState {
         let reflector = Reflector::with_replica_id(replica_id, db.clone());
         Self {
             db,
-            invoke_rate_limits:  DashMap::new(),
-            approval_policies:   DashMap::new(),
-            hubs:                DashMap::new(),
-            sessions:            Arc::new(DashMap::new()),
+            invoke_rate_limits:        DashMap::new(),
+            dead_heartbeat_caps:       DashMap::new(),
+            inflight_heartbeat_checks: DashMap::new(),
+            approval_policies:         DashMap::new(),
+            hubs:                      DashMap::new(),
+            sessions:                  Arc::new(DashMap::new()),
             oidc,
-            numa_nodes:          1,
-            reflector:           Arc::new(reflector),
-            cms:                 CmsState::new(),
-            rate_limits:         crate::rate_limit::GlobalLimiter::new(),
-            session_rate_limits: crate::rate_limit::SessionRateLimiter::new(),
+            numa_nodes:                1,
+            reflector:                 Arc::new(reflector),
+            cms:                       CmsState::new(),
+            rate_limits:               crate::rate_limit::GlobalLimiter::new(),
+            session_rate_limits:       crate::rate_limit::SessionRateLimiter::new(),
             prometheus_handle,
         }
     }

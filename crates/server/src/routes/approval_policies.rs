@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get},
@@ -34,34 +34,29 @@ pub fn router() -> Router<Arc<AppState>> {
 
 // ── GET /sessions/{id}/approval-policies ──────────────────────────────────────
 
-/// Two credential shapes accepted: a human's `sp_token` (dashboard reads),
-/// or an agent's `X-Session-Id`/`X-Actor-Id` headers (the shim needs its own
-/// session's standing policy to actually enforce it — see crates/shim's
-/// policy module — but agents never hold an sp_token; OIDC is human-only).
-/// Same header-based pattern already established for shim-originated reads
-/// in routes/approvals.rs's `require_shim_auth`, minus the approval-specific
-/// checks (there's no approval_id here, just the session's own policy list).
-async fn require_member_or_shim(
-    state: &Arc<AppState>, headers: &HeaderMap, session_id: &str,
-) -> Result<(), axum::response::Response> {
-    if crate::auth::require_session_member(&state.db, headers, session_id, MemberRole::Observer).await.is_ok() {
-        return Ok(());
-    }
-    let actor_id = headers.get("x-actor-id")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Authorization: Bearer <sp_token>, or X-Session-Id/X-Actor-Id required").into_response())?;
-    db::sessions::get_membership(&state.db, session_id, actor_id).await
-        .map_err(|_| (StatusCode::FORBIDDEN, "actor is not a member of the stated session").into_response())?;
-    Ok(())
+#[derive(Deserialize)]
+struct ListQuery {
+    /// Agent credential (the shim needs its own session's standing policy
+    /// to actually enforce it — see crates/shim's policy module — but
+    /// agents never hold an sp_token; OIDC is human-only). Carried as a
+    /// query param since this GET has no body. Validated via the same
+    /// `require_cap_auth` every other agent-facing endpoint uses — this
+    /// used to accept a bare `X-Actor-Id` header with no cap check at all,
+    /// which was the same weaker split-brain pattern `/events` and
+    /// `/artifacts` had.
+    cap_id: Option<String>,
 }
 
 #[autometrics]
 async fn list(
     Path(session_id): Path<String>,
     headers:          HeaderMap,
+    Query(q):         Query<ListQuery>,
     State(state):     State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if let Err(res) = require_member_or_shim(&state, &headers, &session_id).await {
+    if let Err(res) = crate::auth::require_sp_or_cap_auth(
+        &state.db, &headers, &session_id, q.cap_id.as_deref(), MemberRole::Observer,
+    ).await {
         return res;
     }
     let policies = state.approval_policies

@@ -189,7 +189,7 @@ export default function SessionPage() {
   const [attachActorId, setAttachActorId] = useState("fs-agent");
   const [attachTtl, setAttachTtl]         = useState(900);
   const [attachMcpPath, setAttachMcpPath] = useState("");
-  const [attachResult, setAttachResult]   = useState<{ token: string; launch_cmd: string; expires_at: string } | null>(null);
+  const [attachResult, setAttachResult]   = useState<{ token: string; launch_cmd: string; expires_at: string; sidecar_port: number } | null>(null);
   const [attachLoading, setAttachLoading] = useState(false);
 
   const handleAttach = useCallback(async () => {
@@ -859,6 +859,31 @@ export default function SessionPage() {
                     >
                       copy
                     </button>
+                  </div>
+                  {/* Called out on its own, not just embedded in the shell
+                      snippet above: this cap's SIDECAR_PORT is a per-cap hash,
+                      not the fixed 7777 every agent used to share (that was a
+                      real bug — two agents minted close together silently
+                      collided on the same port, so whichever shim/adapter held
+                      it was who your MCP client actually ended up talking to,
+                      with zero indication anything had switched). Whatever you
+                      point your MCP client at needs to match this exactly. */}
+                  <div>
+                    <label className="block text-2xs text-muted mb-1 font-medium">MCP URL — point your client here</label>
+                    <div className="relative">
+                      <pre className="bg-surface-0 border border-border rounded p-2 pr-14 text-2xs font-mono text-accent-blue overflow-x-auto whitespace-pre">
+                        {`http://localhost:${attachResult.sidecar_port}`}
+                      </pre>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(`http://localhost:${attachResult.sidecar_port}`);
+                          toast.success("Copied to clipboard");
+                        }}
+                        className="absolute top-1.5 right-2 text-2xs text-muted hover:text-subtle border border-border rounded px-1.5 py-0.5 bg-surface-1"
+                      >
+                        copy
+                      </button>
+                    </div>
                   </div>
                   <p className="text-2xs text-muted leading-relaxed">
                     Requires WSL/Linux with <code className="font-mono bg-surface-2 px-1 rounded">bwrap</code> installed

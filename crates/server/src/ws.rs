@@ -1109,7 +1109,7 @@ pub(crate) async fn emit_to_session(
     }
 
     // Tier-1 wakeup: notify observers (best-effort).
-    let _ = db::events::notify_session(&state.db, session_id, seq).await;
+    let _ = db::events::notify_session(&state.db, session_id, seq, state.reflector.replica_id()).await;
 
     if let Some(hub) = hub_opt {
         store_and_broadcast(&hub, seq, new_snap, &stamped).await;

@@ -136,6 +136,18 @@ async fn orb_path(
         }
 
         Some(resp) if resp.status == "pending" => {
+            // `orb_approval_id` is created server-side in routes/invoke.rs
+            // with the real tool args and already fully UI-visible (DB row
+            // + ApprovalRequested broadcast — see create_approval_for_session
+            // in ws.rs) and bound to the execution_receipts row that's what
+            // actually executes. Poll it directly — there used to be a
+            // second, shim-created "row B" approval here as well (meant to
+            // work around row A once carrying a placeholder instead of real
+            // args), but row A has carried the real args from the start, so
+            // row B was a pure duplicate: two approval cards in the UI per
+            // tool call, and only row B was ever polled, so a human voting
+            // on row A (indistinguishable from row B at a glance) left the
+            // shim waiting on an approval nobody was going to resolve.
             let orb_approval_id = match resp.approval_id {
                 Some(id) => id,
                 None => {
@@ -144,38 +156,11 @@ async fn orb_path(
                 }
             };
 
-            // Row B — the one a human actually sees and votes on via the
-            // normal session approval UI/CLI (session.poll_approval below
-            // waits on *this* id, not orb_approval_id). It used to carry a
-            // placeholder `{"_approval_id": orb_approval_id}` instead of the
-            // real tool arguments — nothing anywhere in this codebase ever
-            // reads that key back out, so a human voting on this approval
-            // could see the real tool *name* but not what it was actually
-            // going to be called with. Row A (orb_approval_id, created
-            // server-side in routes/invoke.rs with the real args) still
-            // exists and still binds the execution_receipts args that are
-            // what actually executes — this only fixes what the human sees.
-            tracing::debug!(
-                tool = %tool.tool, %orb_approval_id,
-                "shim: ORB dual approval row — creating human-facing row B for server-side row A",
-            );
-            let synthetic = ToolCall {
-                tool: tool.tool.clone(),
-                args: tool.args.clone(),
-            };
-            let sidecar_aid = match session.create_approval_req(&synthetic).await {
-                Some(id) => id,
-                None => {
-                    session.update_status(AgentStatus::Idle).await;
-                    return deny(&req.id, "ORB: failed to create sidecar approval");
-                }
-            };
-
             let scout_rx = scout::extract_command(&tool.args).and_then(|cmd| {
-                scout_pool.try_dispatch(cmd, sidecar_aid.clone(), session.clone(), None)
+                scout_pool.try_dispatch(cmd, orb_approval_id.clone(), session.clone(), None)
             });
 
-            match session.poll_approval(&sidecar_aid).await {
+            match session.poll_approval(&orb_approval_id).await {
                 ApprovalDecision::Granted => {
                     let manifest = collect_scout(scout_rx).await;
                     let (canonical_rpc, tier2_ctx) = consume_and_patch(
@@ -185,18 +170,18 @@ async fn orb_path(
 
                     // solarplex_exec via guardian.
                     if tool.tool == "solarplex_exec" {
-                        let exec = run_via_guardian(guardian, &sidecar_aid).await;
+                        let exec = run_via_guardian(guardian, &orb_approval_id).await;
                         session.update_status(AgentStatus::Idle).await;
                         return ipc::ProposalDecision {
                             id: req.id, granted: true,
-                            approval_id: Some(sidecar_aid), scout: manifest,
+                            approval_id: Some(orb_approval_id), scout: manifest,
                             exec_result: Some(exec), canonical_rpc: None, tier2_ctx: None, error: None,
                         };
                     }
 
                     ipc::ProposalDecision {
                         id: req.id, granted: true,
-                        approval_id: Some(sidecar_aid), scout: manifest,
+                        approval_id: Some(orb_approval_id), scout: manifest,
                         canonical_rpc: Some(canonical_rpc), tier2_ctx,
                         exec_result: None, error: None,
                     }

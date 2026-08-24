@@ -60,8 +60,11 @@ async fn run_listener(
         let notification = listener.recv().await?;
         let payload = notification.payload();
 
-        // Payload: "{session_id}:{seq}" — split on the first colon.
-        let Some((session_id, seq_str)) = payload.split_once(':') else {
+        // Payload: "{session_id}:{seq}:{replica_id}".
+        let mut parts = payload.splitn(3, ':');
+        let (Some(session_id), Some(seq_str), Some(replica_id)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
             tracing::warn!("event notifier: malformed payload: {payload}");
             continue;
         };
@@ -69,6 +72,15 @@ async fn run_listener(
             Ok(n)  => n,
             Err(_) => { tracing::warn!("event notifier: bad seq in payload: {payload}"); continue; }
         };
+
+        // Postgres delivers a NOTIFY to the issuing session too. The
+        // replica that made this write already broadcast it synchronously
+        // in the same request (see `emit_to_session`/`emit_via_task`) --
+        // redelivering it here would double every event for every client,
+        // same-replica or not. Only *other* replicas need this path.
+        if replica_id == state.reflector.replica_id() {
+            continue;
+        }
 
         // Clone the hub Arc (if any) before any await, same reasoning
         // `emit_to_session` already documents: never hold a DashMap ref

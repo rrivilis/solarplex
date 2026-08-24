@@ -78,20 +78,45 @@ impl SessionClient {
     /// `/stream` (that's browser-only), so this periodic call is the only
     /// signal the server has that this shim is still alive — see
     /// `sweep_stale_agents` in the server crate, which marks an actor
-    /// detached if this hasn't been called recently enough. Failures are
-    /// logged at debug, not warn/error: a single missed beat is expected to
-    /// happen occasionally and is not itself actionable.
-    pub async fn heartbeat(&self) {
+    /// detached if this hasn't been called recently enough. A transport
+    /// failure (network blip, server briefly down) is logged at debug and
+    /// is not itself actionable — a single missed beat is expected to
+    /// happen occasionally.
+    ///
+    /// Returns `true` if the caller should keep heartbeating, `false` if
+    /// the cap is confirmed permanently dead and the caller should stop.
+    ///
+    /// The previous version of this function never inspected the response
+    /// at all — `reqwest` only returns `Err` on a transport-level failure
+    /// (connection refused, DNS, ...), never for an HTTP error status, so a
+    /// 410 (cap expired or epoch-superseded — see `require_cap_auth` in the
+    /// server crate, both permanent, neither ever recovers on retry) landed
+    /// in neither branch and was silently dropped. Paired with the caller's
+    /// unconditional `loop { tick; heartbeat }`, that meant a shim whose cap
+    /// died kept POSTing every 15s forever with no way to ever stop —
+    /// observed directly: a single orphaned shim process produced a
+    /// continuous flood of 410s for over 24 hours.
+    pub async fn heartbeat(&self) -> bool {
         let Some(cap_id) = self.config.cap_id.as_deref() else {
             tracing::debug!("shim: heartbeat skipped — no cap_id");
-            return;
+            return true;
         };
         let url = self.session_url("/agent-heartbeat");
-        if let Err(e) = self.http.post(&url)
+        match self.http.post(&url)
             .json(&serde_json::json!({ "actor_id": &self.config.actor_id, "cap_id": cap_id }))
             .send().await
         {
-            tracing::debug!("shim: heartbeat failed: {e}");
+            Ok(resp) if resp.status() == reqwest::StatusCode::GONE => {
+                tracing::error!("shim: heartbeat: cap is gone (expired or epoch-superseded) — this process can do nothing further, stopping");
+                false
+            }
+            Ok(_) => true,
+            Err(e) => {
+                // Transport-level failure (network blip, server briefly
+                // down) — not a verdict on the cap itself, keep retrying.
+                tracing::debug!("shim: heartbeat failed: {e}");
+                true
+            }
         }
     }
 
@@ -124,18 +149,24 @@ impl SessionClient {
     /// see crate::policy::Policy's doc comment for why this matters: without
     /// it, the legacy (non-ORB) approval path only ever consulted its own
     /// hardcoded local list, never whatever the session owner actually
-    /// configured. Same X-Session-Id/X-Actor-Id header credential the shim
-    /// already uses successfully for poll_approval — agents never hold an
-    /// sp_token. Best-effort: an empty result (fetch failure, or no policies
-    /// configured) just means the local fallback list decides everything,
-    /// same as before this existed.
+    /// configured. Carries `cap_id` as a query param — agents never hold an
+    /// sp_token, and this GET has no body to carry one the way ORB's POST
+    /// endpoints do — validated server-side via the same `require_cap_auth`
+    /// every other agent-facing endpoint uses, not the weaker X-Session-Id/
+    /// X-Actor-Id header-trust check this used to lean on. Best-effort: an
+    /// empty result (no cap_id, fetch failure, or no policies configured)
+    /// just means the local fallback list decides everything, same as
+    /// before this existed — a legacy (non-ORB) agent has no cap_id at all,
+    /// so it now always gets that local-fallback behavior instead of the
+    /// header-trust path it used to get. Accepted narrowing, not an
+    /// oversight: cap possession is the real security boundary every other
+    /// caller of this endpoint already stands behind.
     pub async fn fetch_approval_policies(&self) -> Vec<crate::policy::ServerPolicy> {
-        let url = self.session_url("/approval-policies");
-        match self.http.get(&url)
-            .header("X-Session-Id", &self.config.session_id)
-            .header("X-Actor-Id",   &self.config.actor_id)
-            .send().await
-        {
+        let Some(cap_id) = self.config.cap_id.as_deref() else {
+            return Vec::new();
+        };
+        let url = format!("{}?cap_id={cap_id}", self.session_url("/approval-policies"));
+        match self.http.get(&url).send().await {
             Ok(r) if r.status().is_success() => r.json().await.unwrap_or_else(|e| {
                 tracing::warn!("shim: approval-policies parse error: {e}");
                 Vec::new()
@@ -276,6 +307,122 @@ impl SessionClient {
             .send().await
         {
             tracing::warn!("shim: post_message failed: {e}");
+        }
+    }
+
+    // ── ServerCall backends ──────────────────────────────────────────────────
+    //
+    // One method per `protocol::ipc::ServerCall` variant: the shim-side
+    // implementation dispatched to from main.rs's IPC reader loop. All of
+    // these used to be direct `reqwest` calls made *inside the adapter*,
+    // reading `cap_id` from the adapter's own Config; see `ServerCall`'s doc
+    // comment for why that was the wrong process to hold that credential.
+    // Uniform `Result<Value, String>` return so the IPC dispatch loop can
+    // fold any of them into a `ServerCallResponse` without a match per type.
+
+    fn require_cap(&self) -> Result<&str, String> {
+        self.config.cap_id.as_deref()
+            .ok_or_else(|| "no cap_id (SOLARPLEX_TOKEN was never exchanged)".to_string())
+    }
+
+    async fn call_json(
+        &self,
+        method: reqwest::Method,
+        url:    &str,
+        body:   Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let mut req = self.http.request(method, url);
+        if let Some(b) = body { req = req.json(&b); }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("HTTP {status}: {text}"));
+        }
+        // Not every endpoint returns a body (some are 204 No Content) --
+        // that's success with nothing to report, not a parse failure.
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+        if bytes.is_empty() { return Ok(serde_json::Value::Null); }
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+    }
+
+    pub async fn register_methods(&self, methods: serde_json::Value) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let url = self.session_url("/methods");
+        self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
+            "actor_id": &self.config.actor_id,
+            "cap_id":   cap_id,
+            "methods":  methods,
+        }))).await
+    }
+
+    pub async fn list_artifacts(&self) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let url = format!("{}?cap_id={cap_id}", self.session_url("/artifacts"));
+        self.call_json(reqwest::Method::GET, &url, None).await
+    }
+
+    pub async fn read_artifact(&self, id: &str) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let url = format!("{}?cap_id={cap_id}", self.session_url(&format!("/artifacts/{id}")));
+        self.call_json(reqwest::Method::GET, &url, None).await
+    }
+
+    pub async fn create_artifact(
+        &self, name: &str, artifact_type: &str, content: &str,
+    ) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let url = self.session_url("/artifacts");
+        self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
+            "created_by":    &self.config.actor_id,
+            "cap_id":        cap_id,
+            "name":          name,
+            "artifact_type": artifact_type,
+            "content":       content,
+        }))).await
+    }
+
+    pub async fn update_artifact(&self, id: &str, content: &str) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let url = self.session_url(&format!("/artifacts/{id}"));
+        self.call_json(reqwest::Method::PATCH, &url, Some(serde_json::json!({
+            "content": content,
+            "cap_id":  cap_id,
+        }))).await
+    }
+
+    pub async fn add_context(&self, kind: &str, content: &str) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let authored_by = "agent"; // this is always the agent-side shim; no human path here
+        let url = self.session_url("/context");
+        self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
+            "actor_id":    &self.config.actor_id,
+            "cap_id":      cap_id,
+            "kind":        kind,
+            "content":     content,
+            "authored_by": authored_by,
+        }))).await
+    }
+
+    pub async fn read_feed(&self, limit: u64) -> Result<serde_json::Value, String> {
+        let cap_id = self.require_cap()?;
+        let url = format!("{}?limit={limit}&cap_id={cap_id}", self.session_url("/events"));
+        self.call_json(reqwest::Method::GET, &url, None).await
+    }
+
+    /// Single dispatch point from `main.rs`'s IPC reader loop to whichever
+    /// method above backs the requested op.
+    pub async fn dispatch_server_call(&self, call: protocol::ipc::ServerCall) -> Result<serde_json::Value, String> {
+        use protocol::ipc::ServerCall::*;
+        match call {
+            RegisterMethods { methods }                    => self.register_methods(methods).await,
+            ListArtifacts                                   => self.list_artifacts().await,
+            ReadArtifact { id }                             => self.read_artifact(&id).await,
+            CreateArtifact { name, artifact_type, content } => self.create_artifact(&name, &artifact_type, &content).await,
+            UpdateArtifact { id, content }                  => self.update_artifact(&id, &content).await,
+            PostMessage { content }                         => { self.post_message(content).await; Ok(serde_json::Value::Null) }
+            AddContext { kind, content }                    => self.add_context(&kind, &content).await,
+            ReadFeed { limit }                              => self.read_feed(limit).await,
         }
     }
 
