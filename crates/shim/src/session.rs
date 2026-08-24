@@ -21,7 +21,7 @@ impl SessionClient {
     }
 
     fn session_url(&self, suffix: &str) -> String {
-        format!("{}/api/sessions/{}{}", self.api_base, self.config.session_id, suffix)
+        format!("{}/api/sessions/{}{}", self.api_base, self.config.identity().session_id, suffix)
     }
 
     /// Announce that a real MCP client has attached. Called in response to
@@ -29,19 +29,20 @@ impl SessionClient {
     /// connection open, not merely "the shim process started" (which is not
     /// itself evidence anyone is actually there).
     pub async fn announce(&self) {
-        let Some(cap_id) = self.config.cap_id.as_deref() else {
+        let identity = self.config.identity();
+        let Some(cap_id) = identity.cap_id.as_deref() else {
             tracing::error!("shim: agent-attach skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)");
             return;
         };
         let url = self.session_url("/agent-attach");
         match self.http.post(&url)
-            .json(&serde_json::json!({ "actor_id": &self.config.actor_id, "cap_id": cap_id }))
+            .json(&serde_json::json!({ "actor_id": &identity.actor_id, "cap_id": cap_id }))
             .send().await
         {
             Ok(r) if r.status().is_success() => {
                 tracing::info!(
-                    actor_id   = %self.config.actor_id,
-                    session_id = %self.config.session_id,
+                    actor_id   = %identity.actor_id,
+                    session_id = %identity.session_id,
                     "shim: announced to server",
                 );
             }
@@ -53,19 +54,20 @@ impl SessionClient {
     /// Announce that the MCP client has disconnected. Called in response to
     /// `AdapterMessage::ClientDisconnected` — the adapter's SSE stream closed.
     pub async fn detach(&self) {
-        let Some(cap_id) = self.config.cap_id.as_deref() else {
+        let identity = self.config.identity();
+        let Some(cap_id) = identity.cap_id.as_deref() else {
             tracing::error!("shim: agent-detach skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)");
             return;
         };
         let url = self.session_url("/agent-detach");
         match self.http.post(&url)
-            .json(&serde_json::json!({ "actor_id": &self.config.actor_id, "cap_id": cap_id }))
+            .json(&serde_json::json!({ "actor_id": &identity.actor_id, "cap_id": cap_id }))
             .send().await
         {
             Ok(r) if r.status().is_success() => {
                 tracing::info!(
-                    actor_id   = %self.config.actor_id,
-                    session_id = %self.config.session_id,
+                    actor_id   = %identity.actor_id,
+                    session_id = %identity.session_id,
                     "shim: detached from server",
                 );
             }
@@ -97,13 +99,14 @@ impl SessionClient {
     /// observed directly: a single orphaned shim process produced a
     /// continuous flood of 410s for over 24 hours.
     pub async fn heartbeat(&self) -> bool {
-        let Some(cap_id) = self.config.cap_id.as_deref() else {
+        let identity = self.config.identity();
+        let Some(cap_id) = identity.cap_id.as_deref() else {
             tracing::debug!("shim: heartbeat skipped — no cap_id");
             return true;
         };
         let url = self.session_url("/agent-heartbeat");
         match self.http.post(&url)
-            .json(&serde_json::json!({ "actor_id": &self.config.actor_id, "cap_id": cap_id }))
+            .json(&serde_json::json!({ "actor_id": &identity.actor_id, "cap_id": cap_id }))
             .send().await
         {
             Ok(resp) if resp.status() == reqwest::StatusCode::GONE => {
@@ -121,7 +124,8 @@ impl SessionClient {
     }
 
     pub async fn update_status(&self, status: AgentStatus) {
-        let Some(cap_id) = self.config.cap_id.as_deref() else {
+        let identity = self.config.identity();
+        let Some(cap_id) = identity.cap_id.as_deref() else {
             tracing::warn!("shim: update_status skipped — no cap_id");
             return;
         };
@@ -135,7 +139,7 @@ impl SessionClient {
         let url = self.session_url("/agent-status");
         if let Err(e) = self.http.post(&url)
             .json(&serde_json::json!({
-                "actor_id": &self.config.actor_id,
+                "actor_id": &identity.actor_id,
                 "cap_id":   cap_id,
                 "status":   status_str,
             }))
@@ -162,7 +166,7 @@ impl SessionClient {
     /// oversight: cap possession is the real security boundary every other
     /// caller of this endpoint already stands behind.
     pub async fn fetch_approval_policies(&self) -> Vec<crate::policy::ServerPolicy> {
-        let Some(cap_id) = self.config.cap_id.as_deref() else {
+        let Some(cap_id) = self.config.identity().cap_id else {
             return Vec::new();
         };
         let url = format!("{}?cap_id={cap_id}", self.session_url("/approval-policies"));
@@ -183,11 +187,12 @@ impl SessionClient {
     }
 
     pub async fn create_approval_req(&self, tool_call: &ToolCall) -> Option<String> {
-        let cap_id = self.config.cap_id.as_deref()?;
+        let identity = self.config.identity();
+        let cap_id = identity.cap_id.as_deref()?;
         let url = self.session_url("/approvals");
         let resp = self.http.post(&url)
             .json(&serde_json::json!({
-                "actor_id":     &self.config.actor_id,
+                "actor_id":     &identity.actor_id,
                 "cap_id":       cap_id,
                 "tool_name":    &tool_call.tool,
                 "arguments":    &tool_call.args,
@@ -205,6 +210,7 @@ impl SessionClient {
     }
 
     pub async fn poll_approval(&self, approval_id: &str) -> ApprovalDecision {
+        let identity = self.config.identity();
         let timeout_secs = 25u64;
         let poll_url = format!(
             "{}/api/approvals/{}/resolution?timeout={}",
@@ -214,8 +220,8 @@ impl SessionClient {
         let poll_resp = match tokio::time::timeout(
             client_timeout,
             self.http.get(&poll_url)
-                .header("X-Session-Id", &self.config.session_id)
-                .header("X-Actor-Id",   &self.config.actor_id)
+                .header("X-Session-Id", &identity.session_id)
+                .header("X-Actor-Id",   &identity.actor_id)
                 .send(),
         ).await {
             Ok(Ok(r)) => r,
@@ -249,10 +255,11 @@ impl SessionClient {
         approval_id: &str,
         effects:     &protocol::effects::DeclaredEffects,
     ) {
+        let identity = self.config.identity();
         let url = format!("{}/api/approvals/{}/declared-effects", self.api_base, approval_id);
         if let Err(e) = self.http.patch(&url)
-            .header("X-Session-Id", &self.config.session_id)
-            .header("X-Actor-Id",   &self.config.actor_id)
+            .header("X-Session-Id", &identity.session_id)
+            .header("X-Actor-Id",   &identity.actor_id)
             .json(&serde_json::json!({ "declared_effects": effects }))
             .send().await
         {
@@ -265,10 +272,11 @@ impl SessionClient {
         approval_id: &str,
         manifest:    &protocol::effects::ScoutManifest,
     ) {
+        let identity = self.config.identity();
         let url = format!("{}/api/approvals/{}/scout", self.api_base, approval_id);
         if let Err(e) = self.http.patch(&url)
-            .header("X-Session-Id", &self.config.session_id)
-            .header("X-Actor-Id",   &self.config.actor_id)
+            .header("X-Session-Id", &identity.session_id)
+            .header("X-Actor-Id",   &identity.actor_id)
             .json(&serde_json::json!({ "scout_manifest": manifest }))
             .send().await
         {
@@ -282,10 +290,11 @@ impl SessionClient {
         manifest:    &protocol::effects::ExecutionManifest,
         diverged:    bool,
     ) {
+        let identity = self.config.identity();
         let url = format!("{}/api/approvals/{}/execution", self.api_base, approval_id);
         if let Err(e) = self.http.patch(&url)
-            .header("X-Session-Id", &self.config.session_id)
-            .header("X-Actor-Id",   &self.config.actor_id)
+            .header("X-Session-Id", &identity.session_id)
+            .header("X-Actor-Id",   &identity.actor_id)
             .json(&serde_json::json!({
                 "execution_manifest": manifest,
                 "diverged":           diverged,
@@ -297,11 +306,12 @@ impl SessionClient {
     }
 
     pub async fn post_message(&self, content: String) {
+        let identity = self.config.identity();
         let url = self.session_url("/messages");
         if let Err(e) = self.http.post(&url)
             .json(&serde_json::json!({
-                "actor_id": &self.config.actor_id,
-                "cap_id":   self.config.cap_id.as_deref(),
+                "actor_id": &identity.actor_id,
+                "cap_id":   identity.cap_id.as_deref(),
                 "content":  content,
             }))
             .send().await
@@ -320,8 +330,8 @@ impl SessionClient {
     // Uniform `Result<Value, String>` return so the IPC dispatch loop can
     // fold any of them into a `ServerCallResponse` without a match per type.
 
-    fn require_cap(&self) -> Result<&str, String> {
-        self.config.cap_id.as_deref()
+    fn require_cap(&self) -> Result<String, String> {
+        self.config.identity().cap_id
             .ok_or_else(|| "no cap_id (SOLARPLEX_TOKEN was never exchanged)".to_string())
     }
 
@@ -348,9 +358,10 @@ impl SessionClient {
 
     pub async fn register_methods(&self, methods: serde_json::Value) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
+        let actor_id = self.config.identity().actor_id;
         let url = self.session_url("/methods");
         self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
-            "actor_id": &self.config.actor_id,
+            "actor_id": actor_id,
             "cap_id":   cap_id,
             "methods":  methods,
         }))).await
@@ -372,9 +383,10 @@ impl SessionClient {
         &self, name: &str, artifact_type: &str, content: &str,
     ) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
+        let actor_id = self.config.identity().actor_id;
         let url = self.session_url("/artifacts");
         self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
-            "created_by":    &self.config.actor_id,
+            "created_by":    actor_id,
             "cap_id":        cap_id,
             "name":          name,
             "artifact_type": artifact_type,
@@ -393,10 +405,11 @@ impl SessionClient {
 
     pub async fn add_context(&self, kind: &str, content: &str) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
+        let actor_id = self.config.identity().actor_id;
         let authored_by = "agent"; // this is always the agent-side shim; no human path here
         let url = self.session_url("/context");
         self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
-            "actor_id":    &self.config.actor_id,
+            "actor_id":    actor_id,
             "cap_id":      cap_id,
             "kind":        kind,
             "content":     content,
@@ -487,11 +500,12 @@ impl SessionClient {
         observed_hash_before: &str,
         actual_hash_after:    &str,
     ) -> Option<AttestationResult> {
+        let identity = self.config.identity();
         let url = self.session_url("/attest");
         let body = serde_json::json!({
             "receipt_id":           receipt_id,
             "cap_id":               cap_id,
-            "actor_id":             &self.config.actor_id,
+            "actor_id":             &identity.actor_id,
             "tool":                 tool,
             "path":                 path,
             "approved_hash_before": approved_hash_before,

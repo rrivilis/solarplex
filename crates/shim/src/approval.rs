@@ -34,20 +34,21 @@ pub async fn handle_proposal(
     policy:     &Policy,
 ) -> ipc::ProposalDecision {
     let tool = &req.tool;
+    let identity = config.identity();
 
     // Cap permission check.
-    if !config.permissions.is_empty() && !config.permissions.contains(&tool.tool) {
+    if !identity.permissions.is_empty() && !identity.permissions.contains(&tool.tool) {
         tracing::warn!(tool = %tool.tool, "shim: blocked by cap permissions");
         return deny(&req.id, "tool not permitted under this capability scope");
     }
 
     // ── ORB path (cap_id present) ─────────────────────────────────────────────
-    if let Some(ref cap_id) = config.cap_id {
+    if let Some(ref cap_id) = identity.cap_id {
         return orb_path(req, config, session, scout_pool, guardian, cap_id).await;
     }
 
     // ── Legacy path (no cap_id) ───────────────────────────────────────────────
-    if !policy.requires_approval(&config.actor_id, &tool.tool) {
+    if !policy.requires_approval(&identity.actor_id, &tool.tool) {
         tracing::debug!(tool = %tool.tool, "shim: auto-approved (allow-list)");
         session.update_status(AgentStatus::Running).await;
         return ipc::ProposalDecision {
@@ -114,7 +115,7 @@ async fn orb_path(
     cap_id:     &str,
 ) -> ipc::ProposalDecision {
     let tool = &req.tool;
-    let slug  = actor_id_to_slug(&config.actor_id);
+    let slug  = actor_id_to_slug(&config.identity().actor_id);
     let addr  = format!("mcp.{slug}.{}", tool.tool);
 
     session.update_status(AgentStatus::Waiting).await;
@@ -358,7 +359,7 @@ pub async fn handle_exec_done(
     if let Some(ref t) = notice.tier2 {
         let t_clone = t.clone();
         let sess    = session.clone();
-        let actor   = config.actor_id.clone();
+        let actor   = config.identity().actor_id;
         tokio::spawn(async move {
             if let Some(result) = sess.attest_file_write(
                 &t_clone.receipt_id, &t_clone.cap_id, &t_clone.tool, &t_clone.path,
@@ -379,6 +380,6 @@ pub async fn handle_exec_done(
     }
 
     // Feed message: "agent called X".
-    let content = format!("**{}** called `{}`", config.actor_id, notice.tool_name);
+    let content = format!("**{}** called `{}`", config.identity().actor_id, notice.tool_name);
     session.post_message(content).await;
 }

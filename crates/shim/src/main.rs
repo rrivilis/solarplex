@@ -1,6 +1,7 @@
 mod approval;
 mod policy;
 mod scout;
+mod sealed;
 mod session;
 
 use std::collections::HashMap;
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use protocol::ipc;
 use tokio::sync::mpsc;
 
+use sealed::SealedJson;
 use session::SessionClient;
 
 // Well-known fd numbers placed in each child by dup2 in the pre_exec hook.
@@ -17,17 +19,33 @@ use session::SessionClient;
 const ADAPTER_IPC_FD:  i32 = 3; // adapter reads/writes its shim socket on this fd
 const GUARDIAN_IPC_FD: i32 = 4; // guardian reads/writes its shim socket on this fd
 
+/// This shim's own held cap-node: `(session_id, actor_id, cap_id,
+/// permissions)` — set once via the `SOLARPLEX_TOKEN` exchange at startup
+/// and never mutated after. See `crate::sealed`'s module doc for why this
+/// specific tuple is sealed rather than plain `Config` fields: it's the
+/// closest thing to a single cap-DAG node held in any process's memory in
+/// this codebase (the DAG itself is server-side — docs/threat-model.md
+/// §4.3), and `permissions` is the shim's own local, first-line
+/// enforcement of the DAG's attenuation invariant (`approval::handle_proposal`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Identity {
+    pub session_id:  String,
+    pub actor_id:    String,
+    pub cap_id:      Option<String>,
+    pub permissions: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct Config {
+    /// Private: reachable only via `Config::identity()`, which always
+    /// deserializes fresh from the sealed region rather than exposing a
+    /// long-lived reference to a plain field — see `crate::sealed`.
+    identity:             SealedJson<Identity>,
     pub server_ws:        String,
-    pub session_id:       String,
-    pub actor_id:         String,
     pub listen_port:      u16,
     pub upstream_mcp:     String,
     pub upstream_mcp_cmd: Option<String>,
     pub fail_open:        bool,
-    pub cap_id:           Option<String>,
-    pub permissions:      Vec<String>,
     pub tool_categories:  HashMap<String, String>,
 }
 
@@ -37,18 +55,29 @@ impl Config {
             .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let tool_categories: HashMap<String, String> = std::env::var("SOLARPLEX_TOOL_CATEGORIES")
             .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let identity = Identity {
+            session_id:  std::env::var("SOLARPLEX_SESSION_ID")?,
+            actor_id:    std::env::var("SOLARPLEX_ACTOR_ID")?,
+            cap_id:      std::env::var("SOLARPLEX_CAP_ID").ok(),
+            permissions,
+        };
         Ok(Self {
+            identity:     SealedJson::new(&identity),
             server_ws:    std::env::var("SOLARPLEX_WS").unwrap_or_else(|_| "ws://localhost:8080".into()),
-            session_id:   std::env::var("SOLARPLEX_SESSION_ID")?,
-            actor_id:     std::env::var("SOLARPLEX_ACTOR_ID")?,
             listen_port:  std::env::var("SIDECAR_PORT").unwrap_or_else(|_| "7777".into()).parse()?,
             upstream_mcp: std::env::var("UPSTREAM_MCP_URL").unwrap_or_default(),
             upstream_mcp_cmd: std::env::var("UPSTREAM_MCP_CMD").ok(),
             fail_open:    std::env::var("FAIL_OPEN").map(|v| v == "true" || v == "1").unwrap_or(false),
-            cap_id:       std::env::var("SOLARPLEX_CAP_ID").ok(),
-            permissions,
             tool_categories,
         })
+    }
+
+    /// Fresh, owned snapshot of this shim's held cap-node identity —
+    /// deserialized from the sealed region on every call (see
+    /// `crate::sealed`'s module doc). Cheap: a handful of small
+    /// string/Vec fields, called far less often than once per proposal.
+    pub fn identity(&self) -> Identity {
+        self.identity.get()
     }
 }
 
@@ -117,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
     // scattered ways. Fail loudly at startup instead — this is the one
     // place that can say why, once, instead of every downstream caller
     // guessing.
-    if config.cap_id.is_none() {
+    let identity = config.identity();
+    if identity.cap_id.is_none() {
         anyhow::bail!(
             "shim: no cap_id. SOLARPLEX_TOKEN was not exchanged (or SOLARPLEX_CAP_ID wasn't \
              otherwise set). Every supported deployment goes through the attach-token exchange; \
@@ -126,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    tracing::info!(session_id = %config.session_id, actor_id = %config.actor_id, "shim starting");
+    tracing::info!(session_id = %identity.session_id, actor_id = %identity.actor_id, "shim starting");
 
     let session = Arc::new(SessionClient::new(config.clone()));
 
@@ -171,6 +201,10 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     use std::os::unix::net::UnixStream as StdUnixStream;
     use std::os::unix::process::CommandExt;
 
+    // One fresh, owned snapshot for the whole function — every use below
+    // reads from this local rather than re-deserializing per line.
+    let identity = config.identity();
+
     // ── Guardian socketpair ───────────────────────────────────────────────────
     // One end stays in the shim (sv0); the other (sv1) is dup2'd to
     // GUARDIAN_IPC_FD in the guardian's pre_exec hook.
@@ -184,8 +218,8 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     let mut guardian_cmd = std::process::Command::new(&guardian_bin);
     guardian_cmd
         .env("SOLARPLEX_WS",         &config.server_ws)
-        .env("SOLARPLEX_SESSION_ID", &config.session_id)
-        .env("SOLARPLEX_ACTOR_ID",   &config.actor_id)
+        .env("SOLARPLEX_SESSION_ID", &identity.session_id)
+        .env("SOLARPLEX_ACTOR_ID",   &identity.actor_id)
         .stderr(std::process::Stdio::inherit());
     if std::env::var("SOLARPLEX_GUARDIAN_FAIL_OPEN").is_ok() {
         guardian_cmd.env("SOLARPLEX_GUARDIAN_FAIL_OPEN", "1");
@@ -248,8 +282,8 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     let mut adapter_cmd = std::process::Command::new(&adapter_bin);
     adapter_cmd
         .env("SOLARPLEX_WS",         &config.server_ws)
-        .env("SOLARPLEX_SESSION_ID", &config.session_id)
-        .env("SOLARPLEX_ACTOR_ID",   &config.actor_id)
+        .env("SOLARPLEX_SESSION_ID", &identity.session_id)
+        .env("SOLARPLEX_ACTOR_ID",   &identity.actor_id)
         .env("SIDECAR_PORT",         config.listen_port.to_string())
         .env("UPSTREAM_MCP_URL",     &config.upstream_mcp);
     if let Some(ref cmd_str) = config.upstream_mcp_cmd {
@@ -258,12 +292,12 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     if config.fail_open {
         adapter_cmd.env("FAIL_OPEN", "1");
     }
-    if let Some(ref cap_id) = config.cap_id {
+    if let Some(ref cap_id) = identity.cap_id {
         adapter_cmd.env("SOLARPLEX_CAP_ID", cap_id);
     }
-    if !config.permissions.is_empty() {
+    if !identity.permissions.is_empty() {
         adapter_cmd.env("SOLARPLEX_PERMISSIONS",
-            serde_json::to_string(&config.permissions)?);
+            serde_json::to_string(&identity.permissions)?);
     }
     // Safety: same as guardian pre_exec above.
     unsafe {
@@ -300,8 +334,15 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     // this fetch, the legacy (non-ORB) approval path never consulted the
     // session's real configured policy at all — see policy::Policy's doc
     // comment.
-    let policy = {
-        let mut p = policy::Policy::default();
+    // Async fetch happens before building/sealing PolicyData -- Policy::build's
+    // closure is synchronous by design (see its doc comment), so the result
+    // is fetched first and moved in.
+    let server_policies = session.fetch_approval_policies().await;
+    tracing::info!(
+        server_policy_count = server_policies.len(),
+        "shim: loaded session standing policy",
+    );
+    let policy = policy::Policy::build(|p| {
         for name in &[
             "read_file", "list_directory", "directory_tree", "search_files",
             "get_file_info", "list_allowed_directories",
@@ -311,13 +352,8 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
         ] {
             p.auto_approve.insert(name.to_string());
         }
-        p.server_policies = session.fetch_approval_policies().await;
-        tracing::info!(
-            server_policy_count = p.server_policies.len(),
-            "shim: loaded session standing policy",
-        );
-        p
-    };
+        p.server_policies = server_policies;
+    });
 
     // ── Adapter IPC: background writer ────────────────────────────────────────
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<ipc::ShimMessage>();
