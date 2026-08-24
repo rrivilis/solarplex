@@ -272,15 +272,30 @@ async fn handle_request(
         "guardian: executing approved command",
     );
 
+    // Snapshot the declared-effect paths from inside this process, before
+    // and after the sandboxed run -- this is the real filesystem view the
+    // command actually touched (the adapter's own view, a different
+    // process entirely, never sees the guardian's sandbox at all, which is
+    // exactly why this used to be an unfixable no-op one hop downstream).
+    let snap_paths: Vec<String> = approved.declared.file_effects.iter()
+        .map(|fe| fe.path.0.clone())
+        .collect();
+    let pre_snap = ipc::snapshot_paths(&snap_paths).await;
+
     match executor::ring2_exec(&approved.command, &approved.declared).await {
-        Ok(result) => ipc::GuardianResponse {
-            id:          req.id,
-            approval_id: req.approval_id,
-            stdout:      result.stdout,
-            stderr:      result.stderr,
-            exit_code:   result.exit_code,
-            error:       None,
-        },
+        Ok(result) => {
+            let post_snap = ipc::snapshot_paths(&snap_paths).await;
+            ipc::GuardianResponse {
+                id:          req.id,
+                approval_id: req.approval_id,
+                stdout:      result.stdout,
+                stderr:      result.stderr,
+                exit_code:   result.exit_code,
+                pre_snap,
+                post_snap,
+                error:       None,
+            }
+        }
         Err(e) => error_response(req, &format!("sandbox exec failed: {e}")),
     }
 }
@@ -291,6 +306,8 @@ fn error_response(req: ipc::GuardianRequest, msg: &str) -> ipc::GuardianResponse
         approval_id: req.approval_id,
         stdout:      String::new(),
         stderr:      String::new(),
+        pre_snap:    std::collections::HashMap::new(),
+        post_snap:   std::collections::HashMap::new(),
         exit_code:   -1,
         error:       Some(msg.to_string()),
     }

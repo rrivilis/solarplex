@@ -2,11 +2,9 @@
 //! state, including its held cap's identity/permissions (`Config`) and the cached
 //! standing policy (`Policy`) via `mmap` -> `mprotect(PROT_READ)` ->
 //! `mseal()`, so that a memory-corruption bug in this process (the one
-//! process the threat model designates as trusted. Per threat model,
-//! "holds session token and cap material") annot silently rewrite its own
-//!  authority-adjacent state in place.
+//! process the threat model designates as trusted.
 //!
-//! `mseal()` (Linux 6.10+) is permanent -- no unseal, no `munmap` -- which
+//! `mseal()` (Linux 6.10+) is permanent (no unseal or `munmap`) which
 //! is exactly why this is only used for data written once at process start
 //! and read for the rest of the process's life, never per-request (a
 //! per-request seal would leak a mapping on every tool call). `SYS_mseal`

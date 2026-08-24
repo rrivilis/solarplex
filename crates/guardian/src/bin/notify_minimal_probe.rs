@@ -53,7 +53,10 @@ struct SeccompNotifAddfd {
     newfd_flags: u32,
 }
 
-const SECCOMP_ADDFD_FLAG_SEND: u32 = 1 << 0;
+// See seccomp_ffi.rs's SECCOMP_ADDFD_FLAG_SEND for why this must be 1 << 1,
+// not 1 << 0 (that's SECCOMP_ADDFD_FLAG_SETFD) -- this was the root cause
+// of the hang this probe was built to reproduce.
+const SECCOMP_ADDFD_FLAG_SEND: u32 = 1 << 1;
 const SECCOMP_USER_NOTIF_FLAG_CONTINUE: u32 = 1 << 0;
 
 const fn ioc(dir: u32, ty: u32, nr: u32, size: u32) -> u64 {

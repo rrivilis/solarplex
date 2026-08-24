@@ -273,14 +273,14 @@ fn handle_notification(proc: &SupervisedProcess) -> anyhow::Result<()> {
     }
 
     match resolve_and_authorize(&proc.declared, req.pid, &req) {
-        Some(real_path) => {
+        Some((real_path, open_opts)) => {
             // Re-check immediately before acting on what was read -- narrows
             // (does not fully eliminate) the window between the memory read
             // inside resolve_and_authorize and this decision.
             if seccomp_ffi::notif_id_valid(notify_fd, req.id).is_err() {
                 return Ok(());
             }
-            match std::fs::File::open(&real_path) {
+            match open_opts.open(&real_path) {
                 Ok(file) => {
                     let addfd_result = seccomp_ffi::notif_addfd(notify_fd, req.id, file.as_raw_fd());
                     match &addfd_result {
@@ -340,6 +340,30 @@ fn handle_notification(proc: &SupervisedProcess) -> anyhow::Result<()> {
 /// path only declared for `write`) relative to what Landlock itself would
 /// allow for the exact same request.
 ///
+/// Also resolves the *open mode* to grant, from the notified syscall's own
+/// requested flags (openat's flags register, or openat2's `open_how.flags`
+/// -- both read once, same TOCTOU posture as the pathname read above: an
+/// attacker-controlled flags value can only affect which mode Guardian
+/// opens the file in, bounded by what `declared.file_effects` already
+/// authorizes for that path; it cannot redirect *which* object gets
+/// touched, which is the only thing TOCTOU-safety here is actually about).
+/// This was a real, distinct bug from the TOCTOU design itself: an earlier
+/// version of `handle_notification` always used `File::open` (read-only)
+/// regardless of what the tracee asked for, so a declared *write* effect's
+/// ADDFD-injected fd would fail with EIO/EBADF the moment the tracee tried
+/// to actually write through it -- caught via live end-to-end testing
+/// (`sh: echo: I/O error` on the redirect half of a write scenario), not
+/// by inspection; the ADDFD success/wake path masked it completely since
+/// unlink/rename don't need write-mode opens to matter, only openat does.
+///
+/// `unlink`/`unlinkat`/`rename*` have no "open mode" concept at all --
+/// noted here rather than silently ignored: `ADDFD`'s response value is
+/// always the injected fd *number*, but these syscalls return `0` on
+/// success, not an fd, so granting them via `ADDFD` the way `openat` is
+/// granted is already semantically questionable independent of this fix.
+/// Not exercised by the current test scenarios; worth its own look before
+/// relying on declared delete/rename grants specifically.
+///
 /// Returns `None` if the memory read fails (no `CAP_SYS_PTRACE` and no
 /// applicable ancestor exception) or the path isn't a declared, op-matching
 /// effect -- both fall through to `CONTINUE` in the caller, deliberately:
@@ -355,7 +379,7 @@ fn resolve_and_authorize(
     declared: &DeclaredEffects,
     pid: u32,
     req: &seccomp_ffi::SeccompNotif,
-) -> Option<std::path::PathBuf> {
+) -> Option<(std::path::PathBuf, std::fs::OpenOptions)> {
     let requested = read_tracee_cstring(pid, req.args[1])?;
     let nr = req.syscall_nr();
     let needs_op: fn(&protocol::effects::FileOps) -> bool =
@@ -366,20 +390,60 @@ fn resolve_and_authorize(
         } else {
             // openat/openat2: a plain read-open is never registered as a
             // FileEffect at all (see DeclaredEffects::from_scout), so any
-            // declared effect on this path at all is sufficient here --
-            // distinguishing read-open from write/create/trunc would need
-            // parsing the syscall's flags argument, which this design
-            // deliberately doesn't need to (the pathname is the only
-            // argument whose TOCTOU safety this mechanism is about).
+            // declared effect on this path at all is sufficient here to
+            // *match* -- the actual read/write mode granted is resolved
+            // separately below, from the syscall's own requested flags.
             |ops| ops.any()
         };
 
     for fe in &declared.file_effects {
         if !needs_op(&fe.ops) { continue; }
         if !fe.path.matches(&requested) { continue; }
-        return Some(std::path::PathBuf::from(format!("/proc/{pid}/root{requested}")));
+        let real_path = std::path::PathBuf::from(format!("/proc/{pid}/root{requested}"));
+        let mut opts = std::fs::OpenOptions::new();
+        if nr == libc::SYS_openat {
+            apply_open_flags(&mut opts, req.args[2] as i32);
+        } else if nr == libc::SYS_openat2 {
+            match read_openat2_flags(pid, req.args[2]) {
+                Some(flags) => apply_open_flags(&mut opts, flags as i32),
+                // Struct read failed -- fail toward the strictly weaker
+                // grant (read-only) rather than guessing write access.
+                None => { opts.read(true); }
+            }
+        } else {
+            // unlink/rename family: no open-mode concept: see doc comment.
+            opts.read(true);
+        }
+        return Some((real_path, opts));
     }
     None
+}
+
+/// Maps raw `open(2)`-style flags onto `OpenOptions`. `O_ACCMODE` masks out
+/// the access-mode bits (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) from the
+/// unrelated bits packed into the same flags word (`O_CREAT`, `O_TRUNC`, ...).
+fn apply_open_flags(opts: &mut std::fs::OpenOptions, flags: i32) {
+    match flags & libc::O_ACCMODE {
+        libc::O_WRONLY => { opts.write(true); }
+        libc::O_RDWR   => { opts.read(true).write(true); }
+        _              => { opts.read(true); } // O_RDONLY == 0
+    }
+    if flags & libc::O_CREAT  != 0 { opts.create(true); }
+    if flags & libc::O_TRUNC  != 0 { opts.truncate(true); }
+    if flags & libc::O_APPEND != 0 { opts.append(true); }
+}
+
+/// `openat2`'s flags live behind a pointer (`args[2]` is `const struct
+/// open_how *`, not a raw flags word like plain `openat`) -- `flags` is
+/// `open_how`'s first field (`__u64`, offset 0), so this is the same
+/// single-read-at-a-known-offset primitive as `read_tracee_cstring`, just
+/// for a fixed-size integer instead of a NUL-terminated string.
+fn read_openat2_flags(pid: u32, open_how_addr: u64) -> Option<u64> {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::open(format!("/proc/{pid}/mem")).ok()?;
+    let mut buf = [0u8; 8];
+    file.read_at(&mut buf, open_how_addr).ok()?;
+    Some(u64::from_ne_bytes(buf))
 }
 
 fn read_tracee_cstring(pid: u32, addr: u64) -> Option<String> {

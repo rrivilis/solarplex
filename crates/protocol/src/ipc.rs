@@ -135,6 +135,29 @@ pub struct SnapEntry {
     pub size:  u64,
 }
 
+/// Snapshots mtime+size for each path, skipping any that don't exist or
+/// can't be stat'd (not itself informative -- a missing "after" entry
+/// where a "before" entry existed is exactly what a divergence check is
+/// looking for, so the missing entry is the signal, not an error to report).
+///
+/// Shared by the adapter (snapshotting scout-observed paths around a
+/// normal upstream-MCP-executed tool call) and the guardian (snapshotting
+/// `DeclaredEffects` paths around a `solarplex_exec` sandboxed run, where
+/// the guardian's own process -- not the adapter's -- has the real
+/// filesystem view the command actually touched).
+pub async fn snapshot_paths(paths: &[String]) -> HashMap<String, SnapEntry> {
+    let mut snap = HashMap::new();
+    for path in paths {
+        if let Ok(meta) = tokio::fs::metadata(path).await {
+            let mtime = meta.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64).unwrap_or(0);
+            snap.insert(path.clone(), SnapEntry { mtime, size: meta.len() });
+        }
+    }
+    snap
+}
+
 /// Ring-1 (Tier-2) hash attestation data captured by the adapter.
 ///
 /// The adapter reads the file before and after the upstream call; the shim
@@ -197,6 +220,16 @@ pub struct ExecResultIpc {
     pub stdout:    String,
     pub stderr:    String,
     pub exit_code: i32,
+    /// Filesystem snapshots the guardian took of `DeclaredEffects`' paths,
+    /// immediately before/after the sandboxed command ran -- inside the
+    /// guardian's own process, the one with the real filesystem view the
+    /// command actually touched. Powers the Ring-2 divergence check for
+    /// `solarplex_exec`, previously a structural no-op here: the adapter
+    /// never executes anything itself for this tool (the guardian already
+    /// ran it before the adapter even sees the decision), so the adapter
+    /// had no snapshot of its own to take. See docs/threat-model.md §11.1.
+    pub pre_snap:  HashMap<String, SnapEntry>,
+    pub post_snap: HashMap<String, SnapEntry>,
 }
 
 /// Ring-1 (Tier-2) context propagated from the shim to the adapter.
@@ -239,6 +272,10 @@ pub struct GuardianResponse {
     pub stdout:      String,
     pub stderr:      String,
     pub exit_code:   i32,
+    /// See `ExecResultIpc::pre_snap`/`post_snap`'s doc -- same data, one
+    /// hop earlier. Empty on an error response (nothing ran).
+    pub pre_snap:    HashMap<String, SnapEntry>,
+    pub post_snap:   HashMap<String, SnapEntry>,
     /// Set when the guardian rejected the request (verification failed or sandbox error).
     pub error:       Option<String>,
 }

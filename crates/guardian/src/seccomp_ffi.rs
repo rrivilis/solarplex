@@ -201,7 +201,27 @@ struct SeccompNotifAddfd {
     newfd_flags: u32,
 }
 
-pub const SECCOMP_ADDFD_FLAG_SEND: u32 = 1 << 0;
+// ROOT CAUSE of the long-standing "ADDFD reports success but the tracee
+// never wakes" bug: this was `1 << 0` (the value for
+// SECCOMP_ADDFD_FLAG_SETFD -- "install at exactly this fd number") for
+// most of this project's history. The real kernel value, confirmed
+// directly against include/uapi/linux/seccomp.h, is `1 << 1`:
+//   #define SECCOMP_ADDFD_FLAG_SETFD (1UL << 0) /* Specify remote fd */
+//   #define SECCOMP_ADDFD_FLAG_SEND  (1UL << 1) /* Addfd and return it, atomically */
+// With the wrong bit set and `newfd: 0` always passed (see notif_addfd
+// below), every call was silently interpreted as "install at fd 0
+// specifically" (matching the observed fd=0-every-time symptom exactly)
+// and never atomically responded to the notification at all -- which is
+// exactly why the tracee stayed parked in seccomp_do_user_notification
+// forever. The standalone C probe that "proved this mechanism worked"
+// happened to get the correct value anyway: its own fallback #define for
+// this constant was *also* `1 << 0`, but sat inside an
+// `#ifndef SECCOMP_IOCTL_NOTIF_ADDFD` guard, so on a kernel new enough to
+// have this constant in its own <linux/seccomp.h>, that fallback was
+// never compiled in -- the system header's correct value silently won.
+// Rust has no equivalent "prefer the system's own definition" mechanism,
+// so this hardcoded value was always what actually ran here.
+pub const SECCOMP_ADDFD_FLAG_SEND: u32 = 1 << 1;
 pub const SECCOMP_USER_NOTIF_FLAG_CONTINUE: u32 = 1 << 0;
 
 const fn ioc(dir: u32, ty: u32, nr: u32, size: u32) -> u64 {
@@ -340,6 +360,21 @@ mod tests {
         // fails loudly instead of producing a wrong ioctl request code.
         assert_eq!(SECCOMP_IOCTL_NOTIF_ID_VALID, 0x4008_2102);
         assert_eq!(SECCOMP_IOCTL_NOTIF_ADDFD, 0x4018_2103);
+    }
+
+    #[test]
+    fn addfd_send_flag_is_not_setfd() {
+        // Regression test for the actual root cause of the long-standing
+        // "ADDFD reports success but the tracee never wakes" bug: this
+        // constant was `1 << 0` (SETFD's value) for most of this project's
+        // history, confirmed correct only by eye against a C probe whose
+        // own matching fallback #define was never actually compiled in
+        // (see this constant's doc comment for the full story). Cross-
+        // checked directly against a fresh fetch of
+        // include/uapi/linux/seccomp.h, not against local memory of an
+        // earlier "confirmed" value.
+        assert_eq!(SECCOMP_ADDFD_FLAG_SEND, 1 << 1, "must NOT equal SETFD's value (1 << 0)");
+        assert_ne!(SECCOMP_ADDFD_FLAG_SEND, 1 << 0, "1 << 0 is SECCOMP_ADDFD_FLAG_SETFD, not SEND");
     }
 
     /// A minimal BPF interpreter covering exactly the instruction shapes

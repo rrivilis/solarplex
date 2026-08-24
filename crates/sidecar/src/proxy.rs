@@ -214,21 +214,6 @@ async fn hash_file_sha256(path: &str) -> Option<String> {
     Some(format!("sha256:{:x}", hash))
 }
 
-// ── Filesystem snapshot (for Ring-2 divergence check) ─────────────────────────
-
-async fn snapshot_paths(paths: &[String]) -> HashMap<String, SnapEntry> {
-    let mut snap = HashMap::new();
-    for path in paths {
-        if let Ok(meta) = tokio::fs::metadata(path).await {
-            let mtime = meta.modified().ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64).unwrap_or(0);
-            snap.insert(path.clone(), SnapEntry { mtime, size: meta.len() });
-        }
-    }
-    snap
-}
-
 // ── Stdio upstream ────────────────────────────────────────────────────────────
 
 pub struct StdioUpstream {
@@ -542,10 +527,15 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                 exec_res.stderr.trim_end(),
             );
             // Fire ExecDoneNotice so shim can run Ring-2 divergence check.
+            // pre_snap/post_snap come from the guardian's own process (the
+            // one that actually ran the command), not taken here -- the
+            // adapter never executes anything itself for solarplex_exec,
+            // so it has no snapshot of its own to offer. See
+            // ExecResultIpc::pre_snap's doc comment.
             let approval_id = decision.approval_id.clone().unwrap_or_default();
             state.shim.exec_done(ipc::ExecDoneNotice {
                 approval_id, tool_name: call.tool.clone(),
-                pre_snap: HashMap::new(), post_snap: HashMap::new(),
+                pre_snap: exec_res.pre_snap.clone(), post_snap: exec_res.post_snap.clone(),
                 tier2: None,
             });
             return json_response(json!({
@@ -586,7 +576,7 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
         .map(|s| s.file_effects.iter().map(|fe| fe.path.clone()).collect())
         .unwrap_or_default();
     let pre_snap = if !scout_paths.is_empty() {
-        snapshot_paths(&scout_paths).await
+        ipc::snapshot_paths(&scout_paths).await
     } else {
         HashMap::new()
     };
@@ -767,7 +757,7 @@ async fn post_exec_hooks(
 ) {
     // Ring-2 post-snap + ExecDoneNotice.
     let post_snap = if !scout_paths.is_empty() {
-        snapshot_paths(scout_paths).await
+        ipc::snapshot_paths(scout_paths).await
     } else {
         HashMap::new()
     };

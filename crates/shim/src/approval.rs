@@ -238,6 +238,8 @@ async fn run_via_guardian(guardian: &GuardianHandle, approval_id: &str) -> ExecR
                 stdout:    resp.stdout,
                 stderr:    resp.stderr,
                 exit_code: resp.exit_code,
+                pre_snap:  resp.pre_snap,
+                post_snap: resp.post_snap,
             }
         }
         Err(e) => {
@@ -246,6 +248,8 @@ async fn run_via_guardian(guardian: &GuardianHandle, approval_id: &str) -> ExecR
                 stdout:    String::new(),
                 stderr:    format!("guardian unreachable: {e}"),
                 exit_code: -1,
+                pre_snap:  std::collections::HashMap::new(),
+                post_snap: std::collections::HashMap::new(),
             }
         }
     }
