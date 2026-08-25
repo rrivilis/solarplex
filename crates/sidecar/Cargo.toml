@@ -25,7 +25,7 @@ futures-util = "0.3"
 dashmap = { workspace = true }
 sha2 = "0.10"
 aho-corasick = "1"
-yara-x = "0.12"
+yara-x = "1.19"
 tlsh2 = { version = "1", features = ["diff"] }
 libc = "0.2"
 
