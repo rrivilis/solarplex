@@ -40,6 +40,6 @@ tui-realm-stdlib = "4"
 # own tokio-tungstenite dependency for consistency. No TLS feature enabled
 # yet -- wss:// (production) support is a follow-up once ws:// is verified
 # working; this crate has never made an outbound TLS connection before.
-tokio-tungstenite = "0.21"
+tokio-tungstenite = "0.29"
 futures-util = "0.3"
 url = "2"
