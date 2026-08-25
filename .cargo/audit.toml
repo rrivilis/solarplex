@@ -1,0 +1,11 @@
+[advisories]
+ignore = [
+    # rsa 0.9.10 — Marvin Attack (timing sidechannel key recovery). No fixed
+    # version exists upstream as of this writing (open since 2023-11-22).
+    # Pulled in transitively via openidconnect 3.5.0 and yara-x 0.12.0 — both
+    # already have pending Dependabot major-version bumps (openidconnect
+    # 3.5.0→4.0.1, yara-x 0.12.0→1.19.0) that may drop this dependency
+    # entirely. Revisit this ignore once those land: if rsa is gone from
+    # `cargo tree -i rsa`, delete this entry rather than leaving it stale.
+    "RUSTSEC-2023-0071",
+]

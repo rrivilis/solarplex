@@ -222,9 +222,10 @@ fn strip_pid_prefix(line: &str) -> &str {
 /// unlike the old bug where an escaped quote silently changed where the
 /// string was read to end.
 fn escaped_char(input: &str) -> nom::IResult<&str, String> {
+    use nom::Parser;
     use nom::character::complete::{anychar, char};
     use nom::sequence::preceded;
-    let (rest, c) = preceded(char('\\'), anychar)(input)?;
+    let (rest, c) = preceded(char('\\'), anychar).parse(input)?;
     let resolved = match c {
         '"'  => "\"".to_string(),
         '\\' => "\\".to_string(),
@@ -241,6 +242,7 @@ fn escaped_char(input: &str) -> nom::IResult<&str, String> {
 /// args, same as the old code's `s.find('"')`), and returns the unescaped
 /// content plus everything after the closing quote.
 fn quoted_string(input: &str) -> nom::IResult<&str, String> {
+    use nom::Parser;
     use nom::branch::alt;
     use nom::bytes::complete::{is_not, take_until};
     use nom::character::complete::char;
@@ -248,7 +250,7 @@ fn quoted_string(input: &str) -> nom::IResult<&str, String> {
     use nom::multi::fold_many0;
     use nom::sequence::delimited;
 
-    let (input, _) = take_until("\"")(input)?;
+    let (input, _) = take_until("\"").parse(input)?;
     delimited(
         char('"'),
         fold_many0(
@@ -257,7 +259,7 @@ fn quoted_string(input: &str) -> nom::IResult<&str, String> {
             |mut acc, piece| { acc.push_str(&piece); acc },
         ),
         char('"'),
-    )(input)
+    ).parse(input)
 }
 
 fn parse_openat(s: &str) -> Option<(String, FileOps)> {
