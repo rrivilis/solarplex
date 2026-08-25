@@ -1600,7 +1600,7 @@ dependencies = [
  "sha2 0.10.9",
  "splx-ir",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "ulid",
@@ -3155,7 +3155,7 @@ dependencies = [
  "protocol",
  "rustfst",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4816,7 +4816,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "ulid",
 ]
@@ -5830,7 +5830,7 @@ dependencies = [
  "age",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "zeroize",
 ]
 
@@ -6123,7 +6123,7 @@ dependencies = [
  "sha2 0.10.9",
  "splx-ir",
  "sqlx",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tlsh2",
  "tokio",
  "tower 0.4.13",
@@ -6146,7 +6146,7 @@ dependencies = [
  "protocol",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -6209,12 +6209,12 @@ dependencies = [
  "anyhow",
  "chrono",
  "libc",
- "nom 7.1.3",
+ "nom 8.0.0",
  "protocol",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6246,7 +6246,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tlsh2",
  "tokio",
  "tracing",
@@ -6416,7 +6416,7 @@ name = "splx-ir"
 version = "0.1.0"
 dependencies = [
  "lexpr",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
