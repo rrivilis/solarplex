@@ -15,7 +15,8 @@ import { API_BASE } from "./env";
 export interface Teammate {
   id: string;
   name: string;
-  email: string | null;
+  // No `email` — this directory is scoped to co-membership, not consent.
+  // See db::actors::TeammateRow.
   created_at: string;
   session_count: number;
   roles: string[];

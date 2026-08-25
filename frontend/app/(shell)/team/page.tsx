@@ -46,7 +46,7 @@ export default function TeamPage() {
       <div className="mb-5">
         <h1 className="text-base font-semibold text-primary mb-0.5">Teammates</h1>
         <p className="text-xs text-muted">
-          You and everyone you currently share a session with. Role management and escalation chains are still ahead, this is just the read-only directory.
+          You and everyone you currently share a session with
         </p>
       </div>
 
@@ -83,7 +83,6 @@ function TeammateRow({ teammate }: { teammate: Teammate }) {
 
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium text-primary truncate">{teammate.name}</p>
-        <p className="text-2xs text-muted truncate">{teammate.email ?? "no email on record"}</p>
       </div>
 
       <div className="hidden sm:flex items-center gap-1 shrink-0">

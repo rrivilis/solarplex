@@ -1,0 +1,49 @@
+[Unit]
+Description=Solarplex Postgres backup (pg_dump | restic -> Backblaze B2)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=solarplex
+Group=solarplex
+
+# Same tmpfs-only-secrets posture as solarplex.service, see that unit's
+# comments for the full reasoning. The only difference here: this decrypts
+# a second, independent ciphertext artifact (backup-secrets.age) via
+# secrets-cli's generic decrypt-bytes, not secrets.age via decrypt — backup
+# credentials don't share the DB-password ratchet's rotation cadence, so
+# they were deliberately kept out of the fixed CredentialBundle shape (see
+# crates/secrets-cli/src/main.rs's module doc comment).
+RuntimeDirectory=solarplex-backup
+RuntimeDirectoryMode=0700
+
+LoadCredentialEncrypted=age_identity:/etc/solarplex/age_identity.cred
+
+ExecStartPre=/bin/sh -c '\
+    SOLARPLEX_AGE_IDENTITY="$(cat "$CREDENTIALS_DIRECTORY"/age_identity)" \
+    /usr/local/bin/secrets-cli decrypt-bytes \
+        --input /etc/solarplex/backup-secrets.age \
+        --out /run/solarplex-backup/env'
+
+EnvironmentFile=/run/solarplex-backup/env
+ExecStart=/usr/local/sbin/solarplex-backup-postgres.sh
+
+# Hardening — same as solarplex.service. No Restart= here: this is
+# Type=oneshot triggered by solarplex-backup.timer, not a long-running
+# daemon; a failed run is caught by the script's own ERR trap (webhook
+# alert) and simply tries again at the next scheduled time.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

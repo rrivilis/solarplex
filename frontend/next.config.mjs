@@ -51,7 +51,7 @@ const nextConfig = {
     // unset there (or the build already failed); `next dev` keeps the
     // "alice" convenience default so local multi-actor testing still works
     // with zero setup.
-    NEXT_PUBLIC_ACTOR_ID: isProd ? process.env.NEXT_PUBLIC_ACTOR_ID : (process.env.NEXT_PUBLIC_ACTOR_ID ?? "alice"),
+    NEXT_PUBLIC_ACTOR_ID: isProd ? process.env.NEXT_PUBLIC_ACTOR_ID : (process.env.NEXT_PUBLIC_ACTOR_ID ?? "user"),
   },
 };
 

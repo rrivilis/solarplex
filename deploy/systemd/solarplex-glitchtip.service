@@ -1,0 +1,26 @@
+[Unit]
+Description=Solarplex GlitchTip error tracking (podman-compose stack)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# podman-compose up -d launches and detaches; RemainAfterExit marks this
+# unit "active" once that oneshot ExecStart returns, `systemctl stop`
+# invokes ExecStop (compose down) — the standard compose+systemd pairing,
+# not the foreground-process-supervision shape solarplex.service uses.
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/etc/solarplex/glitchtip
+ExecStart=/usr/bin/podman-compose up -d
+ExecStop=/usr/bin/podman-compose down
+TimeoutStartSec=120
+
+# Deliberately no ProtectSystem=strict / NoNewPrivileges=... hardening block
+# here, unlike solarplex.service and solarplex-backup.service: this unit's
+# entire job is launching podman-managed containers, which need broader
+# filesystem/network access than those directives would allow. The actual
+# containment boundary is Podman's own rootless-container isolation, not
+# this unit.
+
+[Install]
+WantedBy=multi-user.target

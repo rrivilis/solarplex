@@ -1,0 +1,46 @@
+---
+# One-time per-host bootstrap — NOT part of the routine play (main.yml
+# never includes this; run it explicitly with `--tags bootstrap_identity`
+# against one freshly-provisioned host at a time).
+#
+# This is the one step in the whole delivery pipeline that ever handles
+# a plaintext age identity. `solarplex_age_identity` must come from an
+# Ansible Vault-encrypted var (`ansible-vault edit host_vars/<host>.yml`),
+# so it's encrypted at rest on the controller and only ever plaintext
+# transiently, inside the encrypted SSH pipe, for the single moment this
+# task pipes it into `systemd-creds encrypt`. It is never written to
+# disk unsealed on the target, never logged (no_log below), and this
+# task is skipped entirely if a sealed credential already exists — so
+# re-running the routine play can never accidentally re-run it.
+
+- name: Check whether this host already has a sealed age identity
+  ansible.builtin.stat:
+    path: /etc/solarplex/age_identity.cred
+  register: existing_cred
+
+- name: Ensure /etc/solarplex exists
+  ansible.builtin.file:
+    path: /etc/solarplex
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not existing_cred.stat.exists
+
+- name: Seal this host's age identity to its own TPM via systemd-creds
+  ansible.builtin.shell: |
+    set -euo pipefail
+    printf '%s' "$AGE_IDENTITY" | systemd-creds encrypt --name=age_identity --with-key=tpm2 - /etc/solarplex/age_identity.cred
+  args:
+    executable: /bin/bash
+  environment:
+    AGE_IDENTITY: "{{ solarplex_age_identity }}"
+  when: not existing_cred.stat.exists
+  no_log: true
+
+- name: Lock down the sealed credential file
+  ansible.builtin.file:
+    path: /etc/solarplex/age_identity.cred
+    owner: root
+    group: root
+    mode: "0600"

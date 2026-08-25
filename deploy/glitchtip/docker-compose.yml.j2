@@ -1,0 +1,60 @@
+
+# Managed by the solarplex_glitchtip Ansible role. Adapted from GlitchTip's
+# own official compose.sample.yml (glitchtip.com/documentation/install),
+# which since GlitchTip 6 ships as a single "all_in_one" image (web + worker
+# + beat in one process) plus Postgres + Valkey — three containers total,
+# not the five-container web/worker/beat/postgres/redis split older docs
+# describe. Two changes from upstream's sample, both deliberate:
+#   1. web's port is bound to 127.0.0.1 only, not every interface — this is
+#      internal ops tooling (where solarplex's own errors get reported),
+#      not a second public-facing product. Exposing it (behind Caddy, with
+#      its own auth) is a separate, later decision, not made here.
+#   2. Postgres uses a real generated password instead of upstream's
+#      example POSTGRES_HOST_AUTH_METHOD=trust.
+#
+# {{ ansible_managed }}
+
+x-environment: &default-environment
+  DATABASE_URL: postgres://glitchtip:{{ glitchtip_postgres_password }}@postgres:5432/glitchtip
+  VALKEY_URL: redis://valkey:6379
+  SECRET_KEY: {{ glitchtip_secret_key }}
+  EMAIL_URL: consolemail:// # logs emails instead of sending — single-operator internal tool; override if invite/password-reset email delivery is ever needed
+  GLITCHTIP_DOMAIN: {{ glitchtip_domain }}
+  DEFAULT_FROM_EMAIL: glitchtip@{{ inventory_hostname }}
+  ENABLE_ADMIN: "False"
+  ENABLE_OPENAPI: "False"
+  GLITCHTIP_ENABLE_MCP: "False"
+  GLITCHTIP_ENABLE_DUCKDB: "False"
+
+x-depends_on: &default-depends_on
+  - postgres
+  - valkey
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: "{{ glitchtip_postgres_password }}"
+      POSTGRES_DB: glitchtip
+    restart: unless-stopped
+    volumes:
+      - pg-data:/var/lib/postgresql
+  valkey:
+    image: valkey/valkey:9
+    restart: unless-stopped
+  web:
+    image: glitchtip/glitchtip:6
+    depends_on: *default-depends_on
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      <<: *default-environment
+      SERVER_ROLE: all_in_one
+    restart: unless-stopped
+    volumes:
+      - uploads:/code/uploads
+
+volumes:
+  pg-data:
+  uploads:

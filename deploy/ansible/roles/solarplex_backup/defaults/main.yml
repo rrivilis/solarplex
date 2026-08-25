@@ -1,0 +1,13 @@
+---
+# The age-encrypted backup credential bundle (RESTIC_REPOSITORY,
+# RESTIC_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, optionally
+# ALERT_WEBHOOK_URL — see deploy/scripts/backup-postgres.sh's header
+# comment), produced out-of-band by an operator via:
+#   secrets-cli encrypt-bytes --in <plaintext-env-file> \
+#     --recipient <age1...> [--recipient <age1...> ...] \
+#     --out deploy/ansible/backup-secrets.age
+# One recipient per host that should be able to decrypt it, same as
+# secrets.age. Must be supplied by the caller — no default, so a
+# misconfigured inventory fails loudly rather than silently skipping
+# backup credential delivery.
+# solarplex_backup_secrets_age: "{{ playbook_dir }}/../backup-secrets.age"

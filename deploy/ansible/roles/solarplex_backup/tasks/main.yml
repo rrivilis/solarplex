@@ -1,0 +1,59 @@
+---
+# Routine, idempotent delivery for the pg_dump | restic -> Backblaze B2
+# backup path. Mirrors the main solarplex role's ciphertext-only posture:
+# this play never sees a plaintext backup credential — backup-secrets.age
+# is produced out-of-band by an operator (see defaults/main.yml) and only
+# its ciphertext ever crosses the wire here, exactly like secrets.age.
+#
+# Reuses this host's existing TPM-sealed age identity
+# (/etc/solarplex/age_identity.cred, provisioned by the main solarplex
+# role's bootstrap_identity.yml) rather than provisioning a second one —
+# one host identity, fanned out to both credential bundles via age
+# multi-recipient encryption, same as the rest of this project's secrets
+# design.
+
+- name: Install restic
+  ansible.builtin.package:
+    name: restic
+    state: present
+
+- name: Push the backup script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/backup-postgres.sh"
+    dest: /usr/local/sbin/solarplex-backup-postgres.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Push the encrypted backup credential bundle (ciphertext only)
+  ansible.builtin.copy:
+    src: "{{ solarplex_backup_secrets_age }}"
+    dest: /etc/solarplex/backup-secrets.age
+    owner: root
+    group: root
+    mode: "0644" # ciphertext — world-readable is fine, age is the gate
+
+- name: Install the solarplex-backup systemd service
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../systemd/solarplex-backup.service"
+    dest: /etc/systemd/system/solarplex-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Install the solarplex-backup systemd timer
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../systemd/solarplex-backup.timer"
+    dest: /etc/systemd/system/solarplex-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Enable and start the backup timer
+  ansible.builtin.systemd:
+    name: solarplex-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true

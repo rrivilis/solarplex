@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "crates/protocol",
+    "crates/db",
+    "crates/server",
+    "crates/sidecar",
+    "crates/cli",
+    "crates/session",
+    "crates/guardian",
+    "crates/shim",
+    "crates/splx-ir",
+    "crates/intent",
+    "crates/secrets-ratchet",
+    "crates/secrets-store",
+    "crates/secrets-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+bitflags  = "2"
+bumpalo   = { version = "3", features = ["collections"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ulid = { version = "1", features = ["serde"] }
+dashmap = "5"
+uuid = { version = "1", features = ["v4", "serde"] }
+arc-swap = "1"

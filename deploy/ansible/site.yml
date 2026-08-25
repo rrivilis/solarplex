@@ -1,0 +1,41 @@
+---
+# Collection dependencies (only ansible.posix, for the mount module used by
+# solarplex_binary_integrity): ansible-galaxy collection install -r deploy/ansible/requirements.yml
+#
+# Routine delivery, every deploy:
+#   ansible-playbook -i inventory deploy/ansible/site.yml
+#
+# One-time per new host, before it ever runs the above:
+#   ansible-playbook -i inventory deploy/ansible/site.yml --tags bootstrap_identity
+# with solarplex_age_identity set via an Ansible Vault-encrypted host_var
+# (this is the one command that ever touches a plaintext age identity —
+# see roles/solarplex/tasks/bootstrap_identity.yml).
+#
+# One-time per new host, only after solarplex_binary_integrity's routine
+# play below has run at least once (docs/threat-model.md §4.6):
+#   ansible-playbook -i inventory deploy/ansible/site.yml --tags enable_ima_appraisal
+# See roles/solarplex_binary_integrity/tasks/enable_ima_appraisal.yml —
+# this one reboots the host, run it against one host at a time.
+
+- hosts: solarplex_hosts
+  become: true
+  roles:
+    - role: solarplex
+      tags: [solarplex]
+    - role: solarplex_binary_integrity
+      tags: [solarplex_binary_integrity]
+    - role: solarplex_backup
+      tags: [solarplex_backup]
+    - role: solarplex_glitchtip
+      tags: [solarplex_glitchtip]
+
+- hosts: solarplex_hosts
+  become: true
+  tasks:
+    - name: Bootstrap this host's TPM-sealed age identity
+      ansible.builtin.include_tasks: roles/solarplex/tasks/bootstrap_identity.yml
+      tags: [bootstrap_identity, never]
+
+    - name: Enable IMA appraisal (log mode) and reboot
+      ansible.builtin.include_tasks: roles/solarplex_binary_integrity/tasks/enable_ima_appraisal.yml
+      tags: [enable_ima_appraisal, never]

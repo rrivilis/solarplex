@@ -1042,7 +1042,7 @@ function SessionPaneWindow({
                       <p className="text-2xs text-subtle">{digest.last_activity_at ? new Date(digest.last_activity_at).toLocaleString() : "—"}</p>
                     </div>
                   </div>
-                  <p className="text-2xs text-muted px-1">Computed fresh on every view — not a copy of {digest.session_name}&rsquo;s data.</p>
+                  <p className="text-2xs text-muted px-1">Computed fresh on every view and is not a copy of {digest.session_name}&rsquo;s data.</p>
                 </>
               )}
             </div>

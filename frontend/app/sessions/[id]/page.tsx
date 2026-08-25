@@ -30,7 +30,6 @@ const ArtifactsTab = dynamic(() => import("@/components/ArtifactsTab"), { ssr: f
 const ContextTab   = dynamic(() => import("@/components/ContextTab"),   { ssr: false });
 
 type CenterTab = "messages" | "log" | "artifacts" | "whiteboard" | "context";
-type ArtifactSummary = { id: string; name: string; type: string };
 
 // Below this width the two fixed-width side panels (240px + 288px) are
 // rendered as off-canvas overlays instead of static columns — together
@@ -348,7 +347,7 @@ export default function SessionPage() {
   // ── Derived state from the WS connection ─────────────────────────────────
   //
   // Previously: two HTTP calls (GET /sessions/:id + GET /sessions/:id/artifacts)
-  // Now:        both come through the initial WS snapshot — zero extra RTTs.
+  // Now:        both come through the initial WS snapshot, zero extra RTTs.
   //
   // Artifacts are kept live via artifact.created / artifact.updated /
   // artifact.deleted events in useSession; no polling interval needed.
@@ -366,8 +365,8 @@ export default function SessionPage() {
   const pendingCount   = state.pendingApprovals.length;
   const logEventCount  = state.events.filter(e => !INTERNAL_WS.has(e.type)).length;
 
-  // Events/messages correctly keep storing the raw actor_id forever —
-  // resolved here from the same already-enriched members list StatusPanel
+  // Events/messages correctly keep storing the raw actor_id forever.
+  // Resolved here from the same already-enriched members list StatusPanel
   // uses, so a rename shows up retroactively across all history instead of
   // needing the event log itself touched.
   const actorNames = Object.fromEntries(
@@ -477,6 +476,7 @@ export default function SessionPage() {
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
+                aria-label={t.badge != null && t.badge > 0 ? `${t.label}, ${t.badge}` : undefined}
                 className={`relative shrink-0 text-2xs px-3 py-1.5 rounded font-medium transition-colors ${
                   tab === t.key
                     ? "bg-surface-3 text-primary"
@@ -488,7 +488,7 @@ export default function SessionPage() {
                     the 4.5:1 AA floor — text-primary clears 9.8:1 on the
                     same background. */}
                 {t.badge != null && t.badge > 0 && (
-                  <span className="ml-1.5 text-2xs bg-surface-4 text-primary px-1 py-0.5 rounded font-mono">
+                  <span aria-hidden="true" className="ml-1.5 text-2xs bg-surface-4 text-primary px-1 py-0.5 rounded font-mono">
                     {t.badge}
                   </span>
                 )}
@@ -674,9 +674,9 @@ export default function SessionPage() {
                   className="w-full bg-surface-2 border border-border rounded px-2.5 py-1.5 text-xs text-primary focus:outline-none focus:border-subtle"
                   disabled={!!inviteResult}
                 >
-                  <option value="observer">Observer — read-only</option>
-                  <option value="collaborator">Collaborator — can write</option>
-                  <option value="owner">Owner — full administration</option>
+                  <option value="observer">Observer (read-only access)</option>
+                  <option value="collaborator">Collaborator (can write to session)</option>
+                  <option value="owner">Owner (full administration)</option>
                 </select>
               </div>
 
@@ -818,7 +818,7 @@ export default function SessionPage() {
                   className="w-full bg-surface-2 border border-border rounded px-2.5 py-1.5 text-xs text-primary placeholder:text-muted focus:outline-none focus:border-subtle font-mono"
                   disabled={!!attachResult}
                 />
-                <p className="text-2xs text-muted mt-1">The directory the agent will have read/write access to.</p>
+                <p className="text-2xs text-muted mt-1">The directory the agent will have read or write access to.</p>
               </div>
 
               {/* TTL */}

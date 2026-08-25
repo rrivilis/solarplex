@@ -1,0 +1,9 @@
+---
+# Where GlitchTip is reachable from this host itself — used only for
+# GLITCHTIP_DOMAIN in the compose environment (shown in emails/links
+# GlitchTip generates, not a security boundary). Web is bound to
+# 127.0.0.1:8000 regardless of this value (see docker-compose.yml.j2's
+# header comment) — exposing it publicly behind Caddy with real TLS and its
+# own auth is a separate, later decision; update this only once that's
+# actually been done.
+glitchtip_domain: "http://localhost:8000"

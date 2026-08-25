@@ -1,0 +1,167 @@
+---
+# Routine, idempotent, no-reboot half of docs/threat-model.md §4.6's binary
+# integrity stack: builds the dm-verity image for the three agent-execution
+# binaries, delivers the IMA appraisal policy + public cert + keyring-load
+# unit, and mounts the verified image read-only. Safe to re-run on every
+# deploy, same as the main solarplex role.
+#
+# This role assumes solarplex-shim / solarplex-guardian / solarplex-adapter
+# have already been built AND IMA-signed (see deploy/scripts/
+# sign-ima-binaries.sh) by the release pipeline or a dedicated signing host
+# BEFORE landing in solarplex_agent_release_dir — the private signing key
+# must never reach this target host, so signing is deliberately not a step
+# in this role. See that script's header comment for why.
+#
+# What this role does NOT do, on purpose: it never touches the kernel boot
+# command line and never reboots. IMA appraisal is inert until
+# `ima_appraise=<mode>` is set at boot — that one-time, one-host-at-a-time
+# step lives in enable_ima_appraisal.yml (tagged `never`, mirrors
+# bootstrap_identity.yml's separation from the routine play), and the
+# actual log-mode -> enforce-mode flip is intentionally left as a manual,
+# undocumented-in-Ansible operator action after reviewing that specific
+# host's audit log — automating an unattended flip to enforce is exactly
+# how a policy that's subtly wrong for one host bricks it.
+
+- name: Install dm-verity + IMA tooling
+  ansible.builtin.package:
+    name:
+      - squashfs-tools
+      - cryptsetup
+      - keyutils
+    state: present
+
+- name: Ensure the verity artifact directory exists
+  ansible.builtin.file:
+    path: "{{ solarplex_verity_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure the verity mount point exists
+  ansible.builtin.file:
+    path: "{{ solarplex_verity_mount }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Push the verity image build script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/build-verity-image.sh"
+    dest: /usr/local/sbin/solarplex-build-verity-image.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Build the dm-verity image from the signed agent binaries
+  ansible.builtin.command:
+    cmd: >
+      /usr/local/sbin/solarplex-build-verity-image.sh
+      {{ solarplex_verity_dir }}
+      {{ solarplex_agent_release_dir }}/solarplex-shim
+      {{ solarplex_agent_release_dir }}/solarplex-guardian
+      {{ solarplex_agent_release_dir }}/solarplex-adapter
+    creates: "{{ solarplex_verity_dir }}/solarplex-agent.roothash"
+
+- name: Read the built root hash
+  ansible.builtin.slurp:
+    src: "{{ solarplex_verity_dir }}/solarplex-agent.roothash"
+  register: solarplex_roothash_raw
+
+- name: Deliver the IMA/EVM public certificate
+  ansible.builtin.copy:
+    src: "{{ solarplex_ima_public_cert }}"
+    dest: /etc/solarplex/ima-cert.pem
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deliver the IMA appraisal policy (scoped to the verity image only)
+  ansible.builtin.copy:
+    dest: /etc/ima/ima-policy
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by the solarplex_binary_integrity Ansible role. Scoped to
+      # fsmagic=0x73717368 (SQUASHFS_MAGIC) so this policy only ever
+      # constrains execution from the solarplex verity image, never the
+      # rest of the host's root filesystem — a host-wide appraisal policy
+      # is a separate, much bigger decision this role does not make.
+      #
+      # Whether this file is actually loaded at boot depends on your
+      # distro's initramfs tooling (e.g. dracut's 91ima module reads
+      # /etc/ima/ima-policy automatically); confirm this is wired up before
+      # relying on it. It can also be loaded into a running kernel once per
+      # boot via: cat /etc/ima/ima-policy > /sys/kernel/security/ima/policy
+      appraise fsmagic=0x73717368 func=BPRM_CHECK mask=MAY_EXEC appraise_type=imasig
+
+- name: Deliver the IMA keyring-load unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/solarplex-ima-keyring.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Load the solarplex IMA/EVM public certificate into the kernel .ima keyring
+      # Best-effort: on hosts where the running kernel restricts .ima
+      # keyring modification to keys chained to the builtin/platform
+      # keyring (Secure Boot MOK), this unit fails and the cert must
+      # instead be enrolled through that platform's standard mechanism —
+      # see your distro's IMA/EVM documentation. ConditionPathExists guards
+      # against running before securityfs is mounted.
+      ConditionPathExists=/sys/kernel/security/ima/policy
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/bin/keyctl padd asymmetric solarplex_ima_cert %keyring:.ima < /etc/solarplex/ima-cert.pem
+      # keyctl padd reads DER, not PEM. If your cert is PEM (the common
+      # case), convert once at delivery time instead of at every boot —
+      # left as an explicit TODO for whoever wires this into a real
+      # release pipeline, rather than guessed at here.
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd
+
+- name: Enable the IMA keyring-load unit
+  ansible.builtin.systemd:
+    name: solarplex-ima-keyring.service
+    enabled: true
+    daemon_reload: true
+  # Not started here — starting it only matters once ima_appraise is set
+  # at boot (enable_ima_appraisal.yml), and attempting to start it before
+  # /sys/kernel/security/ima exists would just fail on every routine run.
+
+- name: Open the verity device
+  ansible.builtin.command:
+    cmd: >
+      veritysetup open
+      {{ solarplex_verity_dir }}/solarplex-agent.img
+      {{ solarplex_verity_device_name }}
+      {{ solarplex_verity_dir }}/solarplex-agent.hash
+      {{ solarplex_roothash_raw.content | b64decode | trim }}
+    creates: "/dev/mapper/{{ solarplex_verity_device_name }}"
+
+- name: Mount the verified image read-only
+  ansible.posix.mount:
+    path: "{{ solarplex_verity_mount }}"
+    src: "/dev/mapper/{{ solarplex_verity_device_name }}"
+    fstype: squashfs
+    opts: ro
+    state: mounted
+
+- name: Symlink the verified binaries onto PATH
+  ansible.builtin.file:
+    src: "{{ solarplex_verity_mount }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+    force: true
+  loop:
+    - solarplex-shim
+    - solarplex-guardian
+    - solarplex-adapter

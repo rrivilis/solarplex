@@ -1909,7 +1909,11 @@ const AGENT_HEARTBEAT_INTERVAL_SECS: u64 = 15;
 /// Missed-heartbeat threshold before an agent is declared detached.
 /// 3x the expected interval tolerates a couple of transient misses without
 /// flapping an agent's status on every brief network hiccup.
-const AGENT_STALE_THRESHOLD_SECS: u64 = AGENT_HEARTBEAT_INTERVAL_SECS * 3;
+///
+/// `pub(crate)`: also the liveness threshold `routes/agents.rs::list_agents`
+/// reads directly off `hub.agent_heartbeats` for the cross-session Agents
+/// directory — same signal this module's own sweep uses, not a second one.
+pub(crate) const AGENT_STALE_THRESHOLD_SECS: u64 = AGENT_HEARTBEAT_INTERVAL_SECS * 3;
 
 /// Background loop: agents attached via shim never hold a WS connection to
 /// `/stream` (only human browsers do), so `actor_senders` never sees them —

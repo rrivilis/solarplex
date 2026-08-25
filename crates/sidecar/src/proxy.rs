@@ -826,7 +826,23 @@ fn handle_sse_open(state: &Arc<ProxyState>) -> Response {
     // This is the actual "an agent is here" milestone — a real MCP client
     // just opened its SSE stream. Tell the shim (not the server directly;
     // the adapter is untrusted — see AdapterMessage::ClientConnected).
-    state.shim.notify_connected();
+    //
+    // Guarded by the same `announced_once` the `initialize` RPC path below
+    // uses: a client on the classic two-channel transport opens `/sse` and
+    // then sends `initialize` as its first RPC over the paired POST
+    // endpoint, so without a shared guard both call sites fired for the
+    // same handshake — two `ClientConnected` IPC messages, two
+    // `POST /agent-attach` calls, two `actor.joined` events for one agent
+    // (visible as a duplicated "X joined the session" row in the activity
+    // log). One adapter process = one agent lifetime = at most one join
+    // announcement, from whichever call site gets there first.
+    if state.announced_once.compare_exchange(
+        false, true,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    ).is_ok() {
+        state.shim.notify_connected();
+    }
 
     let port         = state.config.listen_port;
     let endpoint_url = format!("http://localhost:{port}/messages?stream={stream_key}");

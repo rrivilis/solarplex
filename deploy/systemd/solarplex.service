@@ -1,0 +1,93 @@
+[Unit]
+Description=Solarplex server
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=solarplex
+Group=solarplex
+
+# Runtime-only (tmpfs) directory, owned by this unit: created fresh on
+# every start, wiped on every stop. The decrypted EnvironmentFile below
+# lives here and nowhere else — it never touches persistent disk.
+RuntimeDirectory=solarplex
+RuntimeDirectoryMode=0700
+
+# LoadCredentialEncrypted= is systemd's own TPM-sealed secret store
+# (systemd-creds), used here for exactly one small secret: this host's
+# age identity string. It decrypts to $CREDENTIALS_DIRECTORY/age_identity
+# for the duration of this unit's execution only. The *application*
+# credentials (DATABASE_URL, OIDC_CLIENT_SECRET, ...) are a separate,
+# larger, git-committed artifact (secrets.age) that this host identity
+# is one of several recipients of — LoadCredentialEncrypted binds the
+# small per-host key to this host's TPM; age fans that one key out to
+# every credential in the shared bundle. See secrets-cli's doc comment
+# for why age itself doesn't shell out to a TPM plugin: it doesn't need
+# to when systemd already does this natively.
+LoadCredentialEncrypted=age_identity:/etc/solarplex/age_identity.cred
+
+# Decrypt-at-start: turns the committed ciphertext into a tmpfs-only
+# EnvironmentFile. Runs as root (DynamicUser/User= applies to the main
+# ExecStart, not ExecStartPre unless PermissionsStartOnly is set) so it
+# can read /etc/solarplex/secrets.age regardless of that file's mode;
+# the file it writes lands in RuntimeDirectory, owned per RuntimeDirectory
+# defaults, and 0600 besides (secrets-cli sets that itself).
+ExecStartPre=/bin/sh -c '\
+    SOLARPLEX_AGE_IDENTITY="$(cat "$CREDENTIALS_DIRECTORY"/age_identity)" \
+    /usr/local/bin/secrets-cli decrypt \
+        --input /etc/solarplex/secrets.age \
+        --out /run/solarplex/env'
+
+# Second, independent, optional secret: the GlitchTip DSN (see
+# deploy/glitchtip/, crates/server/src/main.rs's sentry::init call). Kept
+# out of secrets.age's fixed CredentialBundle deliberately (see
+# crates/secrets-cli/src/main.rs's module doc comment) and delivered via
+# the generic encrypt-bytes/decrypt-bytes pair instead. GlitchTip's DSN
+# doesn't exist until an operator has manually created an org+project in
+# GlitchTip's own UI and encrypted it (there's no way to provision it
+# automatically — GlitchTip generates the DSN at project-creation time),
+# so /etc/solarplex/glitchtip-dsn.age may genuinely not exist yet on a
+# fresh deploy. Tolerate that: fall back to an empty GLITCHTIP_DSN, which
+# main.rs already treats as "error tracking disabled," rather than failing
+# this unit's startup over an optional feature.
+ExecStartPre=/bin/sh -c '\
+    if [ -f /etc/solarplex/glitchtip-dsn.age ]; then \
+        SOLARPLEX_AGE_IDENTITY="$(cat "$CREDENTIALS_DIRECTORY"/age_identity)" \
+        /usr/local/bin/secrets-cli decrypt-bytes \
+            --input /etc/solarplex/glitchtip-dsn.age \
+            --out /run/solarplex/glitchtip-env; \
+    else \
+        printf "GLITCHTIP_DSN=\n" > /run/solarplex/glitchtip-env; \
+    fi'
+
+EnvironmentFile=/run/solarplex/env
+EnvironmentFile=-/run/solarplex/glitchtip-env
+ExecStart=/usr/local/bin/solarplex-server
+Restart=on-failure
+RestartSec=2
+
+# Hardening — deliberately no Unix-socket broker or long-lived secrets
+# daemon in this design (see secrets-ratchet's crate doc for why the
+# secret count is too small to justify one); everything below is
+# reducing *this* unit's own blast radius, not compensating for a
+# broker that doesn't exist.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+---
+# Where the release pipeline drops the three agent-execution binaries
+# before this role runs (same convention as solarplex_release_dir in the
+# main solarplex role, kept separate since these binaries ship on their
+# own cadence and may come from a different build job).
+solarplex_agent_release_dir: /opt/solarplex/release
+
+# Where the built dm-verity image, hash tree, and mount live on the host.
+solarplex_verity_dir: /opt/solarplex/verified
+solarplex_verity_mount: /opt/solarplex/verified/mnt
+solarplex_verity_device_name: solarplex-agent-verity
+
+# The IMA/EVM public certificate delivered to this host's kernel keyring,
+# used to verify signatures made elsewhere (see sign-ima-binaries.sh's
+# header comment for why the private key never comes near this role).
+# Must be supplied by the caller — no default, so a misconfigured
+# inventory fails loudly rather than silently skipping appraisal setup.
+# solarplex_ima_public_cert: "{{ playbook_dir }}/../ima/solarplex-ima-cert.pem"

@@ -8,12 +8,20 @@
 // policy configuration is a real, separate, larger feature this doesn't
 // attempt — this is just "which agents am I already working alongside,"
 // the same read-only-directory bar Teammates cleared first.
+//
+// `live`: whether the agent has a heartbeat within the staleness threshold
+// in any session hub right now — see
+// crates/server/src/routes/agents.rs::list_agents. Revoking access is a
+// Settings action (credential-scoped, owner-only); this is just "is it
+// here right now."
 
 import { authFetch } from "./auth";
 import { API_BASE } from "./env";
 import type { Teammate } from "./team";
 
-export type Agent = Teammate;
+export interface Agent extends Teammate {
+  live: boolean;
+}
 
 export async function getAgents(): Promise<Agent[]> {
   const res = await authFetch(`${API_BASE}/agents`);

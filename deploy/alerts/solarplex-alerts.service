@@ -1,0 +1,47 @@
+[Unit]
+Description=Solarplex journald error watcher (webhook alerts)
+After=solarplex.service
+Wants=solarplex.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=solarplex-alerts
+Group=solarplex-alerts
+
+# Reading another unit's journal requires membership in the
+# systemd-journal group (or CAP_SYSLOG) — SupplementaryGroups= grants it
+# without putting this unit's own primary group in that position. Provision
+# this group membership as part of deploying this unit (Ansible role or
+# manual `usermod -aG systemd-journal solarplex-alerts`); nothing here does
+# that for you.
+SupplementaryGroups=systemd-journal
+
+Environment=SOLARPLEX_UNIT=solarplex.service
+# Set the real endpoint via a drop-in or EnvironmentFile at deploy time —
+# intentionally left unset here so this unit fails loud instead of silently
+# discarding every alert if it's ever started unconfigured.
+# EnvironmentFile=/etc/solarplex/alerts.env
+
+ExecStart=/usr/local/bin/solarplex-alert-watch.sh
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

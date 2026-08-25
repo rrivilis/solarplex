@@ -500,7 +500,7 @@ export default function Messages({ sessionId, messages, events, actorId, actorNa
         {stream.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
             <p className="text-xs text-muted">No messages yet</p>
-            <p className="text-2xs text-muted">Start the conversation — others will see it when they attach</p>
+            <p className="text-2xs text-muted">Be the first to start the conversation.</p>
           </div>
         ) : (
           <div ref={streamRef} className="space-y-0.5">
@@ -591,7 +591,7 @@ export default function Messages({ sessionId, messages, events, actorId, actorNa
                   }
                   placeholder={
                     <div className="absolute top-0.5 left-0 text-xs text-muted pointer-events-none select-none">
-                      Message the session… (Enter to send, Shift+Enter for newline)
+                      Message the session here. (Enter to send, Shift + Enter for new line)
                     </div>
                   }
                   ErrorBoundary={LexicalErrorBoundary}

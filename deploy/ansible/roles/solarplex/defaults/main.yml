@@ -1,0 +1,13 @@
+---
+# Where the release pipeline drops built binaries before this role runs
+# (out of scope here — this role delivers secrets + config, not builds).
+solarplex_release_dir: /opt/solarplex/release
+
+# Optional. GlitchTip's DSN, age-encrypted via `secrets-cli encrypt-bytes`
+# (see crates/secrets-cli/src/main.rs), only exists once an operator has
+# manually created a project in GlitchTip's own UI — there's no way to
+# provision it automatically. Left undefined by default: solarplex.service
+# already tolerates the absence of /etc/solarplex/glitchtip-dsn.age (falls
+# back to error tracking disabled), so an unset var here just skips
+# delivery instead of failing the play. Set once that DSN exists:
+# solarplex_glitchtip_dsn_age: "{{ playbook_dir }}/../glitchtip-dsn.age"

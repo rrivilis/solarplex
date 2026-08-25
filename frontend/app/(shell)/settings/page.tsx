@@ -30,19 +30,11 @@ function SettingsIcon() {
   );
 }
 
-const PLANNED_CAPABILITIES = [
-  { label: "Approval defaults",       description: "Set workspace-wide default policy (single vote / majority / unanimous) for new sessions." },
-  { label: "Escalation timeouts",     description: "Configure how long an approval can sit before auto-escalating to the next owner." },
-  { label: "Notification transports", description: "Slack webhook, email digest, and custom webhook destinations for session events." },
-  { label: "GitHub integration",      description: "Link sessions to repos for automatic PR creation and diff artifact generation." },
-  { label: "Audit & compliance",      description: "Data retention policy, event log export format, and RBAC audit trail settings." },
-];
-
 const SHORTCUTS: { keys: string[]; description: string }[] = [
-  { keys: ["⌘/Ctrl", "K"],     description: "Open the command palette — jump to any session or action" },
+  { keys: ["⌘/Ctrl", "K"],     description: "Open the command palette to jump to any session or action" },
   { keys: ["Esc"],             description: "Close the command palette, an open menu, or a session-sync pane" },
   { keys: ["⌘/Ctrl", "Enter"], description: "Submit the current form (message composer, context entry)" },
-  { keys: ["@"],               description: "Mention a session member — ↑↓ to navigate matches, Tab to select" },
+  { keys: ["@"],               description: "Mention a session member. ↑↓ to navigate matches, Tab to select" },
 ];
 
 const SECTION_LABEL = "text-[10px] uppercase tracking-[0.10em] text-muted font-semibold mb-3";
@@ -53,7 +45,7 @@ export default function SettingsPage() {
   useDocumentTitle("Settings");
   const { authed } = useShellAuth();
 
-  // Preference controls read from localStorage — start at the same default
+  // Preference controls read from localStorage. Start at the same default
   // the server would render, then sync in an effect. Same hydration-mismatch
   // reasoning as RelativeTime's absolute-mode flag.
   const [landing, setLanding]             = useState<LandingPage>("sessions");
@@ -374,22 +366,6 @@ export default function SettingsPage() {
           In WezTerm specifically: click any <code className="text-2xs font-mono text-accent-blue">solarplex://</code> link
           to jump straight to that entity, or select text and press Alt+Enter to plumb it.
         </p>
-      </div>
-
-      {/* ── Planned capabilities ────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <p className={SECTION_LABEL}>Planned capabilities</p>
-        <div className="grid grid-cols-2 gap-2">
-          {PLANNED_CAPABILITIES.map(c => (
-            <div
-              key={c.label}
-              className="px-4 py-3 rounded-xl border border-border bg-surface-1 panel-shine opacity-60"
-            >
-              <p className="text-xs font-medium text-subtle mb-0.5">{c.label}</p>
-              <p className="text-2xs text-muted leading-relaxed">{c.description}</p>
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );

@@ -1,0 +1,47 @@
+---
+# One-time per-host, NOT part of the routine play (main.yml never includes
+# this; run it explicitly with `--tags enable_ima_appraisal` against one
+# host at a time, the same way bootstrap_identity.yml works).
+#
+# IMA appraisal is completely inert until `ima_appraise=<mode>` is on the
+# kernel command line — everything main.yml sets up (policy file, signed
+# binaries, verity mount, keyring-load unit) has no effect until this runs
+# and the host reboots. This task only ever sets `ima_appraise=log`: log
+# mode records appraisal failures to the audit log without blocking any
+# exec, so a policy that's subtly wrong for this specific host (wrong
+# fsmagic, keyring didn't load, cert mismatch) shows up as a log line
+# instead of an unbootable or unusable machine.
+#
+# Deliberately NOT automated anywhere in this repo: flipping from log mode
+# to enforce mode. Do that by hand, per host, only after reviewing
+# `ausearch -m IMA` (or `dmesg | grep -i ima`) on THIS host post-reboot and
+# confirming the only appraisal activity is the expected solarplex-shim /
+# solarplex-guardian / solarplex-adapter execs succeeding. Then edit this
+# host's boot cmdline again (ima_appraise=enforce) and reboot once more.
+
+- name: Ensure GRUB_CMDLINE_LINUX carries ima_appraise=log
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_CMDLINE_LINUX='
+    line: 'GRUB_CMDLINE_LINUX="{{ ansible_facts.get("grub_cmdline_linux", "") }} ima_appraise=log ima_policy=appraise_tcb"'
+    backup: true
+  register: grub_cmdline_updated
+  # This naive regexp-based edit assumes a single-line GRUB_CMDLINE_LINUX
+  # and does not attempt to merge with whatever value is already there
+  # beyond the ansible_facts hint above — inspect /etc/default/grub by hand
+  # on hosts with non-trivial existing boot parameters before trusting this
+  # blindly. Getting this wrong is a "host fails to boot" bug, not a "typo
+  # in a log line" bug — review the backup diff before rebooting.
+
+- name: Regenerate the GRUB config
+  ansible.builtin.command:
+    cmd: update-grub
+  when: grub_cmdline_updated is changed
+  # update-grub is Debian/Ubuntu's wrapper; RHEL-family hosts use
+  # `grub2-mkconfig -o /boot/grub2/grub.cfg` instead — this task targets
+  # the common case and is not a portable abstraction over both.
+
+- name: Reboot to apply ima_appraise=log
+  ansible.builtin.reboot:
+    reboot_timeout: 300
+  when: grub_cmdline_updated is changed

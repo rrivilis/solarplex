@@ -8,7 +8,7 @@
 // value still surfaces in a few pre-auth/dev display fallbacks, and a query
 // param any live visitor can set at will has no business being live in a
 // public deployment even as a cosmetic fallback. Hard-disabled outside
-// development, not just discouraged by convention or env-file hygiene —
+// development, not just discouraged by convention or env-file hygiene;
 // see next.config.mjs, which also refuses to build production with
 // NEXT_PUBLIC_ACTOR_ID set at all.
 import type { ReadonlyURLSearchParams } from "next/navigation";

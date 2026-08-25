@@ -47,7 +47,7 @@ export default function SearchPage() {
       <div className="mb-5">
         <h1 className="text-base font-semibold text-primary mb-0.5">Search</h1>
         <p className="text-xs text-muted">
-          Sessions, artifacts, actors, and event content — scoped to sessions you&apos;re a member of.
+          Sessions, artifacts, actors, and event content scoped to sessions you&apos;re a member of.
         </p>
       </div>
 
@@ -61,7 +61,7 @@ export default function SearchPage() {
           autoFocus
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder='Search, or filter with type: session: actor: — e.g. type:artifact session:standup logo'
+          placeholder='Search, or filter with type: session: actor: such as type:artifact session:standup logo'
           aria-label="Search"
           className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-surface-1 border border-border text-sm text-primary outline-none placeholder:text-muted focus:border-accent-blue/40 transition-colors"
         />
@@ -75,8 +75,9 @@ export default function SearchPage() {
           <p className="text-2xs text-muted">
             Narrow with <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">type:</code>,{" "}
             <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">session:</code>, or{" "}
-            <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">actor:</code> — quote a value with
-            spaces, e.g. <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">session:&quot;weekly sync&quot;</code>
+            <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">actor:</code> 
+            <br />
+            Quote a value with spaces, e.g. <code className="px-1 py-0.5 rounded bg-surface-2 text-subtle">session:&quot;weekly sync&quot;</code>
           </p>
         </div>
       ) : isFetching && !data ? (

@@ -168,6 +168,17 @@ pub async fn find_by_email(pool: &PgPool, email: &str) -> DbResult<Option<String
 pub struct TeammateRow {
     pub id: String,
     pub name: String,
+    // `skip_serializing`, not removed outright: `routes/intent.rs`'s
+    // @mention name-resolution still reads this field server-side, to
+    // prefill the Invite modal's email input once you've specifically
+    // typed a co-member's name — a targeted, opt-in-by-typing-their-name
+    // action, not a passive listing. The two `/team` and `/agents`
+    // directory *endpoints* (routes/team.rs, routes/agents.rs) both
+    // serialize `TeammateRow` straight to JSON, so this is also the only
+    // place that needs to change to keep email out of a co-membership
+    // directory nobody consented to appearing in. Reinstate serialization
+    // only alongside an actual opt-in (e.g. a per-actor visibility flag).
+    #[serde(skip_serializing)]
     pub email: Option<String>,
     pub created_at: DateTime<Utc>,
     /// Sessions with a live (non-detached) membership row.
@@ -221,8 +232,25 @@ async fn list_actors_of_type(pool: &PgPool, viewer_actor_id: &str, actor_type: &
         // genuinely ran. Humans are deliberately not gated the same way.
         // An invited-but-not-yet-logged-in human legitimately belongs in a
         // membership directory; a never-attached agent doesn't.
+        //
+        // `human_real_auth` is a separate gate, for a separate problem: a
+        // human actor row can exist — and hold a real session membership —
+        // without ever having proven who they are. The anonymous
+        // join_token path (`ws.rs::handle_ws`) upserts a bare actor row
+        // for whatever name the caller picks the moment they connect, no
+        // OIDC round trip involved. That's a deliberate, permissive
+        // guest-link design (see threat-model.md), but it means co-
+        // membership alone — the scoping this query already does, see the
+        // doc comment above — isn't enough to keep an unverified guest
+        // name out of a real user's contact directory. `human_sessions`
+        // only ever gets a row from a completed OIDC callback, so "has one"
+        // is exactly "has provenance." Agents authenticate a different way
+        // entirely (caps, not OIDC) so this gate doesn't apply to them.
         "WITH agent_real_joins AS (
             SELECT DISTINCT session_id, actor_id FROM events WHERE type = 'actor.joined'
+         ),
+         human_real_auth AS (
+            SELECT DISTINCT actor_id FROM human_sessions
          )
          SELECT
             a.id, a.name, a.email, a.created_at,
@@ -246,6 +274,9 @@ async fn list_actors_of_type(pool: &PgPool, viewer_actor_id: &str, actor_type: &
          LEFT JOIN session_memberships sm ON sm.actor_id = a.id
          LEFT JOIN events e ON e.actor_id = a.id
          WHERE a.type = $2
+           AND (a.type != 'human' OR EXISTS (
+               SELECT 1 FROM human_real_auth h WHERE h.actor_id = a.id
+           ))
            AND (
                a.id = $1
                OR EXISTS (

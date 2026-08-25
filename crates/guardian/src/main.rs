@@ -26,14 +26,14 @@ use anyhow::Result;
 use protocol::ipc;
 
 // The shim dup2's one end of a socketpair to this fd before exec-ing the guardian.
-// Possession of the fd IS the authority — no ChannelHello or SO_PEERCRED needed.
+// Possession of the fd confers authority with no ChannelHello or SO_PEERCRED needed.
 // Matches GUARDIAN_IPC_FD in shim/src/main.rs.
 const GUARDIAN_IPC_FD: i32 = 4;
 
 // executor.rs dup2's one end of a socketpair to this fd in the sandboxed
 // child before exec-ing bwrap. sandbox_entry.rs (running as that child,
 // post-bwrap) sends the seccomp-notify fd back over it via SCM_RIGHTS once
-// installed — the same inherited-fd-is-authority pattern as
+// installed. This is the same inherited-fd-is-authority pattern as
 // GUARDIAN_IPC_FD/fd 3 (shim<->adapter) above, applied one level further
 // in. pub(crate): read by both executor.rs (the parent side) and
 // sandbox_entry.rs (the child side).
@@ -52,7 +52,7 @@ pub(crate) const NOTIFY_FD_RENDEZVOUS: i32 = 5;
 // runtime (extra OS threads) before any of this function's own body runs,
 // including the sandbox-entry check below. sandbox_entry::run() installs a
 // SECCOMP_FILTER_FLAG_NEW_LISTENER filter without TSYNC (thread-scoped by
-// design) and then execvp's -- it never awaits anything, so it has no need
+// design) and then execvp's. It never awaits anything, so it has no need
 // for tokio at all, and running it with an extra live worker thread already
 // present at seccomp-install/execve time is exactly the kind of surprising
 // state a security-sensitive exec path shouldn't carry, whether or not it
@@ -107,12 +107,12 @@ async fn async_main() -> Result<()> {
 
     // Neither layer is active in *any* current deployment (dev, CI, or
     // production) per THREAT_MODEL.md §4.6, so the warning above is
-    // deliberately unconditional and non-fatal by default — defaulting to
+    // deliberately unconditional and non-fatal by default. Defaulting to
     // fail-closed here would break every existing deployment, unlike
     // find_bwrap()'s fail-closed default in executor.rs, where the
     // sandboxing tool genuinely is expected to be present today.
     //
-    // SOLARPLEX_REQUIRE_IMA is the inverse: an explicit *opt-in* assertion
+    // SOLARPLEX_REQUIRE_IMA is the inverse: an explicit opt-in assertion
     // for an operator who has actually deployed the kernel-level pieces and
     // wants a misconfiguration (policy failed to load, wrong image mounted)
     // to be a loud startup failure instead of a log line nobody reads. Same
@@ -128,7 +128,7 @@ async fn async_main() -> Result<()> {
         } else {
             tracing::error!(
                 "guardian: SOLARPLEX_REQUIRE_IMA=1 but /sys/kernel/security/ima/policy is \
-                 absent — IMA appraisal does not appear active on this host. Refusing to \
+                 absent. IMA appraisal does not appear active on this host. Refusing to \
                  start rather than run with an asserted protection silently missing. Unset \
                  SOLARPLEX_REQUIRE_IMA to start without this assertion (not for production)."
             );
@@ -152,10 +152,10 @@ async fn async_main() -> Result<()> {
 }
 
 /// Best-effort userspace signal for whether IMA appraisal is active on this
-/// host — not itself a security control, and not trustworthy against the
+/// host. This is not itself a security control, and not trustworthy against the
 /// exact threat it's guarding: a sufficiently privileged attacker who has
 /// already replaced this binary could patch out or fool this check too. The
-/// only *trustworthy* enforcement point is the kernel itself, at `execve`
+/// only trustworthy enforcement point is the kernel itself, at `execve`
 /// time, before any of this code ever runs (THREAT_MODEL.md §4.6). This
 /// exists purely to turn "IMA was documented as required but the deployment
 /// forgot to enable it" from a silent gap into a loud one, mirroring

@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily trigger for solarplex-backup.service
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Spreads load if this is ever scaled to multiple hosts on the same
+# schedule, and avoids every host hitting Backblaze at the exact same
+# second.
+RandomizedDelaySec=600
+# A host that was off at 03:30 (maintenance, reboot) still gets a backup
+# shortly after it comes back, instead of silently skipping to tomorrow.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

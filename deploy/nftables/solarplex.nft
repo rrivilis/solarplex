@@ -1,0 +1,44 @@
+#!/usr/sbin/nft -f
+# Base firewall ruleset for a solarplex host: default-drop input, established/
+# related tracked and let back in, SSH rate-limited, only the ports Caddy
+# actually listens on exposed externally.
+#
+# solarplex-server (8080) and Postgres (5432) are deliberately absent below.
+# Both are reached over loopback only (Caddy reverse-proxies to 127.0.0.1:8080,
+# and the server connects to Postgres locally or over a private network this
+# ruleset isn't meant to police) — they are covered by the `iif lo accept`
+# rule, not by a dedicated port rule, and must never gain one on a host
+# reachable from the public internet.
+#
+# Apply with:
+#   nft -f solarplex.nft
+# Persist across reboots (Debian/systemd):
+#   cp solarplex.nft /etc/nftables.conf
+#   systemctl enable --now nftables
+
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy drop;
+
+		iif lo accept
+		ct state established,related accept
+		ct state invalid drop
+
+		icmp type { echo-request, destination-unreachable, time-exceeded } accept
+		icmpv6 type { echo-request, destination-unreachable, time-exceeded, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
+
+		tcp dport 22 ct state new limit rate 15/minute accept
+
+		tcp dport { 80, 443 } accept
+	}
+
+	chain forward {
+		type filter hook forward priority 0; policy drop;
+	}
+
+	chain output {
+		type filter hook output priority 0; policy accept;
+	}
+}

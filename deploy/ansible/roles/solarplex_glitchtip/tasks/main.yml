@@ -1,0 +1,61 @@
+---
+# Deploys GlitchTip (self-hosted, Sentry-protocol-compatible error tracking
+# — see crates/server/src/main.rs's sentry::init call and
+# docs/threat-model.md) as a 3-container podman-compose stack: GlitchTip 6's
+# own "all_in_one" image, Postgres, Valkey. Bound to localhost only — see
+# docker-compose.yml.j2's header comment for why.
+#
+# GlitchTip's own SECRET_KEY and Postgres password are generated here, not
+# delivered as ciphertext the way solarplex's own credentials are: they're
+# internal to this GlitchTip instance (nothing outside this host ever needs
+# them), generated once via Ansible's `password` lookup (persisted to
+# deploy/ansible/credentials/ on the controller — gitignored, never
+# committed — and reused on every subsequent run rather than rotated).
+
+- name: Ensure /etc/solarplex/glitchtip exists
+  ansible.builtin.file:
+    path: /etc/solarplex/glitchtip
+    state: directory
+    owner: root
+    group: root
+    mode: "0700" # contains the rendered compose file with the secrets below
+
+- name: Generate (or reuse) this host's GlitchTip SECRET_KEY
+  ansible.builtin.set_fact:
+    glitchtip_secret_key: "{{ lookup('password', playbook_dir + '/credentials/glitchtip-secret-key-' + inventory_hostname + '.txt length=50 chars=ascii_letters,digits') }}"
+
+- name: Generate (or reuse) this host's GlitchTip Postgres password
+  ansible.builtin.set_fact:
+    glitchtip_postgres_password: "{{ lookup('password', playbook_dir + '/credentials/glitchtip-postgres-password-' + inventory_hostname + '.txt length=32 chars=ascii_letters,digits') }}"
+
+- name: Install podman-compose
+  ansible.builtin.package:
+    name: podman-compose
+    state: present
+
+- name: Render the GlitchTip compose file
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../glitchtip/docker-compose.yml.j2"
+    dest: /etc/solarplex/glitchtip/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0600" # contains SECRET_KEY and the Postgres password in plaintext
+  notify: restart glitchtip
+
+- name: Install the solarplex-glitchtip systemd unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../systemd/solarplex-glitchtip.service"
+    dest: /etc/systemd/system/solarplex-glitchtip.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart glitchtip
+
+- name: Enable and start GlitchTip
+  ansible.builtin.systemd:
+    name: solarplex-glitchtip
+    enabled: true
+    state: started
+    daemon_reload: true

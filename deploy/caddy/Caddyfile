@@ -1,0 +1,37 @@
+# Caddy fronts both solarplex-server and the Next.js frontend under one
+# domain. Automatic HTTPS (ACME/Let's Encrypt), no certbot cron job, no
+# manual Upgrade/Connection header wiring for the WebSocket route the way
+# nginx needs, Caddy's reverse_proxy handles that transparently.
+#
+# Same origin for frontend and API also means most requests never hit the
+# CORS layer at all, since the browser sees them as first-party. CORS_
+# ALLOWED_ORIGINS on the server stays as defense in depth for anyone
+# calling the API directly, not the primary boundary once this is in front
+# of it.
+#
+# Set SOLARPLEX_DOMAIN before running Caddy, e.g.:
+#   SOLARPLEX_DOMAIN=app.example.com caddy run --config Caddyfile
+# Leaving it unset falls back to localhost, which Caddy serves over plain
+# HTTP with a locally-trusted cert, useful for testing this config without
+# owning a real domain yet.
+
+{$SOLARPLEX_DOMAIN:localhost} {
+	encode gzip
+
+	# solarplex-server: REST, OIDC, and the session WebSocket stream.
+	# solarplex-server only trusts X-Forwarded-For when
+	# TRUST_PROXY_HEADERS=1 is set on it directly — set that alongside
+	# deploying this Caddyfile, never on a server reachable any other
+	# way. Caddy forwards it (and X-Forwarded-Proto/Host) by default;
+	# nothing extra to configure here.
+	@backend path /api/* /auth/* /sessions/*/stream
+	handle @backend {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Everything else: the Next.js frontend (`next start`, or a static
+	# export served some other way — either way, same upstream port).
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

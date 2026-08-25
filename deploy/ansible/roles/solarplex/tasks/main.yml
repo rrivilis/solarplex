@@ -1,0 +1,84 @@
+---
+# Routine delivery: ciphertext and config only. This play never sees a
+# plaintext credential or a plaintext age identity — the only secret
+# material that ever crosses the wire here is inside secrets.age, and
+# that's exactly as safe to transmit as it is to commit to git.
+
+- name: Ensure /etc/solarplex exists
+  ansible.builtin.file:
+    path: /etc/solarplex
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Push the encrypted credential bundle (ciphertext only)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../secrets.age"
+    dest: /etc/solarplex/secrets.age
+    owner: root
+    group: root
+    mode: "0644" # ciphertext — world-readable is fine, age is the gate
+  notify: restart solarplex
+
+- name: Push the encrypted GlitchTip DSN (ciphertext only, optional)
+  ansible.builtin.copy:
+    src: "{{ solarplex_glitchtip_dsn_age }}"
+    dest: /etc/solarplex/glitchtip-dsn.age
+    owner: root
+    group: root
+    mode: "0644" # ciphertext — world-readable is fine, age is the gate
+  when: solarplex_glitchtip_dsn_age is defined
+  notify: restart solarplex
+
+- name: Install the secrets-cli and solarplex-server binaries
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: "{{ solarplex_release_dir }}/secrets-cli", dest: /usr/local/bin/secrets-cli }
+    - { src: "{{ solarplex_release_dir }}/solarplex-server", dest: /usr/local/bin/solarplex-server }
+  notify: restart solarplex
+
+- name: Install the solarplex systemd unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../systemd/solarplex.service"
+    dest: /etc/systemd/system/solarplex.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart solarplex
+
+- name: Ensure solarplex is enabled and running
+  ansible.builtin.systemd:
+    name: solarplex
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# journald's default Storage=auto keeps the journal in /run (tmpfs, wiped
+# on reboot) unless /var/log/journal already exists — a host that's never
+# had that directory created loses every solarplex log on every reboot,
+# including whatever was needed to diagnose why it rebooted. Explicit
+# persistent storage plus a cap so an incident that logs heavily can't
+# fill the disk.
+- name: Configure journald for persistent (survives reboot) storage
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/journald.conf
+    regexp: '^#?\s*Storage='
+    line: "Storage=persistent"
+    insertafter: '^\[Journal\]'
+  notify: restart journald
+
+- name: Cap journald disk usage
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/journald.conf
+    regexp: '^#?\s*SystemMaxUse='
+    line: "SystemMaxUse=1G"
+    insertafter: '^\[Journal\]'
+  notify: restart journald

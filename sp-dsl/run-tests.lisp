@@ -1,0 +1,5 @@
+(require :asdf)
+(asdf:load-asd (merge-pathnames "authority-dsl.asd" *load-truename*))
+(asdf:load-system :authority-dsl/tests)
+(let ((ok (asdf:test-system :authority-dsl/tests)))
+  (uiop:quit (if ok 0 1)))

@@ -46,9 +46,7 @@ export default function AgentsPage() {
       <div className="mb-5">
         <h1 className="text-base font-semibold text-primary mb-0.5">Agents</h1>
         <p className="text-xs text-muted">
-          Every agent currently attached to a session you&apos;re in. Provider/model
-          config, tool policies, and reusable templates are still ahead — this is
-          just the read-only directory, same as Teammates.
+          Every agent currently attached to a session you&apos;re in. 
         </p>
       </div>
 
@@ -79,13 +77,25 @@ export default function AgentsPage() {
 function AgentRow({ agent }: { agent: Agent }) {
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-1 transition-colors duration-100">
-      <div className="w-8 h-8 rounded-full shrink-0 bg-accent-purple/15 text-accent-purple ring-1 ring-accent-purple/20 flex items-center justify-center text-[10px] font-bold">
+      <div className="relative w-8 h-8 rounded-full shrink-0 bg-accent-purple/15 text-accent-purple ring-1 ring-accent-purple/20 flex items-center justify-center text-[10px] font-bold">
         {agent.name.slice(0, 2).toUpperCase()}
+        <span
+          className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-surface-0 ${
+            agent.live ? "bg-accent-green" : "bg-surface-4"
+          }`}
+          title={agent.live ? "Live — heartbeating now" : "Not currently connected"}
+        />
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium text-primary truncate">{agent.name}</p>
-        <p className="text-2xs text-muted truncate">{agent.email ?? "no provider info on record"}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs font-medium text-primary truncate">{agent.name}</p>
+          {agent.live && (
+            <span className="text-2xs font-mono px-1.5 py-0.5 rounded border text-accent-green bg-accent-green/10 border-accent-green/20 shrink-0">
+              live
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="hidden sm:flex items-center gap-1 shrink-0">

@@ -1,0 +1,81 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Catches newly-published advisories against unchanged dependencies —
+    # push/PR triggers alone only re-scan when a diff happens to touch this repo.
+    - cron: "0 6 * * 1"
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  cargo-audit-bin:
+    name: cargo audit (auditable release binaries)
+    runs-on: ubuntu-latest
+    # Scans the actual binaries this project ships (the ones the
+    # solarplex_binary_integrity Ansible role delivers, see
+    # deploy/ansible/roles/solarplex_binary_integrity/), not just
+    # Cargo.lock — catches drift if a binary was ever built from a lockfile
+    # cargo-audit's source-level scan above didn't see. `cargo auditable
+    # build` embeds the exact dependency list (including feature flags) as
+    # a compressed JSON blob in a custom ELF section; `cargo audit bin`
+    # reads that back out and needs no source/Cargo.lock at scan time.
+    # cargo-audit >=0.17.3 has binary-scanning enabled by default.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-auditable + cargo-audit
+        run: cargo install cargo-auditable cargo-audit --locked
+
+      - name: Build release binaries with embedded dependency manifests
+        # -p by crate (package) name, matching this repo's own convention
+        # (see .env.example: "run via `cargo run -p shim`") — this is a
+        # virtual-manifest workspace (no root package), so `--bin <name>`
+        # alone is ambiguous about which member to search.
+        run: >
+          cargo auditable build --release
+          -p server -p secrets-cli -p shim -p guardian -p sidecar
+
+      - name: Audit the built binaries
+        # The server crate's binary is named "solarplex", not
+        # "solarplex-server" — checked crates/server/Cargo.toml's [[bin]]
+        # directly rather than assume it matched the crate name.
+        run: |
+          for bin in solarplex secrets-cli solarplex-shim solarplex-guardian solarplex-adapter; do
+            echo "::group::cargo audit bin $bin"
+            cargo audit bin "target/release/$bin"
+            echo "::endgroup::"
+          done
+
+  pnpm-audit:
+    name: pnpm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high

@@ -1,0 +1,34 @@
+# Rust
+target/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+*.tsbuildinfo
+
+# Playwright (tests/a11y) 
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+
+# Env
+.env
+.env.local
+
+# SBOM tooling 
+.sbom-tools/
+sbom/
+
+.claude/
+demo-photos/
+
+sp-dsl/test-output.txt
+
+# Ansible-generated, host-specific secrets (GlitchTip SECRET_KEY / Postgres
+# password). The `password` lookup persists these to disk on the controller
+# so they're stable across re-runs; they must never be committed. Everything
+# else this project delivers as a secret is age-encrypted first (secrets.age,
+# backup-secrets.age, ...), which is safe to commit. These are the one
+# exception, generated fresh per deployment rather than checked in ciphertext.
+deploy/ansible/credentials/
