@@ -24,4 +24,4 @@ libc = "0.2"
 # Correctly parses strace's C-escaped quoted-string arguments in scout.rs --
 # the previous `s.find('"')`-based extraction had no concept of `\"`/`\\`
 # escaping and silently truncated any path containing an escaped quote.
-nom = "7"
+nom = "8"
