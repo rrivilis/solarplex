@@ -2,6 +2,7 @@
 name    = "session"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 
 # Zero runtime deps — this crate is purely functional.
 # transition() is synchronous; no tokio, no axum, no sqlx.
