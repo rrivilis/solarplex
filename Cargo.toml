@@ -27,7 +27,7 @@ thiserror = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 dashmap = "5"
 uuid = { version = "1", features = ["v4", "serde"] }
 arc-swap = "1"
