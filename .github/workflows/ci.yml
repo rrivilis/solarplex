@@ -55,7 +55,7 @@ jobs:
           # from and fails with "No pnpm version is specified."
           package_json_file: frontend/package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "pnpm"
@@ -95,7 +95,7 @@ jobs:
           # from and fails with "No pnpm version is specified."
           package_json_file: frontend/package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "pnpm"
