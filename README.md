@@ -5,7 +5,6 @@
 
   **The workflow survives its participants.**
 
-  [![CI](https://github.com/rrivilis/solarplex/actions/workflows/ci.yml/badge.svg)](https://github.com/rrivilis/solarplex/actions/workflows/ci.yml)
   [![Version](https://img.shields.io/badge/version-0.31-blue)](https://github.com/rrivilis/solarplex/releases)
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 </div>
