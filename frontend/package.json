@@ -1,6 +1,6 @@
 {
   "name": "solarplex",
-  "version": "0.1.0",
+  "version": "0.31.0",
   "private": true,
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.21.0",

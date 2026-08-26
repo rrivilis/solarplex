@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="120" height="120">
+  <defs>
+    <!-- Gradient pair: lighter half -->
+    <linearGradient id="sp-indigoWash1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#b0bec5" stop-opacity="0.1" />
+      <stop offset="30%"  stop-color="#9fa8da" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#5c6bc0" stop-opacity="1"   />
+    </linearGradient>
+    <radialGradient id="sp-centerGrad1" cx="30%" cy="30%" r="70%">
+      <stop offset="0%"   stop-color="#c5cae9" stop-opacity="0.9" />
+      <stop offset="60%"  stop-color="#5c6bc0" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#3949ab" stop-opacity="0.9" />
+    </radialGradient>
+
+    <!-- Gradient pair: deeper half -->
+    <linearGradient id="sp-indigoWash2" x1="100%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%"   stop-color="#7986cb" stop-opacity="0.9" />
+      <stop offset="50%"  stop-color="#5c6bc0" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#3949ab" stop-opacity="1"   />
+    </linearGradient>
+    <radialGradient id="sp-centerGrad2" cx="70%" cy="70%" r="70%">
+      <stop offset="0%"   stop-color="#7986cb" stop-opacity="0.9" />
+      <stop offset="60%"  stop-color="#3d5afe" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#1a237e" stop-opacity="0.9" />
+    </radialGradient>
+
+    <!-- Depth shadow on offset half -->
+    <filter id="sp-shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="10" dy="10" stdDeviation="8"
+        flood-color="#1a237e" flood-opacity="0.25" />
+    </filter>
+
+    <!-- Diagonal clip paths -->
+    <clipPath id="sp-topRightHalf">
+      <path d="M0,0 L500,500 L0,500 Z" />
+    </clipPath>
+    <clipPath id="sp-bottomLeftHalf">
+      <path d="M0,0 L0,500 L500,500 Z" />
+    </clipPath>
+  </defs>
+
+  <!-- Lighter half — stationary -->
+  <g clip-path="url(#sp-topRightHalf)">
+    <g id="sp-rays1">
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(0 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(15 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(30 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(45 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(60 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(75 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(90 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(105 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(120 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(135 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(150 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(165 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(180 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(195 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(210 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(225 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(240 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(255 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(270 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(285 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(300 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(315 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(330 250 250)" />
+      <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash1)" transform="rotate(345 250 250)" />
+    </g>
+    <circle cx="250" cy="250" r="110" fill="url(#sp-centerGrad1)" />
+    <circle cx="250" cy="250" r="130" fill="none"
+      stroke="#8c9eff" stroke-width="2" opacity="0.6" stroke-dasharray="4 8" />
+    <circle cx="250" cy="250" r="220" fill="none"
+      stroke="url(#sp-indigoWash1)" stroke-width="6" stroke-dasharray="12 18" />
+    <circle cx="250" cy="250" r="240" fill="none"
+      stroke="url(#sp-indigoWash1)" stroke-width="3" stroke-dasharray="6 24" opacity="0.5" />
+  </g>
+
+  <!-- Deeper half — offset + shadow (the "slice" effect) -->
+  <g clip-path="url(#sp-bottomLeftHalf)">
+    <g transform="translate(15, 15)" filter="url(#sp-shadow)">
+      <g id="sp-rays2">
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(0 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(15 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(30 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(45 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(60 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(75 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(90 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(105 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(120 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(135 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(150 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(165 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(180 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(195 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(210 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(225 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(240 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(255 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(270 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(285 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(300 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(315 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(330 250 250)" />
+        <path d="M 250 40 L 230 170 Q 250 210 270 170 Z" fill="url(#sp-indigoWash2)" transform="rotate(345 250 250)" />
+      </g>
+      <circle cx="250" cy="250" r="110" fill="url(#sp-centerGrad2)" />
+      <circle cx="250" cy="250" r="130" fill="none"
+        stroke="#536dfe" stroke-width="2" opacity="0.6" stroke-dasharray="4 8" />
+      <circle cx="250" cy="250" r="220" fill="none"
+        stroke="url(#sp-indigoWash2)" stroke-width="6" stroke-dasharray="12 18" />
+      <circle cx="250" cy="250" r="240" fill="none"
+        stroke="url(#sp-indigoWash2)" stroke-width="3" stroke-dasharray="6 24" opacity="0.5" />
+    </g>
+  </g>
+</svg>

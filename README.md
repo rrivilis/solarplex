@@ -1,8 +1,14 @@
-(https://img.shields.io/badge/build-0.31-blue)
+<div align="center">
+  <img src=".github/assets/logo.svg" alt="Solarplex" width="112" height="112" />
 
-# Solarplex
+  # Solarplex
 
-**The workflow survives its participants.**
+  **The workflow survives its participants.**
+
+  [![CI](https://github.com/rrivilis/solarplex/actions/workflows/ci.yml/badge.svg)](https://github.com/rrivilis/solarplex/actions/workflows/ci.yml)
+  [![Version](https://img.shields.io/badge/version-0.31-blue)](https://github.com/rrivilis/solarplex/releases)
+  [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+</div>
 
 Most AI tools are built around a single-user relationship: Alice has her Claude, Bob has his GPT. When Alice leaves for the day, the workflow loses its operator. Approvals stall. Context lives in her head. An agent may deploy a refactor and nobody can trace how the change was made internally. There is no clean handoff.
 
