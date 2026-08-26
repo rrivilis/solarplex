@@ -108,9 +108,9 @@ pub enum GlobalRateLimitKey {
 impl GlobalRateLimitKey {
     pub fn label(&self) -> &'static str {
         match self {
-            GlobalRateLimitKey::ActorCreate         { .. } => "ActorCreate",
-            GlobalRateLimitKey::SessionCreate       { .. } => "SessionCreate",
-            GlobalRateLimitKey::OidcAttempt         { .. } => "OidcAttempt",
+            GlobalRateLimitKey::ActorCreate { .. } => "ActorCreate",
+            GlobalRateLimitKey::SessionCreate { .. } => "SessionCreate",
+            GlobalRateLimitKey::OidcAttempt { .. } => "OidcAttempt",
             GlobalRateLimitKey::InviteRedeemAttempt { .. } => "InviteRedeemAttempt",
         }
     }
@@ -123,22 +123,30 @@ impl GlobalRateLimitKey {
             // this check at all. Generous on purpose: it exists to blunt
             // a scripted account-creation loop, not to rate-limit real
             // sign-ins, which this key is never even consulted for.
-            GlobalRateLimitKey::ActorCreate { .. } =>
-                Some(Policy::Count { max: 3, window: Duration::from_secs(3600) }),
+            GlobalRateLimitKey::ActorCreate { .. } => Some(Policy::Count {
+                max: 3,
+                window: Duration::from_secs(3600),
+            }),
             // Bounds session-spam without getting in the way of a real
             // workflow that creates several sessions in a row.
-            GlobalRateLimitKey::SessionCreate { .. } =>
-                Some(Policy::Count { max: 20, window: Duration::from_secs(3600) }),
+            GlobalRateLimitKey::SessionCreate { .. } => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(3600),
+            }),
             // Pre-auth, so this is the direct brute-force/DoS target on the
             // whole API. Generous enough that a shared office/NAT IP with
             // several people signing in at once doesn't trip it, tight
             // enough to blunt a scripted loop.
-            GlobalRateLimitKey::OidcAttempt { .. } =>
-                Some(Policy::Count { max: 20, window: Duration::from_secs(60) }),
+            GlobalRateLimitKey::OidcAttempt { .. } => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(60),
+            }),
             // Invite ids are ULIDs (not practically guessable), so this is
             // defense in depth rather than the primary control.
-            GlobalRateLimitKey::InviteRedeemAttempt { .. } =>
-                Some(Policy::Count { max: 10, window: Duration::from_secs(60) }),
+            GlobalRateLimitKey::InviteRedeemAttempt { .. } => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(60),
+            }),
         }
     }
 }
@@ -153,7 +161,9 @@ pub struct GlobalLimiter {
 
 impl GlobalLimiter {
     pub fn new() -> Self {
-        Self { buckets: DashMap::new() }
+        Self {
+            buckets: DashMap::new(),
+        }
     }
 
     /// Check and, on success, consume one unit against `key`'s policy.
@@ -164,21 +174,26 @@ impl GlobalLimiter {
         };
         let label = key_metric_label(&key);
         let now = Instant::now();
-        let mut bucket = self.buckets.entry(key).or_insert_with(|| FixedWindowBucket::fresh(now));
+        let mut bucket = self
+            .buckets
+            .entry(key)
+            .or_insert_with(|| FixedWindowBucket::fresh(now));
         let admission = bucket.check_and_consume(&policy, now);
         metrics::counter!(
             "rate_limit_admission_total",
             "tier"   => "global",
             "key"    => label,
             "result" => if matches!(admission, Admission::Allowed) { "allowed" } else { "denied" },
-        ).increment(1);
+        )
+        .increment(1);
         (admission, Some(policy))
     }
 
     /// Evict buckets idle for at least `idle_for` — see `sweep_rate_limits`.
     fn sweep_idle(&self, idle_for: Duration) {
         let now = Instant::now();
-        self.buckets.retain(|_, bucket| !bucket.is_idle(now, idle_for));
+        self.buckets
+            .retain(|_, bucket| !bucket.is_idle(now, idle_for));
     }
 }
 
@@ -198,7 +213,9 @@ pub struct SessionRateLimiter {
 
 impl SessionRateLimiter {
     pub fn new() -> Self {
-        Self { buckets: DashMap::new() }
+        Self {
+            buckets: DashMap::new(),
+        }
     }
 
     /// Check and, on success, consume one unit against `key`'s policy
@@ -219,14 +236,16 @@ impl SessionRateLimiter {
             "tier"   => "session",
             "key"    => label,
             "result" => if matches!(admission, Admission::Allowed) { "allowed" } else { "denied" },
-        ).increment(1);
+        )
+        .increment(1);
         (admission, Some(policy))
     }
 
     /// Evict buckets idle for at least `idle_for` — see `sweep_rate_limits`.
     fn sweep_idle(&self, idle_for: Duration) {
         let now = Instant::now();
-        self.buckets.retain(|_, bucket| !bucket.is_idle(now, idle_for));
+        self.buckets
+            .retain(|_, bucket| !bucket.is_idle(now, idle_for));
     }
 }
 
@@ -275,7 +294,13 @@ pub async fn gate_session(
     };
     let policy_desc = policy.map(|p| p.describe()).unwrap_or_default();
     let retry_after_secs = retry_after.as_secs();
-    tracing::warn!(session_id, actor_id, key = key_label, policy = policy_desc, "rate limited");
+    tracing::warn!(
+        session_id,
+        actor_id,
+        key = key_label,
+        policy = policy_desc,
+        "rate limited"
+    );
     let event = protocol::messages::WsMessage::new(
         Ulid::new().to_string(),
         protocol::messages::WsPayload::EffectRateLimited {
@@ -291,7 +316,11 @@ pub async fn gate_session(
         },
     );
     crate::ws::emit_to_session(state, session_id, actor_id, event).await;
-    Some(rate_limited_response(key_label, &policy_desc, retry_after_secs))
+    Some(rate_limited_response(
+        key_label,
+        &policy_desc,
+        retry_after_secs,
+    ))
 }
 
 /// Tier-2 (global) gate. Same contract as `gate_session`, but for keys that
@@ -306,8 +335,16 @@ pub fn gate_global(key: GlobalRateLimitKey, limiter: &GlobalLimiter) -> Option<R
     };
     let policy_desc = policy.map(|p| p.describe()).unwrap_or_default();
     let retry_after_secs = retry_after.as_secs();
-    tracing::warn!(key = key_label, policy = policy_desc, "rate limited (global)");
-    Some(rate_limited_response(key_label, &policy_desc, retry_after_secs))
+    tracing::warn!(
+        key = key_label,
+        policy = policy_desc,
+        "rate limited (global)"
+    );
+    Some(rate_limited_response(
+        key_label,
+        &policy_desc,
+        retry_after_secs,
+    ))
 }
 
 fn rate_limited_response(key_label: &str, policy_desc: &str, retry_after_secs: u64) -> Response {

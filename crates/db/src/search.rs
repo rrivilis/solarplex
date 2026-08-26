@@ -46,9 +46,14 @@ pub struct SessionHit {
 /// matched (see routes/search.rs) — `free_text` here only ever further
 /// filters *within* that set by name/description, same as before.
 pub async fn search_sessions(
-    pool: &PgPool, session_ids: &[String], free_text: Option<&str>, limit: i64,
+    pool: &PgPool,
+    session_ids: &[String],
+    free_text: Option<&str>,
+    limit: i64,
 ) -> DbResult<Vec<SessionHit>> {
-    if session_ids.is_empty() { return Ok(vec![]); }
+    if session_ids.is_empty() {
+        return Ok(vec![]);
+    }
     let pat = free_text.map(|q| format!("%{q}%"));
     sqlx::query_as::<_, SessionHit>(
         "SELECT id, name, description, status, created_by
@@ -89,7 +94,9 @@ pub async fn search_artifacts(
     actor_ids: Option<&[String]>,
     limit: i64,
 ) -> DbResult<Vec<ArtifactHit>> {
-    if session_ids.is_empty() { return Ok(vec![]); }
+    if session_ids.is_empty() {
+        return Ok(vec![]);
+    }
     sqlx::query_as::<_, ArtifactHit>(
         "SELECT id, session_id, name, type, created_by
          FROM artifacts
@@ -130,7 +137,10 @@ pub struct ActorHit {
 /// someone/something by name" search should surface, unlike Teammates'
 /// narrower "human collaborators" concept).
 pub async fn search_actors(
-    pool: &PgPool, viewer_actor_id: &str, q: &str, limit: i64,
+    pool: &PgPool,
+    viewer_actor_id: &str,
+    q: &str,
+    limit: i64,
 ) -> DbResult<Vec<ActorHit>> {
     let pat = format!("%{q}%");
     sqlx::query_as::<_, ActorHit>(
@@ -208,7 +218,9 @@ pub async fn search_events(
     actor_ids: Option<&[String]>,
     limit: i64,
 ) -> DbResult<Vec<EventHit>> {
-    if session_ids.is_empty() { return Ok(vec![]); }
+    if session_ids.is_empty() {
+        return Ok(vec![]);
+    }
     sqlx::query_as::<_, EventHit>(
         "SELECT id, session_id, actor_id, type, payload, timestamp
          FROM events

@@ -25,7 +25,13 @@
 
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, http::{HeaderMap, StatusCode}, response::IntoResponse, routing::post, Json, Router};
+use axum::{
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::post,
+    Json, Router,
+};
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +64,9 @@ struct ImportBody {
     ttl_secs: i64,
 }
 
-fn default_ttl_secs() -> i64 { 3600 }
+fn default_ttl_secs() -> i64 {
+    3600
+}
 
 #[derive(Serialize)]
 struct ImportResponse {
@@ -70,35 +78,57 @@ struct ImportResponse {
 
 #[autometrics]
 async fn import(
-    headers:      HeaderMap,
+    headers: HeaderMap,
     Path(session_id): Path<String>,
     State(state): State<Arc<AppState>>,
-    Json(body):   Json<ImportBody>,
+    Json(body): Json<ImportBody>,
 ) -> impl IntoResponse {
     let caller = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
-    if let Err(e) = db::sessions::require_membership(&state.db, &session_id, &caller, MemberRole::Collaborator).await {
+    if let Err(e) =
+        db::sessions::require_membership(&state.db, &session_id, &caller, MemberRole::Collaborator)
+            .await
+    {
         return match e {
-            db::DbError::NotFound     => (StatusCode::FORBIDDEN, "not a member of this session").into_response(),
-            db::DbError::Unauthorized => (StatusCode::FORBIDDEN, "authority import requires collaborator or owner role").into_response(),
-            e                         => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            db::DbError::NotFound => {
+                (StatusCode::FORBIDDEN, "not a member of this session").into_response()
+            }
+            db::DbError::Unauthorized => (
+                StatusCode::FORBIDDEN,
+                "authority import requires collaborator or owner role",
+            )
+                .into_response(),
+            e => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
     }
     if let Some(res) = gate_session(
-        &state, &session_id, &caller, RateLimitKey::AuthorityImport { actor_id: caller.clone() },
-    ).await {
+        &state,
+        &session_id,
+        &caller,
+        RateLimitKey::AuthorityImport {
+            actor_id: caller.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
 
     let parsed = match body.sexpr.parse::<SplxValue>() {
-        Ok(v)  => v,
-        Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, format!("invalid authority-dsl s-expression: {e}")).into_response(),
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("invalid authority-dsl s-expression: {e}"),
+            )
+                .into_response()
+        }
     };
 
     let arena = match AuthorityArena::for_session(&state.db, &session_id).await {
-        Ok(a)  => a,
+        Ok(a) => a,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     let ttl = Duration::seconds(body.ttl_secs);
@@ -106,52 +136,80 @@ async fn import(
     let authority = match parsed {
         SplxValue::Capability(cap) => {
             match db::authority_import::import_capability(&arena, &body.actor_id, &cap, ttl).await {
-                Ok(a)  => a,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Ok(a) => a,
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             }
         }
         SplxValue::Delegation(delegation) => {
             let Some(parent_cap_id) = body.parent_cap_id.as_deref() else {
-                return (StatusCode::UNPROCESSABLE_ENTITY, "delegation import requires parent_cap_id").into_response();
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "delegation import requires parent_cap_id",
+                )
+                    .into_response();
             };
             let parent = match arena.authority_for_cap(parent_cap_id).await {
-                Ok(a)  => a,
-                Err(db::DbError::NotFound) => return (StatusCode::NOT_FOUND, "parent_cap_id not found in this session").into_response(),
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Ok(a) => a,
+                Err(db::DbError::NotFound) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        "parent_cap_id not found in this session",
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             };
-            match db::authority_import::import_delegation(&parent, &body.actor_id, &delegation, ttl).await {
-                Ok(a)  => a,
-                Err(db::DbError::Conflict(msg)) => return (StatusCode::CONFLICT, msg).into_response(),
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            match db::authority_import::import_delegation(&parent, &body.actor_id, &delegation, ttl)
+                .await
+            {
+                Ok(a) => a,
+                Err(db::DbError::Conflict(msg)) => {
+                    return (StatusCode::CONFLICT, msg).into_response()
+                }
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             }
         }
-        other => return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("expected a (capability ...) or (delegation ...) wire form, got {other:?}"),
-        ).into_response(),
+        other => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("expected a (capability ...) or (delegation ...) wire form, got {other:?}"),
+            )
+                .into_response()
+        }
     };
 
     // Best-effort audit event — the cap itself is already durably created
     // regardless of whether this succeeds (same non-fatal pattern
     // routes/epoch.rs's record_revocation uses).
     if let Ok(seq) = db::events::alloc_seq(&state.db, &session_id).await {
-        let _ = db::events::append(&state.db, db::events::AppendEvent {
-            session_id: session_id.clone(),
-            actor_id: caller,
-            event_type: "authority.imported_from_dsl".to_string(),
-            payload: serde_json::json!({
-                "cap_id": authority.id,
-                "permissions": authority.permissions,
-            }),
-            parent_event_id: None,
-            seq,
-        }).await;
+        let _ = db::events::append(
+            &state.db,
+            db::events::AppendEvent {
+                session_id: session_id.clone(),
+                actor_id: caller,
+                event_type: "authority.imported_from_dsl".to_string(),
+                payload: serde_json::json!({
+                    "cap_id": authority.id,
+                    "permissions": authority.permissions,
+                }),
+                parent_event_id: None,
+                seq,
+            },
+        )
+        .await;
     }
 
     Json(ImportResponse {
-        cap_id:      authority.id.clone(),
+        cap_id: authority.id.clone(),
         permissions: authority.permissions.clone(),
-        expires_at:  authority.expires_at.to_rfc3339(),
-        stratum:     authority.stratum,
-    }).into_response()
+        expires_at: authority.expires_at.to_rfc3339(),
+        stratum: authority.stratum,
+    })
+    .into_response()
 }

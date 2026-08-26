@@ -1,27 +1,37 @@
 use std::time::Duration;
 
-use reqwest::Client;
 use protocol::messages::ApprovalDecision;
 use protocol::types::{AgentStatus, ToolCall};
+use reqwest::Client;
 
 use crate::Config;
 
 pub struct SessionClient {
-    config:   Config,
+    config: Config,
     api_base: String,
-    http:     Client,
+    http: Client,
 }
 
 impl SessionClient {
     pub fn new(config: Config) -> Self {
-        let api_base = config.server_ws
+        let api_base = config
+            .server_ws
             .replace("ws://", "http://")
             .replace("wss://", "https://");
-        Self { api_base, config, http: Client::new() }
+        Self {
+            api_base,
+            config,
+            http: Client::new(),
+        }
     }
 
     fn session_url(&self, suffix: &str) -> String {
-        format!("{}/api/sessions/{}{}", self.api_base, self.config.identity().session_id, suffix)
+        format!(
+            "{}/api/sessions/{}{}",
+            self.api_base,
+            self.config.identity().session_id,
+            suffix
+        )
     }
 
     /// Announce that a real MCP client has attached. Called in response to
@@ -31,13 +41,18 @@ impl SessionClient {
     pub async fn announce(&self) {
         let identity = self.config.identity();
         let Some(cap_id) = identity.cap_id.as_deref() else {
-            tracing::error!("shim: agent-attach skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)");
+            tracing::error!(
+                "shim: agent-attach skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)"
+            );
             return;
         };
         let url = self.session_url("/agent-attach");
-        match self.http.post(&url)
+        match self
+            .http
+            .post(&url)
             .json(&serde_json::json!({ "actor_id": &identity.actor_id, "cap_id": cap_id }))
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => {
                 tracing::info!(
@@ -56,13 +71,18 @@ impl SessionClient {
     pub async fn detach(&self) {
         let identity = self.config.identity();
         let Some(cap_id) = identity.cap_id.as_deref() else {
-            tracing::error!("shim: agent-detach skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)");
+            tracing::error!(
+                "shim: agent-detach skipped — no cap_id (SOLARPLEX_TOKEN was never exchanged)"
+            );
             return;
         };
         let url = self.session_url("/agent-detach");
-        match self.http.post(&url)
+        match self
+            .http
+            .post(&url)
             .json(&serde_json::json!({ "actor_id": &identity.actor_id, "cap_id": cap_id }))
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => {
                 tracing::info!(
@@ -105,9 +125,12 @@ impl SessionClient {
             return true;
         };
         let url = self.session_url("/agent-heartbeat");
-        match self.http.post(&url)
+        match self
+            .http
+            .post(&url)
             .json(&serde_json::json!({ "actor_id": &identity.actor_id, "cap_id": cap_id }))
-            .send().await
+            .send()
+            .await
         {
             Ok(resp) if resp.status() == reqwest::StatusCode::GONE => {
                 tracing::error!("shim: heartbeat: cap is gone (expired or epoch-superseded) — this process can do nothing further, stopping");
@@ -133,17 +156,20 @@ impl SessionClient {
             AgentStatus::Running => "running",
             AgentStatus::Waiting => "waiting",
             AgentStatus::Blocked => "blocked",
-            AgentStatus::Idle    => "idle",
-            AgentStatus::Error   => "error",
+            AgentStatus::Idle => "idle",
+            AgentStatus::Error => "error",
         };
         let url = self.session_url("/agent-status");
-        if let Err(e) = self.http.post(&url)
+        if let Err(e) = self
+            .http
+            .post(&url)
             .json(&serde_json::json!({
                 "actor_id": &identity.actor_id,
                 "cap_id":   cap_id,
                 "status":   status_str,
             }))
-            .send().await
+            .send()
+            .await
         {
             tracing::warn!("shim: update_status failed: {e}");
         }
@@ -190,7 +216,9 @@ impl SessionClient {
         let identity = self.config.identity();
         let cap_id = identity.cap_id.as_deref()?;
         let url = self.session_url("/approvals");
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .json(&serde_json::json!({
                 "actor_id":     &identity.actor_id,
                 "cap_id":       cap_id,
@@ -198,7 +226,9 @@ impl SessionClient {
                 "arguments":    &tool_call.args,
                 "timeout_secs": 25u64,
             }))
-            .send().await.ok()?;
+            .send()
+            .await
+            .ok()?;
         if !resp.status().is_success() {
             tracing::error!(tool = %tool_call.tool, status = %resp.status(), "shim: approval create non-2xx");
             return None;
@@ -219,11 +249,14 @@ impl SessionClient {
         let client_timeout = Duration::from_secs(timeout_secs + 5);
         let poll_resp = match tokio::time::timeout(
             client_timeout,
-            self.http.get(&poll_url)
+            self.http
+                .get(&poll_url)
                 .header("X-Session-Id", &identity.session_id)
-                .header("X-Actor-Id",   &identity.actor_id)
+                .header("X-Actor-Id", &identity.actor_id)
                 .send(),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
                 tracing::error!(%approval_id, "shim: poll failed: {e}");
@@ -244,24 +277,30 @@ impl SessionClient {
         let d = result["decision"].as_str().unwrap_or("denied");
         tracing::info!(%approval_id, decision = d, "shim: approval resolved");
         match d {
-            "granted"   => ApprovalDecision::Granted,
+            "granted" => ApprovalDecision::Granted,
             "timed_out" => ApprovalDecision::TimedOut,
-            _           => ApprovalDecision::Denied,
+            _ => ApprovalDecision::Denied,
         }
     }
 
     pub async fn patch_approval_declared_effects(
         &self,
         approval_id: &str,
-        effects:     &protocol::effects::DeclaredEffects,
+        effects: &protocol::effects::DeclaredEffects,
     ) {
         let identity = self.config.identity();
-        let url = format!("{}/api/approvals/{}/declared-effects", self.api_base, approval_id);
-        if let Err(e) = self.http.patch(&url)
+        let url = format!(
+            "{}/api/approvals/{}/declared-effects",
+            self.api_base, approval_id
+        );
+        if let Err(e) = self
+            .http
+            .patch(&url)
             .header("X-Session-Id", &identity.session_id)
-            .header("X-Actor-Id",   &identity.actor_id)
+            .header("X-Actor-Id", &identity.actor_id)
             .json(&serde_json::json!({ "declared_effects": effects }))
-            .send().await
+            .send()
+            .await
         {
             tracing::warn!(%approval_id, "shim: patch declared_effects failed: {e}");
         }
@@ -270,15 +309,18 @@ impl SessionClient {
     pub async fn patch_approval_scout(
         &self,
         approval_id: &str,
-        manifest:    &protocol::effects::ScoutManifest,
+        manifest: &protocol::effects::ScoutManifest,
     ) {
         let identity = self.config.identity();
         let url = format!("{}/api/approvals/{}/scout", self.api_base, approval_id);
-        if let Err(e) = self.http.patch(&url)
+        if let Err(e) = self
+            .http
+            .patch(&url)
             .header("X-Session-Id", &identity.session_id)
-            .header("X-Actor-Id",   &identity.actor_id)
+            .header("X-Actor-Id", &identity.actor_id)
             .json(&serde_json::json!({ "scout_manifest": manifest }))
-            .send().await
+            .send()
+            .await
         {
             tracing::warn!(%approval_id, "shim: patch scout failed: {e}");
         }
@@ -287,19 +329,22 @@ impl SessionClient {
     pub async fn patch_approval_execution(
         &self,
         approval_id: &str,
-        manifest:    &protocol::effects::ExecutionManifest,
-        diverged:    bool,
+        manifest: &protocol::effects::ExecutionManifest,
+        diverged: bool,
     ) {
         let identity = self.config.identity();
         let url = format!("{}/api/approvals/{}/execution", self.api_base, approval_id);
-        if let Err(e) = self.http.patch(&url)
+        if let Err(e) = self
+            .http
+            .patch(&url)
             .header("X-Session-Id", &identity.session_id)
-            .header("X-Actor-Id",   &identity.actor_id)
+            .header("X-Actor-Id", &identity.actor_id)
             .json(&serde_json::json!({
                 "execution_manifest": manifest,
                 "diverged":           diverged,
             }))
-            .send().await
+            .send()
+            .await
         {
             tracing::warn!(%approval_id, "shim: patch execution failed: {e}");
         }
@@ -308,13 +353,16 @@ impl SessionClient {
     pub async fn post_message(&self, content: String) {
         let identity = self.config.identity();
         let url = self.session_url("/messages");
-        if let Err(e) = self.http.post(&url)
+        if let Err(e) = self
+            .http
+            .post(&url)
             .json(&serde_json::json!({
                 "actor_id": &identity.actor_id,
                 "cap_id":   identity.cap_id.as_deref(),
                 "content":  content,
             }))
-            .send().await
+            .send()
+            .await
         {
             tracing::warn!("shim: post_message failed: {e}");
         }
@@ -331,18 +379,22 @@ impl SessionClient {
     // fold any of them into a `ServerCallResponse` without a match per type.
 
     fn require_cap(&self) -> Result<String, String> {
-        self.config.identity().cap_id
+        self.config
+            .identity()
+            .cap_id
             .ok_or_else(|| "no cap_id (SOLARPLEX_TOKEN was never exchanged)".to_string())
     }
 
     async fn call_json(
         &self,
         method: reqwest::Method,
-        url:    &str,
-        body:   Option<serde_json::Value>,
+        url: &str,
+        body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let mut req = self.http.request(method, url);
-        if let Some(b) = body { req = req.json(&b); }
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             let status = resp.status();
@@ -352,19 +404,29 @@ impl SessionClient {
         // Not every endpoint returns a body (some are 204 No Content) --
         // that's success with nothing to report, not a parse failure.
         let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-        if bytes.is_empty() { return Ok(serde_json::Value::Null); }
+        if bytes.is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
 
-    pub async fn register_methods(&self, methods: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub async fn register_methods(
+        &self,
+        methods: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
         let actor_id = self.config.identity().actor_id;
         let url = self.session_url("/methods");
-        self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
-            "actor_id": actor_id,
-            "cap_id":   cap_id,
-            "methods":  methods,
-        }))).await
+        self.call_json(
+            reqwest::Method::POST,
+            &url,
+            Some(serde_json::json!({
+                "actor_id": actor_id,
+                "cap_id":   cap_id,
+                "methods":  methods,
+            })),
+        )
+        .await
     }
 
     pub async fn list_artifacts(&self) -> Result<serde_json::Value, String> {
@@ -375,86 +437,131 @@ impl SessionClient {
 
     pub async fn read_artifact(&self, id: &str) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
-        let url = format!("{}?cap_id={cap_id}", self.session_url(&format!("/artifacts/{id}")));
+        let url = format!(
+            "{}?cap_id={cap_id}",
+            self.session_url(&format!("/artifacts/{id}"))
+        );
         self.call_json(reqwest::Method::GET, &url, None).await
     }
 
     pub async fn create_artifact(
-        &self, name: &str, artifact_type: &str, content: &str,
+        &self,
+        name: &str,
+        artifact_type: &str,
+        content: &str,
     ) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
         let actor_id = self.config.identity().actor_id;
         let url = self.session_url("/artifacts");
-        self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
-            "created_by":    actor_id,
-            "cap_id":        cap_id,
-            "name":          name,
-            "artifact_type": artifact_type,
-            "content":       content,
-        }))).await
+        self.call_json(
+            reqwest::Method::POST,
+            &url,
+            Some(serde_json::json!({
+                "created_by":    actor_id,
+                "cap_id":        cap_id,
+                "name":          name,
+                "artifact_type": artifact_type,
+                "content":       content,
+            })),
+        )
+        .await
     }
 
-    pub async fn update_artifact(&self, id: &str, content: &str) -> Result<serde_json::Value, String> {
+    pub async fn update_artifact(
+        &self,
+        id: &str,
+        content: &str,
+    ) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
         let url = self.session_url(&format!("/artifacts/{id}"));
-        self.call_json(reqwest::Method::PATCH, &url, Some(serde_json::json!({
-            "content": content,
-            "cap_id":  cap_id,
-        }))).await
+        self.call_json(
+            reqwest::Method::PATCH,
+            &url,
+            Some(serde_json::json!({
+                "content": content,
+                "cap_id":  cap_id,
+            })),
+        )
+        .await
     }
 
-    pub async fn add_context(&self, kind: &str, content: &str) -> Result<serde_json::Value, String> {
+    pub async fn add_context(
+        &self,
+        kind: &str,
+        content: &str,
+    ) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
         let actor_id = self.config.identity().actor_id;
         let authored_by = "agent"; // this is always the agent-side shim; no human path here
         let url = self.session_url("/context");
-        self.call_json(reqwest::Method::POST, &url, Some(serde_json::json!({
-            "actor_id":    actor_id,
-            "cap_id":      cap_id,
-            "kind":        kind,
-            "content":     content,
-            "authored_by": authored_by,
-        }))).await
+        self.call_json(
+            reqwest::Method::POST,
+            &url,
+            Some(serde_json::json!({
+                "actor_id":    actor_id,
+                "cap_id":      cap_id,
+                "kind":        kind,
+                "content":     content,
+                "authored_by": authored_by,
+            })),
+        )
+        .await
     }
 
     pub async fn read_feed(&self, limit: u64) -> Result<serde_json::Value, String> {
         let cap_id = self.require_cap()?;
-        let url = format!("{}?limit={limit}&cap_id={cap_id}", self.session_url("/events"));
+        let url = format!(
+            "{}?limit={limit}&cap_id={cap_id}",
+            self.session_url("/events")
+        );
         self.call_json(reqwest::Method::GET, &url, None).await
     }
 
     /// Single dispatch point from `main.rs`'s IPC reader loop to whichever
     /// method above backs the requested op.
-    pub async fn dispatch_server_call(&self, call: protocol::ipc::ServerCall) -> Result<serde_json::Value, String> {
+    pub async fn dispatch_server_call(
+        &self,
+        call: protocol::ipc::ServerCall,
+    ) -> Result<serde_json::Value, String> {
         use protocol::ipc::ServerCall::*;
         match call {
-            RegisterMethods { methods }                    => self.register_methods(methods).await,
-            ListArtifacts                                   => self.list_artifacts().await,
-            ReadArtifact { id }                             => self.read_artifact(&id).await,
-            CreateArtifact { name, artifact_type, content } => self.create_artifact(&name, &artifact_type, &content).await,
-            UpdateArtifact { id, content }                  => self.update_artifact(&id, &content).await,
-            PostMessage { content }                         => { self.post_message(content).await; Ok(serde_json::Value::Null) }
-            AddContext { kind, content }                    => self.add_context(&kind, &content).await,
-            ReadFeed { limit }                              => self.read_feed(limit).await,
+            RegisterMethods { methods } => self.register_methods(methods).await,
+            ListArtifacts => self.list_artifacts().await,
+            ReadArtifact { id } => self.read_artifact(&id).await,
+            CreateArtifact {
+                name,
+                artifact_type,
+                content,
+            } => self.create_artifact(&name, &artifact_type, &content).await,
+            UpdateArtifact { id, content } => self.update_artifact(&id, &content).await,
+            PostMessage { content } => {
+                self.post_message(content).await;
+                Ok(serde_json::Value::Null)
+            }
+            AddContext { kind, content } => self.add_context(&kind, &content).await,
+            ReadFeed { limit } => self.read_feed(limit).await,
         }
     }
 
     pub async fn invoke_method(
         &self,
-        cap_id:       &str,
-        method:       &str,
-        args:         &serde_json::Value,
+        cap_id: &str,
+        method: &str,
+        args: &serde_json::Value,
         timeout_secs: u64,
     ) -> Option<InvokeResponse> {
         let url = self.session_url("/invoke");
-        match self.http.post(&url)
+        match self
+            .http
+            .post(&url)
             .json(&serde_json::json!({
                 "cap_id":                cap_id,
                 "method":                method,
                 "args":                  args,
                 "approval_timeout_secs": timeout_secs,
             }))
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => r.json::<InvokeResponse>().await.ok(),
             Ok(r) => {
@@ -470,9 +577,12 @@ impl SessionClient {
 
     pub async fn consume_receipt(&self, receipt_id: &str) -> Option<serde_json::Value> {
         let url = self.session_url("/consume-receipt");
-        match self.http.post(&url)
+        match self
+            .http
+            .post(&url)
             .json(&serde_json::json!({ "receipt_id": receipt_id }))
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.ok()?;
@@ -491,14 +601,14 @@ impl SessionClient {
 
     pub async fn attest_file_write(
         &self,
-        receipt_id:           &str,
-        cap_id:               &str,
-        tool:                 &str,
-        path:                 &str,
+        receipt_id: &str,
+        cap_id: &str,
+        tool: &str,
+        path: &str,
         approved_hash_before: &str,
-        approved_hash_after:  &str,
+        approved_hash_after: &str,
         observed_hash_before: &str,
-        actual_hash_after:    &str,
+        actual_hash_after: &str,
     ) -> Option<AttestationResult> {
         let identity = self.config.identity();
         let url = self.session_url("/attest");
@@ -518,7 +628,7 @@ impl SessionClient {
                 let body: serde_json::Value = r.json().await.ok()?;
                 Some(AttestationResult {
                     attestation_id: body["attestation_id"].as_str().unwrap_or("").to_owned(),
-                    hash_mismatch:  body["hash_mismatch"].as_bool().unwrap_or(false),
+                    hash_mismatch: body["hash_mismatch"].as_bool().unwrap_or(false),
                 })
             }
             Ok(r) => {
@@ -543,13 +653,13 @@ impl SessionClient {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct InvokeResponse {
-    pub status:      String,
-    pub receipt_id:  Option<String>,
+    pub status: String,
+    pub receipt_id: Option<String>,
     pub approval_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 pub struct AttestationResult {
     pub attestation_id: String,
-    pub hash_mismatch:  bool,
+    pub hash_mismatch: bool,
 }

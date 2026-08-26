@@ -12,12 +12,12 @@ use anyhow::{anyhow, Result};
 use clap::Args;
 use serde_json::Value;
 
+use super::session::resolve_session_id;
 use crate::{
     client::Client,
     config::{self, Ctx, SavedCursor},
     output::*,
 };
-use super::session::resolve_session_id;
 
 // The long usage doc lives on `Commands::Why` in main.rs, not here — see
 // ask.rs's identical note for why.
@@ -37,10 +37,9 @@ pub async fn run(args: WhyArgs, ctx: &Ctx) -> Result<()> {
 
     // Session comes from the global --session flag or attached config.
     // Use `sp --session <id> why` to target a specific session.
-    let raw = ctx.session_id.as_deref()
-        .ok_or_else(|| anyhow!(
-            "no session — pass `sp --session <id> why` or run `sp session attach <id>` first"
-        ))?;
+    let raw = ctx.session_id.as_deref().ok_or_else(|| {
+        anyhow!("no session — pass `sp --session <id> why` or run `sp session attach <id>` first")
+    })?;
     let token = raw.strip_prefix("session/").unwrap_or(raw);
     let session_id = resolve_session_id(&client, token).await?;
 
@@ -54,8 +53,7 @@ pub async fn run(args: WhyArgs, ctx: &Ctx) -> Result<()> {
             a.iter()
                 .filter(|e| {
                     // If cursor is at zero, we have no saved position — show everything.
-                    cursor.seq == 0
-                        || e["seq"].as_i64().map(|s| s <= cursor.seq).unwrap_or(true)
+                    cursor.seq == 0 || e["seq"].as_i64().map(|s| s <= cursor.seq).unwrap_or(true)
                 })
                 .collect()
         })
@@ -104,7 +102,7 @@ fn print_header(subject: &str, session_name: &str, session_id: &str, cursor: &Sa
 }
 
 fn print_why_row(e: &Value) {
-    let seq   = e["seq"].as_i64().unwrap_or(0);
+    let seq = e["seq"].as_i64().unwrap_or(0);
     let actor = sanitize_terminal(e["actor_id"].as_str().unwrap_or("system"));
     let etype = e["type"].as_str().unwrap_or("?");
     let short = etype.rsplit('.').next().unwrap_or(etype);
@@ -130,7 +128,8 @@ fn print_why_row(e: &Value) {
 fn row_detail(etype: &str, inner: &Value, outer: &Value) -> String {
     let t = etype.to_lowercase();
     if t.contains("bundle") {
-        let bid = inner["bundle_id"].as_str()
+        let bid = inner["bundle_id"]
+            .as_str()
             .or_else(|| outer["bundle_id"].as_str())
             .unwrap_or("?");
         let short = &bid[..bid.len().min(10)];
@@ -150,14 +149,16 @@ fn row_detail(etype: &str, inner: &Value, outer: &Value) -> String {
     }
     if t.contains("policy") {
         let target = inner["target"].as_str().unwrap_or("?");
-        let action = inner["constraint"].as_str()
+        let action = inner["constraint"]
+            .as_str()
             .or_else(|| inner["constraint"]["action"].as_str())
             .unwrap_or("?");
         return format!("{target} → {action}");
     }
     if t.contains("approval") {
         let tool = inner["tool_name"].as_str().unwrap_or("");
-        let aid  = inner["approval_id"].as_str()
+        let aid = inner["approval_id"]
+            .as_str()
             .or_else(|| outer["approval_id"].as_str())
             .unwrap_or("?");
         let short = &aid[..aid.len().min(10)];
@@ -168,15 +169,20 @@ fn row_detail(etype: &str, inner: &Value, outer: &Value) -> String {
         };
     }
     if t.contains("saga") {
-        let sid  = inner["saga_id"].as_str().unwrap_or("?");
-        let step = inner["step_idx"].as_u64()
+        let sid = inner["saga_id"].as_str().unwrap_or("?");
+        let step = inner["step_idx"]
+            .as_u64()
             .map(|s| format!("  step:{s}"))
             .unwrap_or_default();
         return format!("{}{step}", &sid[..sid.len().min(16)]);
     }
     if t.contains("message") {
         let c = inner["content"].as_str().unwrap_or("").trim().to_string();
-        return if c.len() > 50 { format!("{}…", &c[..50]) } else { c };
+        return if c.len() > 50 {
+            format!("{}…", &c[..50])
+        } else {
+            c
+        };
     }
     String::new()
 }
@@ -188,18 +194,30 @@ fn why_session(name: &str, session_id: &str, events: &[&Value], cursor: &SavedCu
 
     // Events that shape the observable session state.
     let key_type_fragments: &[&str] = &[
-        "session.created", "session.renamed",
-        "actor.joined", "actor.detached",
-        "policy", "policyset",
-        "saga.begun", "sagabegun",
-        "bundle.intercepted", "bundleintercepted",
-        "bundle.approvalgated", "bundleapprovalgated",
-        "bundle.deferred", "bundledeferred",
-        "bundle.rejected", "bundlerejected",
-        "bundle.delivered", "bundledelivered",
-        "approval.granted", "approvalgranted",
-        "approval.denied", "approvaldenied",
-        "cap.delegated", "cap.revoked",
+        "session.created",
+        "session.renamed",
+        "actor.joined",
+        "actor.detached",
+        "policy",
+        "policyset",
+        "saga.begun",
+        "sagabegun",
+        "bundle.intercepted",
+        "bundleintercepted",
+        "bundle.approvalgated",
+        "bundleapprovalgated",
+        "bundle.deferred",
+        "bundledeferred",
+        "bundle.rejected",
+        "bundlerejected",
+        "bundle.delivered",
+        "bundledelivered",
+        "approval.granted",
+        "approvalgranted",
+        "approval.denied",
+        "approvaldenied",
+        "cap.delegated",
+        "cap.revoked",
         "epoch.advanced",
     ];
 
@@ -232,28 +250,37 @@ fn why_session(name: &str, session_id: &str, events: &[&Value], cursor: &SavedCu
         if t.contains("approval.requested") || t.contains("approvalrequested") {
             pending_approvals += 1;
         }
-        if t.contains("approval.granted") || t.contains("approvalgranted")
-            || t.contains("approval.denied") || t.contains("approvaldenied")
-            || t.contains("approval.expired") || t.contains("approvalexpired")
+        if t.contains("approval.granted")
+            || t.contains("approvalgranted")
+            || t.contains("approval.denied")
+            || t.contains("approvaldenied")
+            || t.contains("approval.expired")
+            || t.contains("approvalexpired")
         {
             pending_approvals = pending_approvals.saturating_sub(1);
         }
-        if t.contains("bundle.approvalgated") || t.contains("bundleapprovalgated")
-            || t.contains("bundle.deferred") || t.contains("bundledeferred")
+        if t.contains("bundle.approvalgated")
+            || t.contains("bundleapprovalgated")
+            || t.contains("bundle.deferred")
+            || t.contains("bundledeferred")
         {
             gated_bundles += 1;
         }
-        if t.contains("bundle.delivered") || t.contains("bundledelivered")
-            || t.contains("bundle.rejected") || t.contains("bundlerejected")
+        if t.contains("bundle.delivered")
+            || t.contains("bundledelivered")
+            || t.contains("bundle.rejected")
+            || t.contains("bundlerejected")
         {
             gated_bundles = gated_bundles.saturating_sub(1);
         }
     }
 
     if pending_approvals > 0 {
-        println!("  {} {pending_approvals} approval(s) pending  {}",
+        println!(
+            "  {} {pending_approvals} approval(s) pending  {}",
             yellow("⚑"),
-            dim("(sp ask session pending-approvals)"));
+            dim("(sp ask session pending-approvals)")
+        );
     }
     if gated_bundles > 0 {
         println!("  {} {gated_bundles} bundle(s) gated", yellow("⏳"));
@@ -276,7 +303,10 @@ fn why_policy(name: &str, session_id: &str, events: &[&Value], cursor: &SavedCur
         .collect();
 
     if policy_events.is_empty() {
-        println!("  {} no PolicySet events found — session using defaults", dim("·"));
+        println!(
+            "  {} no PolicySet events found — session using defaults",
+            dim("·")
+        );
         return;
     }
 
@@ -284,16 +314,21 @@ fn why_policy(name: &str, session_id: &str, events: &[&Value], cursor: &SavedCur
     let n = policy_events.len();
     for (i, e) in policy_events.iter().enumerate() {
         let is_last = i == n - 1;
-        let seq    = e["seq"].as_i64().unwrap_or(0);
-        let actor  = sanitize_terminal(e["actor_id"].as_str().unwrap_or("system"));
-        let inner  = &e["payload"]["payload"];
+        let seq = e["seq"].as_i64().unwrap_or(0);
+        let actor = sanitize_terminal(e["actor_id"].as_str().unwrap_or("system"));
+        let inner = &e["payload"]["payload"];
         let target = sanitize_terminal(inner["target"].as_str().unwrap_or("?"));
         let action = sanitize_terminal(
-            inner["constraint"].as_str()
+            inner["constraint"]
+                .as_str()
                 .or_else(|| inner["constraint"]["action"].as_str())
                 .unwrap_or("?"),
         );
-        let tag = if is_last { cyan("← current") } else { dim("superseded") };
+        let tag = if is_last {
+            cyan("← current")
+        } else {
+            dim("superseded")
+        };
         println!(
             "  {}  {}  {} → {}  {}",
             dim(&format!("seq:{seq:>5}")),
@@ -320,7 +355,9 @@ fn why_bundle(
         .copied()
         .filter(|e| {
             let t = e["type"].as_str().unwrap_or("").to_lowercase();
-            if !t.contains("bundle") { return false; }
+            if !t.contains("bundle") {
+                return false;
+            }
             // Match bundle_id anywhere in the payload hierarchy.
             let id_at = |v: &Value| v["bundle_id"].as_str() == Some(bundle_id);
             id_at(&e["payload"]["payload"]) || id_at(&e["payload"]) || id_at(e)
@@ -344,7 +381,7 @@ fn why_bundle(
 
     // Infer current status from the last bundle event.
     if let Some(last) = relevant.last() {
-        let t     = last["type"].as_str().unwrap_or("").to_lowercase();
+        let t = last["type"].as_str().unwrap_or("").to_lowercase();
         let inner = &last["payload"]["payload"];
         if t.contains("delivered") {
             println!("  {} delivered", green("✓"));
@@ -397,7 +434,7 @@ fn why_approval(
     println!();
 
     if let Some(last) = relevant.last() {
-        let t     = last["type"].as_str().unwrap_or("").to_lowercase();
+        let t = last["type"].as_str().unwrap_or("").to_lowercase();
         let actor = sanitize_terminal(last["actor_id"].as_str().unwrap_or("?"));
         if t.contains("granted") {
             println!("  {} granted by {}", green("✓"), bold(&actor));
@@ -407,18 +444,15 @@ fn why_approval(
             println!("  {} expired", dim("○"));
         } else {
             println!("  {} pending", yellow("⋯"));
-            println!("  hint: {}", dim(&format!("sp act approval/{approval_id} Grant")));
+            println!(
+                "  hint: {}",
+                dim(&format!("sp act approval/{approval_id} Grant"))
+            );
         }
     }
 }
 
-fn why_saga(
-    saga_id: &str,
-    name: &str,
-    session_id: &str,
-    events: &[&Value],
-    cursor: &SavedCursor,
-) {
+fn why_saga(saga_id: &str, name: &str, session_id: &str, events: &[&Value], cursor: &SavedCursor) {
     let short = &saga_id[..saga_id.len().min(16)];
     print_header(&format!("saga/{short}…"), name, session_id, cursor);
 
@@ -449,7 +483,7 @@ fn why_saga(
             println!("  {} aborted", red("✗"));
         } else if t.contains("waiting") || t.contains("sagastepsent") {
             let inner = &last["payload"]["payload"];
-            let step  = inner["step_idx"].as_u64().unwrap_or(0);
+            let step = inner["step_idx"].as_u64().unwrap_or(0);
             println!("  {} waiting on step {step}", yellow("⏳"));
         } else {
             println!("  {} in progress", yellow("⋯"));

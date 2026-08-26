@@ -204,8 +204,13 @@ pub async fn list_pending_by_email(pool: &PgPool, email: &str) -> DbResult<Vec<I
 /// Decode the staged cap request off a redeemed invite row, if any.
 /// `None` means "membership only" — the common case — not an error.
 pub fn parse_cap_grant(row: &InviteRow) -> Option<CapGrant> {
-    let permissions: Vec<String> = row.cap_permissions.as_ref()
+    let permissions: Vec<String> = row
+        .cap_permissions
+        .as_ref()
         .and_then(|v| serde_json::from_value(v.clone()).ok())?;
     let ttl_secs = row.cap_ttl_secs?;
-    Some(CapGrant { permissions, ttl_secs })
+    Some(CapGrant {
+        permissions,
+        ttl_secs,
+    })
 }

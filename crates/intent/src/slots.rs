@@ -36,21 +36,33 @@ fn find(words: &[&str], marker: &str) -> Option<usize> {
 }
 
 fn join_range(words: &[&str], range: std::ops::Range<usize>) -> Option<String> {
-    if range.start >= range.end { return None; }
+    if range.start >= range.end {
+        return None;
+    }
     let joined = words[range].join(" ");
-    if joined.is_empty() { None } else { Some(joined) }
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
 }
 
 /// `remainder` is the raw text after the matched "(please) invite" prefix,
 /// e.g. "alice as owner", "bob to roman-room1", "bob 1 day", or just "alice".
 /// Returns `(role, invitee, target_session, ttl_secs)`.
-pub fn extract_invite(remainder: &str) -> (MemberRole, Option<String>, Option<String>, Option<i64>) {
+pub fn extract_invite(
+    remainder: &str,
+) -> (MemberRole, Option<String>, Option<String>, Option<i64>) {
     let all_words: Vec<&str> = remainder.split_whitespace().collect();
     let (ttl_secs, words) = extract_duration_secs(&all_words);
 
     let as_pos = find(&words, "as");
     let to_pos = find(&words, "to");
-    let invitee_end = [as_pos, to_pos].into_iter().flatten().min().unwrap_or(words.len());
+    let invitee_end = [as_pos, to_pos]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(words.len());
 
     let role = as_pos
         .and_then(|p| words.get(p + 1))

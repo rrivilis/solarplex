@@ -9,7 +9,9 @@ use age::secrecy::ExposeSecret;
 
 fn main() {
     let identity = age::x25519::Identity::generate();
-    println!("# Store the secret key offline (e.g. printed, safe/HSM) — never on a networked host.");
+    println!(
+        "# Store the secret key offline (e.g. printed, safe/HSM) — never on a networked host."
+    );
     println!("AGE_IDENTITY={}", identity.to_string().expose_secret());
     println!("# Safe to keep alongside other recipients in deploy config.");
     println!("AGE_RECIPIENT={}", identity.to_public());

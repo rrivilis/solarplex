@@ -42,14 +42,22 @@ pub struct SessionLinkRow {
 impl SessionLinkRow {
     /// The session on the other side of this link from `session_id`.
     pub fn peer_of(&self, session_id: &str) -> &str {
-        if self.session_a == session_id { &self.session_b } else { &self.session_a }
+        if self.session_a == session_id {
+            &self.session_b
+        } else {
+            &self.session_a
+        }
     }
 }
 
 /// Canonicalize an unordered pair so an A-B link and a B-A link are always
 /// the same row.
 fn canonical_pair<'a>(x: &'a str, y: &'a str) -> (&'a str, &'a str) {
-    if x < y { (x, y) } else { (y, x) }
+    if x < y {
+        (x, y)
+    } else {
+        (y, x)
+    }
 }
 
 pub async fn mint_invite(
@@ -102,10 +110,18 @@ pub async fn redeem_invite(
     .ok_or(DbError::NotFound)?;
 
     if invite.source_session_id == redeeming_session_id {
-        return Err(DbError::Conflict("cannot link a session to itself".to_string()));
+        return Err(DbError::Conflict(
+            "cannot link a session to itself".to_string(),
+        ));
     }
 
-    let link = insert_link_in_tx(&mut tx, &invite.source_session_id, redeeming_session_id, redeeming_actor_id).await?;
+    let link = insert_link_in_tx(
+        &mut tx,
+        &invite.source_session_id,
+        redeeming_session_id,
+        redeeming_actor_id,
+    )
+    .await?;
     tx.commit().await?;
     Ok(link)
 }
@@ -159,20 +175,23 @@ async fn insert_link_in_tx(
 /// is a yes/no existence check, not a rendering decision.
 pub async fn exists_between(pool: &PgPool, session_x: &str, session_y: &str) -> DbResult<bool> {
     let (a, b) = canonical_pair(session_x, session_y);
-    let row: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM session_links WHERE session_a = $1 AND session_b = $2",
-    )
-    .bind(a)
-    .bind(b)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM session_links WHERE session_a = $1 AND session_b = $2")
+            .bind(a)
+            .bind(b)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.is_some())
 }
 
 /// The full `session_links` row between these two sessions, if any —
 /// `exists_between`'s sibling for callers (like artifact import) that need
 /// the link's own id, not just a yes/no.
-pub async fn get_between(pool: &PgPool, session_x: &str, session_y: &str) -> DbResult<Option<SessionLinkRow>> {
+pub async fn get_between(
+    pool: &PgPool,
+    session_x: &str,
+    session_y: &str,
+) -> DbResult<Option<SessionLinkRow>> {
     let (a, b) = canonical_pair(session_x, session_y);
     sqlx::query_as::<_, SessionLinkRow>(
         "SELECT id, session_a, session_b, linked_by, visibility, created_at
@@ -233,7 +252,11 @@ pub async fn list_visible_for_session(
     .map_err(DbError::from)
 }
 
-pub async fn set_visibility(pool: &PgPool, link_id: &str, visibility: &str) -> DbResult<SessionLinkRow> {
+pub async fn set_visibility(
+    pool: &PgPool,
+    link_id: &str,
+    visibility: &str,
+) -> DbResult<SessionLinkRow> {
     sqlx::query_as::<_, SessionLinkRow>(
         "UPDATE session_links SET visibility = $2 WHERE id = $1
          RETURNING id, session_a, session_b, linked_by, visibility, created_at",
@@ -250,7 +273,9 @@ pub async fn unlink(pool: &PgPool, link_id: &str) -> DbResult<()> {
         .bind(link_id)
         .execute(pool)
         .await?;
-    if result.rows_affected() == 0 { return Err(DbError::NotFound); }
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
     Ok(())
 }
 

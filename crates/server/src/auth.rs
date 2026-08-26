@@ -56,8 +56,8 @@ use ulid::Ulid;
 use openidconnect::{
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
     reqwest::async_http_client,
-    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl,
-    Nonce, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
+    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
 };
 
 use crate::state::{AppState, OidcState, PkceEntry};
@@ -79,19 +79,23 @@ impl OidcConfig {
     /// Load from environment.  Returns `None` when `OIDC_ISSUER_URL` is unset,
     /// meaning OIDC is disabled for this deployment.
     pub fn from_env() -> Option<Self> {
-        let issuer_url    = std::env::var("OIDC_ISSUER_URL").ok()?;
-        let client_id     = std::env::var("OIDC_CLIENT_ID").ok()?;
+        let issuer_url = std::env::var("OIDC_ISSUER_URL").ok()?;
+        let client_id = std::env::var("OIDC_CLIENT_ID").ok()?;
         let client_secret = std::env::var("OIDC_CLIENT_SECRET").ok()?;
-        let redirect_uri  = std::env::var("OIDC_REDIRECT_URI").ok()?;
-        Some(Self { issuer_url, client_id, client_secret, redirect_uri })
+        let redirect_uri = std::env::var("OIDC_REDIRECT_URI").ok()?;
+        Some(Self {
+            issuer_url,
+            client_id,
+            client_secret,
+            redirect_uri,
+        })
     }
 }
 
 /// Initialise the OIDC client via provider discovery (async HTTP).
 /// Call once at startup; fail fast if misconfigured.
 pub async fn init_oidc(cfg: OidcConfig) -> anyhow::Result<OidcState> {
-    let issuer = IssuerUrl::new(cfg.issuer_url)
-        .context("invalid OIDC_ISSUER_URL")?;
+    let issuer = IssuerUrl::new(cfg.issuer_url).context("invalid OIDC_ISSUER_URL")?;
 
     let provider_metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
         .await
@@ -103,13 +107,13 @@ pub async fn init_oidc(cfg: OidcConfig) -> anyhow::Result<OidcState> {
         Some(ClientSecret::new(cfg.client_secret)),
     )
     .set_redirect_uri(
-        RedirectUrl::new(cfg.redirect_uri.clone()).context("invalid OIDC_REDIRECT_URI")?
+        RedirectUrl::new(cfg.redirect_uri.clone()).context("invalid OIDC_REDIRECT_URI")?,
     );
 
     Ok(OidcState {
-        client:      Arc::new(client),
+        client: Arc::new(client),
         redirect_uri: cfg.redirect_uri,
-        pending:     Default::default(),
+        pending: Default::default(),
     })
 }
 
@@ -136,10 +140,7 @@ pub struct StartQuery {
 /// one `/` (not `//`, which browsers resolve as protocol-relative to an
 /// arbitrary host), and must not contain an embedded scheme (`://`).
 fn is_safe_return_to(path: &str) -> bool {
-    path.starts_with('/')
-        && !path.starts_with("//")
-        && !path.contains("://")
-        && path.len() <= 512
+    path.starts_with('/') && !path.starts_with("//") && !path.contains("://") && path.len() <= 512
 }
 
 /// Best-effort client IP for rate limiting the two pre-authentication OIDC
@@ -154,7 +155,12 @@ fn client_ip(connect_info: &SocketAddr, headers: &HeaderMap) -> String {
     let trust_proxy = std::env::var("TRUST_PROXY_HEADERS").ok().as_deref() == Some("1");
     if trust_proxy {
         if let Some(fwd) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(first) = fwd.split(',').next().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(first) = fwd
+                .split(',')
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 return first.to_string();
             }
         }
@@ -166,11 +172,11 @@ pub async fn oidc_start(
     State(state): State<Arc<AppState>>,
     ConnectInfo(connect_info): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Query(query):  Query<StartQuery>,
+    Query(query): Query<StartQuery>,
 ) -> Response {
     let oidc = match state.oidc.as_ref() {
         Some(o) => o,
-        None    => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
+        None => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
     };
     let ip = client_ip(&connect_info, &headers);
     if let Some(res) = crate::rate_limit::gate_global(
@@ -182,7 +188,8 @@ pub async fn oidc_start(
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
-    let (auth_url, csrf_token, nonce) = oidc.client
+    let (auth_url, csrf_token, nonce) = oidc
+        .client
         .authorize_url(
             CoreAuthenticationFlow::AuthorizationCode,
             CsrfToken::new_random,
@@ -194,7 +201,8 @@ pub async fn oidc_start(
         .set_pkce_challenge(pkce_challenge)
         .url();
 
-    let return_to = query.return_to
+    let return_to = query
+        .return_to
         .filter(|p| is_safe_return_to(p))
         .unwrap_or_default();
     let desktop = query.client.as_deref() == Some("desktop");
@@ -204,8 +212,8 @@ pub async fn oidc_start(
         csrf_token.secret().clone(),
         PkceEntry {
             verifier_secret: pkce_verifier.secret().to_string(),
-            nonce_secret:    nonce.secret().to_string(),
-            expires:         Instant::now() + Duration::from_secs(600),
+            nonce_secret: nonce.secret().to_string(),
+            expires: Instant::now() + Duration::from_secs(600),
             return_to,
             desktop,
         },
@@ -227,10 +235,10 @@ fn sweep_pending(oidc: &OidcState) {
 
 #[derive(Deserialize)]
 pub struct CallbackQuery {
-    code:  Option<String>,
+    code: Option<String>,
     state: Option<String>,
     /// RFC 6749 §4.1.2.1 provider error fields
-    error:             Option<String>,
+    error: Option<String>,
     error_description: Option<String>,
 }
 
@@ -242,7 +250,7 @@ pub async fn oidc_callback(
 ) -> Response {
     let oidc = match app.oidc.as_ref() {
         Some(o) => o,
-        None    => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
+        None => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
     };
     // This is the expensive half of the pair (a real round trip to the
     // provider, plus a DB write) and the actual brute-force target. Same
@@ -262,14 +270,20 @@ pub async fn oidc_callback(
         return (StatusCode::BAD_GATEWAY, format!("provider error: {err}")).into_response();
     }
 
-    let code        = match params.code  { Some(c) => c, None => return bad("missing code")  };
-    let state_param = match params.state { Some(s) => s, None => return bad("missing state") };
+    let code = match params.code {
+        Some(c) => c,
+        None => return bad("missing code"),
+    };
+    let state_param = match params.state {
+        Some(s) => s,
+        None => return bad("missing state"),
+    };
 
     // ── CSRF guard ────────────────────────────────────────────────────────────
     // DashMap::remove is single-use: a replayed state param finds no entry.
     let entry = match oidc.pending.remove(&state_param) {
         Some((_, e)) => e,
-        None         => return bad("unknown or expired state, possible CSRF or replay"),
+        None => return bad("unknown or expired state, possible CSRF or replay"),
     };
 
     if entry.expires < Instant::now() {
@@ -279,17 +293,18 @@ pub async fn oidc_callback(
 
     // Extract before verifier_secret/nonce_secret are moved out of `entry` below.
     let return_to = entry.return_to.clone();
-    let desktop    = entry.desktop;
+    let desktop = entry.desktop;
 
     // ── Code exchange + PKCE verification ────────────────────────────────────
-    let token_response = oidc.client
+    let token_response = oidc
+        .client
         .exchange_code(AuthorizationCode::new(code))
         .set_pkce_verifier(PkceCodeVerifier::new(entry.verifier_secret))
         .request_async(async_http_client)
         .await;
 
     let token_response = match token_response {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => {
             tracing::error!("OIDC code exchange failed: {e}");
             return (StatusCode::BAD_GATEWAY, "token exchange failed").into_response();
@@ -299,12 +314,18 @@ pub async fn oidc_callback(
     // ── ID token verification ─────────────────────────────────────────────────
     let id_token = match token_response.id_token() {
         Some(t) => t,
-        None    => return (StatusCode::BAD_GATEWAY, "provider did not return an ID token").into_response(),
+        None => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                "provider did not return an ID token",
+            )
+                .into_response()
+        }
     };
 
-    let nonce  = Nonce::new(entry.nonce_secret);
+    let nonce = Nonce::new(entry.nonce_secret);
     let claims = match id_token.claims(&oidc.client.id_token_verifier(), &nonce) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => {
             // Nonce mismatch, signature failure, audience mismatch all land here
             tracing::warn!("ID token verification failed: {e}");
@@ -312,26 +333,28 @@ pub async fn oidc_callback(
         }
     };
 
-    let sub      = claims.subject().as_str();
-    let email    = claims.email().map(|e| e.as_str().to_string());
-    let name     = claims.name()
+    let sub = claims.subject().as_str();
+    let email = claims.email().map(|e| e.as_str().to_string());
+    let name = claims
+        .name()
         .and_then(|n| n.get(None))
         .map(|s| s.as_str().to_string());
     let provider = provider_slug(claims.issuer().as_str());
 
     // ── Actor resolution ──────────────────────────────────────────────────────
-    let actor_id = match sub_to_actor_id(&app, sub, &provider, email.as_deref(), name.as_deref()).await {
-        Ok(id)   => id,
-        Err(res) => return res,
-    };
+    let actor_id =
+        match sub_to_actor_id(&app, sub, &provider, email.as_deref(), name.as_deref()).await {
+            Ok(id) => id,
+            Err(res) => return res,
+        };
 
     // ── Issue Solarplex sp_token ──────────────────────────────────────────────
-    let sp_token   = Ulid::new().to_string();
+    let sp_token = Ulid::new().to_string();
     let expires_at = Utc::now() + chrono::Duration::days(7);
 
-    if let Err(e) = db::human_sessions::create(
-        &app.db, &sp_token, &actor_id, sub, &provider, expires_at,
-    ).await {
+    if let Err(e) =
+        db::human_sessions::create(&app.db, &sp_token, &actor_id, sub, &provider, expires_at).await
+    {
         tracing::error!("human_sessions::create failed: {e}");
         return (StatusCode::INTERNAL_SERVER_ERROR, "session creation failed").into_response();
     }
@@ -352,15 +375,15 @@ pub async fn oidc_callback(
     if desktop {
         let desktop_redirect = std::env::var("DESKTOP_REDIRECT_URI")
             .unwrap_or_else(|_| "solarplex-desktop://auth".to_string());
-        return Redirect::temporary(&format!("{desktop_redirect}#sp_token={sp_token}")).into_response();
+        return Redirect::temporary(&format!("{desktop_redirect}#sp_token={sp_token}"))
+            .into_response();
     }
 
     // `return_to` was already validated as a safe same-origin relative path
     // at /start time (see `is_safe_return_to`); appended, not substituted, so
     // this still works when OIDC_FRONTEND_REDIRECT points at a full origin
     // in a split frontend/backend deployment.
-    let frontend = std::env::var("OIDC_FRONTEND_REDIRECT")
-        .unwrap_or_else(|_| "/".to_string());
+    let frontend = std::env::var("OIDC_FRONTEND_REDIRECT").unwrap_or_else(|_| "/".to_string());
     Redirect::temporary(&format!("{frontend}{return_to}#sp_token={sp_token}")).into_response()
 }
 
@@ -379,8 +402,8 @@ pub async fn oidc_logout(
         return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
     }
     match db::human_sessions::revoke(&app.db, &body.sp_token).await {
-        Ok(())  => StatusCode::NO_CONTENT.into_response(),
-        Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -390,12 +413,9 @@ pub async fn oidc_logout(
 /// uses this to show a real name/avatar in place of the `?actor=` param it
 /// used before real auth existed, unrelated to the mailbox work; this is
 /// just "who am I", not "what's addressed to me".
-pub async fn me(
-    State(app):  State<Arc<AppState>>,
-    headers:     axum::http::HeaderMap,
-) -> Response {
+pub async fn me(State(app): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Response {
     let actor_id = match require_sp_auth(&app.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     match db::actors::get(&app.db, &actor_id).await {
@@ -404,7 +424,8 @@ pub async fn me(
             "name":  actor.name,
             "email": actor.email,
             "type":  actor.r#type,
-        })).into_response(),
+        }))
+        .into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "actor not found").into_response(),
     }
 }
@@ -423,12 +444,12 @@ pub struct UpdateMeBody {
 /// this operation; no new DB logic needed, just a route that reaches it
 /// under the caller's own verified identity rather than an arbitrary id.
 pub async fn update_me(
-    State(app):  State<Arc<AppState>>,
-    headers:     axum::http::HeaderMap,
-    Json(body):  Json<UpdateMeBody>,
+    State(app): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<UpdateMeBody>,
 ) -> Response {
     let actor_id = match require_sp_auth(&app.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     let name = body.name.trim();
@@ -441,7 +462,8 @@ pub async fn update_me(
             "name":  actor.name,
             "email": actor.email,
             "type":  actor.r#type,
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -455,10 +477,10 @@ pub async fn update_me(
 /// existing data, not new tracking.
 pub async fn list_sessions(
     State(app): State<Arc<AppState>>,
-    headers:    axum::http::HeaderMap,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let actor_id = match require_sp_auth(&app.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     // Best-effort: a missing/malformed header here would already have
@@ -468,14 +490,19 @@ pub async fn list_sessions(
 
     match db::human_sessions::list_for_actor(&app.db, &actor_id).await {
         Ok(rows) => {
-            let items: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({
-                "id":         r.id,
-                "provider":   r.provider,
-                "issued_at":  r.issued_at,
-                "expires_at": r.expires_at,
-                "last_seen":  r.last_seen,
-                "is_current": current_hash.as_deref() == Some(r.id.as_str()),
-            })).collect();
+            let items: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id":         r.id,
+                        "provider":   r.provider,
+                        "issued_at":  r.issued_at,
+                        "expires_at": r.expires_at,
+                        "last_seen":  r.last_seen,
+                        "is_current": current_hash.as_deref() == Some(r.id.as_str()),
+                    })
+                })
+                .collect();
             Json(items).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -490,17 +517,17 @@ pub async fn list_sessions(
 /// else's session no matter what id is passed.
 pub async fn revoke_session(
     State(app): State<Arc<AppState>>,
-    headers:    axum::http::HeaderMap,
-    Path(id):   Path<String>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
 ) -> Response {
     let actor_id = match require_sp_auth(&app.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     match db::human_sessions::revoke_by_id_for_actor(&app.db, &id, &actor_id).await {
-        Ok(0)    => StatusCode::NOT_FOUND.into_response(),
-        Ok(_)    => StatusCode::NO_CONTENT.into_response(),
-        Err(e)   => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(0) => StatusCode::NOT_FOUND.into_response(),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -516,7 +543,7 @@ pub async fn revoke_session(
 /// On success, fires a best-effort `touch` (updates `last_seen`) in a spawned
 /// task so it does not add latency to the WS connect path.
 pub async fn validate_sp_token(
-    pool:      &sqlx::PgPool,
+    pool: &sqlx::PgPool,
     raw_token: &str,
 ) -> anyhow::Result<db::human_sessions::HumanSessionRow> {
     validate_token_format(raw_token)?;
@@ -526,7 +553,7 @@ pub async fn validate_sp_token(
         .map_err(|_| anyhow!("invalid or expired sp_token"))?;
 
     // Touch last_seen in background. Non-blocking, non-fatal
-    let pool_clone  = pool.clone();
+    let pool_clone = pool.clone();
     let token_clone = raw_token.to_string();
     tokio::spawn(async move {
         let _ = db::human_sessions::touch(&pool_clone, &token_clone).await;
@@ -551,16 +578,19 @@ pub fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<String> {
 /// Validate a Bearer sp_token from request headers and return the actor_id.
 /// Returns `Err(Response)` on auth failure so handlers can propagate with `?`.
 pub async fn require_sp_auth(
-    db:      &sqlx::PgPool,
+    db: &sqlx::PgPool,
     headers: &axum::http::HeaderMap,
 ) -> Result<String, axum::response::Response> {
     let raw = extract_bearer(headers).ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, "Authorization: Bearer <sp_token> required")
+        (
+            StatusCode::UNAUTHORIZED,
+            "Authorization: Bearer <sp_token> required",
+        )
             .into_response()
     })?;
-    let row = validate_sp_token(db, &raw).await.map_err(|_| {
-        (StatusCode::UNAUTHORIZED, "invalid or expired sp_token").into_response()
-    })?;
+    let row = validate_sp_token(db, &raw)
+        .await
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid or expired sp_token").into_response())?;
     Ok(row.actor_id)
 }
 
@@ -576,20 +606,23 @@ pub async fn require_sp_auth(
 /// Observer-ceiling `min_role`, so this stays the correct gate for
 /// Collaborator+ endpoints too, unchanged.
 pub async fn require_session_member(
-    db:         &sqlx::PgPool,
-    headers:    &axum::http::HeaderMap,
+    db: &sqlx::PgPool,
+    headers: &axum::http::HeaderMap,
     session_id: &str,
-    min_role:   protocol::types::MemberRole,
+    min_role: protocol::types::MemberRole,
 ) -> Result<String, axum::response::Response> {
     let actor_id = require_sp_auth(db, headers).await?;
-    match db::sessions::require_membership_or_linked_access(db, session_id, &actor_id, min_role).await {
+    match db::sessions::require_membership_or_linked_access(db, session_id, &actor_id, min_role)
+        .await
+    {
         Ok(_) => Ok(actor_id),
-        Err(db::DbError::NotFound) =>
-            Err((StatusCode::FORBIDDEN, "not a member of this session").into_response()),
-        Err(db::DbError::Unauthorized) =>
-            Err((StatusCode::FORBIDDEN, "insufficient role for this session").into_response()),
-        Err(e) =>
-            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
+        Err(db::DbError::NotFound) => {
+            Err((StatusCode::FORBIDDEN, "not a member of this session").into_response())
+        }
+        Err(db::DbError::Unauthorized) => {
+            Err((StatusCode::FORBIDDEN, "insufficient role for this session").into_response())
+        }
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
     }
 }
 
@@ -606,11 +639,12 @@ pub async fn require_session_member(
 /// caller-supplied body field. The whole point is that the caller doesn't
 /// get to assert who they are just by typing a different actor_id.
 pub async fn require_cap_auth(
-    db:         &sqlx::PgPool,
+    db: &sqlx::PgPool,
     session_id: &str,
-    cap_id:     &str,
+    cap_id: &str,
 ) -> Result<String, axum::response::Response> {
-    require_cap_auth_typed(db, session_id, cap_id).await
+    require_cap_auth_typed(db, session_id, cap_id)
+        .await
         .map_err(|(status, reason)| (status, reason).into_response())
 }
 
@@ -627,9 +661,9 @@ pub async fn require_cap_auth(
 /// guard at the call site) and a `'static` reason is what makes this type
 /// cheaply cacheable in the first place.
 pub async fn require_cap_auth_typed(
-    db:         &sqlx::PgPool,
+    db: &sqlx::PgPool,
     session_id: &str,
-    cap_id:     &str,
+    cap_id: &str,
 ) -> Result<String, (StatusCode, &'static str)> {
     let cap = db::tokens::get_cap(db, cap_id).await.map_err(|e| match e {
         db::DbError::NotFound => (StatusCode::UNAUTHORIZED, "cap not found"),
@@ -644,7 +678,8 @@ pub async fn require_cap_auth_typed(
     if cap.revoked_at.is_some() {
         return Err((StatusCode::GONE, "cap revoked"));
     }
-    let current_epoch = db::epochs::current(db, session_id).await
+    let current_epoch = db::epochs::current(db, session_id)
+        .await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "internal error"))?;
     if cap.epoch != current_epoch {
         return Err((StatusCode::GONE, "cap epoch superseded, re-attach required"));
@@ -660,11 +695,11 @@ pub async fn require_cap_auth_typed(
 /// Returns the verified actor_id from whichever credential was actually
 /// presented.
 pub async fn require_sp_or_cap_auth(
-    db:         &sqlx::PgPool,
-    headers:    &axum::http::HeaderMap,
+    db: &sqlx::PgPool,
+    headers: &axum::http::HeaderMap,
     session_id: &str,
-    cap_id:     Option<&str>,
-    min_role:   protocol::types::MemberRole,
+    cap_id: Option<&str>,
+    min_role: protocol::types::MemberRole,
 ) -> Result<String, axum::response::Response> {
     if extract_bearer(headers).is_some() {
         return require_session_member(db, headers, session_id, min_role).await;
@@ -674,7 +709,8 @@ pub async fn require_sp_or_cap_auth(
         None => Err((
             StatusCode::UNAUTHORIZED,
             "Authorization: Bearer <sp_token>, or a cap_id, is required",
-        ).into_response()),
+        )
+            .into_response()),
     }
 }
 
@@ -713,14 +749,15 @@ pub fn validate_token_format(token: &str) -> anyhow::Result<()> {
 ///
 /// Provider is part of the key: `google/alice` ≠ `github/alice`.
 async fn sub_to_actor_id(
-    app:      &AppState,
-    sub:      &str,
+    app: &AppState,
+    sub: &str,
     provider: &str,
-    email:    Option<&str>,
-    name:     Option<&str>,
+    email: Option<&str>,
+    name: Option<&str>,
 ) -> Result<String, Response> {
     let pool = &app.db;
-    if let Some(actor_id) = db::human_sessions::find_actor_by_sub(pool, sub, provider).await
+    if let Some(actor_id) = db::human_sessions::find_actor_by_sub(pool, sub, provider)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?
     {
         return Ok(actor_id);
@@ -730,30 +767,38 @@ async fn sub_to_actor_id(
     // check, so a returning user's every-day sign-in is never rate-limited
     // by it. Tier 2 (crate::rate_limit) because this happens before any
     // actor, let alone session, exists to scope the check to.
-    let (admission, policy) = app.rate_limits.check(
-        crate::rate_limit::GlobalRateLimitKey::ActorCreate {
-            sub: sub.to_string(), provider: provider.to_string(),
-        },
-    );
+    let (admission, policy) =
+        app.rate_limits
+            .check(crate::rate_limit::GlobalRateLimitKey::ActorCreate {
+                sub: sub.to_string(),
+                provider: provider.to_string(),
+            });
     if !matches!(admission, session::rate_limit::Admission::Allowed) {
         tracing::warn!(
-            sub, provider, policy = policy.map(|p| p.describe()).unwrap_or_default(),
+            sub,
+            provider,
+            policy = policy.map(|p| p.describe()).unwrap_or_default(),
             "auth: new-actor creation rate limited",
         );
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             "too many new sign-ups from this identity, try again later",
-        ).into_response());
+        )
+            .into_response());
     }
 
     // First login: create a new Solarplex actor
     let display_name = name.or(email).unwrap_or(sub).to_string();
-    let email_str    = email.unwrap_or("").to_string();
+    let email_str = email.unwrap_or("").to_string();
 
     let actor = db::actors::create_human(
         pool,
-        db::actors::CreateHuman { name: display_name, email: email_str },
-    ).await
+        db::actors::CreateHuman {
+            name: display_name,
+            email: email_str,
+        },
+    )
+    .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
 
     // One-time catch-up: named invites addressed to this email may have
@@ -793,10 +838,19 @@ pub fn provider_slug(issuer: &str) -> String {
         .next()
         .unwrap_or(issuer);
 
-    if host.contains("google")                                   { return "google".to_string(); }
-    if host.contains("github") || host.contains("githubusercontent") { return "github".to_string(); }
-    if host.contains("microsoft") || host.contains("azure")
-       || host.contains("windows.net") || host.contains("live")  { return "microsoft".to_string(); }
+    if host.contains("google") {
+        return "google".to_string();
+    }
+    if host.contains("github") || host.contains("githubusercontent") {
+        return "github".to_string();
+    }
+    if host.contains("microsoft")
+        || host.contains("azure")
+        || host.contains("windows.net")
+        || host.contains("live")
+    {
+        return "microsoft".to_string();
+    }
 
     // Generic: strip common auth-subdomain prefixes for a compact slug
     host.trim_start_matches("accounts.")
@@ -823,7 +877,13 @@ mod tests {
             // already expired
             Instant::now() - Duration::from_secs((-ttl_offset_secs) as u64)
         };
-        PkceEntry { verifier_secret: "v".into(), nonce_secret: "n".into(), expires, return_to: String::new(), desktop: false }
+        PkceEntry {
+            verifier_secret: "v".into(),
+            nonce_secret: "n".into(),
+            expires,
+            return_to: String::new(),
+            desktop: false,
+        }
     }
 
     // ── PKCE pending state ────────────────────────────────────────────────────
@@ -843,28 +903,33 @@ mod tests {
     #[test]
     fn test_sweep_removes_only_expired_entries() {
         let oidc = OidcState {
-            client:      Arc::new(build_dummy_client()),
+            client: Arc::new(build_dummy_client()),
             redirect_uri: String::new(),
-            pending:     Default::default(),
+            pending: Default::default(),
         };
-        oidc.pending.insert("live".into(),    make_entry(600));
+        oidc.pending.insert("live".into(), make_entry(600));
         oidc.pending.insert("expired".into(), make_entry(-1));
 
         sweep_pending(&oidc);
 
         assert_eq!(oidc.pending.len(), 1);
-        assert!(oidc.pending.contains_key("live"),    "live entry must survive");
-        assert!(!oidc.pending.contains_key("expired"), "expired entry must be removed");
+        assert!(oidc.pending.contains_key("live"), "live entry must survive");
+        assert!(
+            !oidc.pending.contains_key("expired"),
+            "expired entry must be removed"
+        );
     }
 
     #[test]
     fn test_sweep_keeps_all_valid_entries() {
         let oidc = OidcState {
-            client:      Arc::new(build_dummy_client()),
+            client: Arc::new(build_dummy_client()),
             redirect_uri: String::new(),
-            pending:     Default::default(),
+            pending: Default::default(),
         };
-        for i in 0..5 { oidc.pending.insert(i.to_string(), make_entry(600)); }
+        for i in 0..5 {
+            oidc.pending.insert(i.to_string(), make_entry(600));
+        }
         sweep_pending(&oidc);
         assert_eq!(oidc.pending.len(), 5, "all valid entries must survive");
     }
@@ -881,7 +946,10 @@ mod tests {
             pending.remove("forged_csrf_state").is_none(),
             "forged state must not match any pending entry"
         );
-        assert!(pending.contains_key("correct_state"), "legitimate entry must be untouched");
+        assert!(
+            pending.contains_key("correct_state"),
+            "legitimate entry must be untouched"
+        );
     }
 
     #[test]
@@ -890,7 +958,10 @@ mod tests {
         pending.insert("state123".into(), make_entry(600));
 
         // First use: succeeds
-        assert!(pending.remove("state123").is_some(), "first use must succeed");
+        assert!(
+            pending.remove("state123").is_some(),
+            "first use must succeed"
+        );
         // Replay: entry is gone
         assert!(
             pending.remove("state123").is_none(),
@@ -903,7 +974,7 @@ mod tests {
         // Two concurrent logins each get their own state → no cross-contamination
         let pending: dashmap::DashMap<String, PkceEntry> = Default::default();
         pending.insert("alice_state".into(), make_entry(600));
-        pending.insert("bob_state".into(),   make_entry(600));
+        pending.insert("bob_state".into(), make_entry(600));
 
         assert!(pending.remove("alice_state").is_some());
         assert!(pending.remove("bob_state").is_some());
@@ -1020,7 +1091,10 @@ mod tests {
 
     #[test]
     fn test_provider_slug_generic_login_prefix_stripped() {
-        assert_eq!(provider_slug("https://login.corp.internal"), "corp.internal");
+        assert_eq!(
+            provider_slug("https://login.corp.internal"),
+            "corp.internal"
+        );
     }
 
     #[test]
@@ -1045,8 +1119,10 @@ mod tests {
         // The same sub from different providers must not collide.
         let google_key = ("alice_sub_123", "google");
         let github_key = ("alice_sub_123", "github");
-        assert_ne!(google_key, github_key,
-            "google/alice and github/alice are distinct identities");
+        assert_ne!(
+            google_key, github_key,
+            "google/alice and github/alice are distinct identities"
+        );
     }
 
     #[test]
@@ -1055,7 +1131,10 @@ mod tests {
         // This is the invariant enforced by sub_to_actor_id; the DB lookup is the gate.
         let key1 = ("alice_sub_123", "google");
         let key2 = ("alice_sub_123", "google");
-        assert_eq!(key1, key2, "same identity across logins must resolve to same actor");
+        assert_eq!(
+            key1, key2,
+            "same identity across logins must resolve to same actor"
+        );
     }
 
     // ── Helper: build a CoreClient without network for unit tests ─────────────
@@ -1067,8 +1146,7 @@ mod tests {
     fn build_dummy_client() -> CoreClient {
         use openidconnect::{
             core::{CoreProviderMetadata, CoreResponseType, CoreSubjectIdentifierType},
-            AuthUrl, EmptyAdditionalProviderMetadata, IssuerUrl, JsonWebKeySetUrl,
-            ResponseTypes,
+            AuthUrl, EmptyAdditionalProviderMetadata, IssuerUrl, JsonWebKeySetUrl, ResponseTypes,
         };
 
         let provider_metadata = CoreProviderMetadata::new(

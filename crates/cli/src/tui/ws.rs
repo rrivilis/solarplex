@@ -29,7 +29,7 @@ pub enum WsEvent {
 
 pub struct WsConnection {
     pub rx: mpsc::UnboundedReceiver<WsEvent>,
-    task:   JoinHandle<()>,
+    task: JoinHandle<()>,
 }
 
 impl Drop for WsConnection {

@@ -9,41 +9,86 @@ fn parse(text: &str) -> Option<ParsedIntent> {
 
 #[test]
 fn pause_variants() {
-    assert_eq!(parse("pause session").map(|p| p.intent), Some(Intent::Pause));
-    assert_eq!(parse("please pause the session").map(|p| p.intent), Some(Intent::Pause));
+    assert_eq!(
+        parse("pause session").map(|p| p.intent),
+        Some(Intent::Pause)
+    );
+    assert_eq!(
+        parse("please pause the session").map(|p| p.intent),
+        Some(Intent::Pause)
+    );
     assert_eq!(parse("halt session").map(|p| p.intent), Some(Intent::Pause));
-    assert_eq!(parse("suspend the session").map(|p| p.intent), Some(Intent::Pause));
-    assert_eq!(parse("PAUSE SESSION").map(|p| p.intent), Some(Intent::Pause), "case-insensitive");
+    assert_eq!(
+        parse("suspend the session").map(|p| p.intent),
+        Some(Intent::Pause)
+    );
+    assert_eq!(
+        parse("PAUSE SESSION").map(|p| p.intent),
+        Some(Intent::Pause),
+        "case-insensitive"
+    );
 }
 
 #[test]
 fn resume_variants() {
-    assert_eq!(parse("resume session").map(|p| p.intent), Some(Intent::Resume));
-    assert_eq!(parse("please reactivate the session").map(|p| p.intent), Some(Intent::Resume));
-    assert_eq!(parse("unpause session").map(|p| p.intent), Some(Intent::Resume));
+    assert_eq!(
+        parse("resume session").map(|p| p.intent),
+        Some(Intent::Resume)
+    );
+    assert_eq!(
+        parse("please reactivate the session").map(|p| p.intent),
+        Some(Intent::Resume)
+    );
+    assert_eq!(
+        parse("unpause session").map(|p| p.intent),
+        Some(Intent::Resume)
+    );
 }
 
 #[test]
 fn archive_variants() {
-    assert_eq!(parse("archive session").map(|p| p.intent), Some(Intent::Archive));
-    assert_eq!(parse("please archive the session").map(|p| p.intent), Some(Intent::Archive));
+    assert_eq!(
+        parse("archive session").map(|p| p.intent),
+        Some(Intent::Archive)
+    );
+    assert_eq!(
+        parse("please archive the session").map(|p| p.intent),
+        Some(Intent::Archive)
+    );
 }
 
 #[test]
 fn approve_deny_claim() {
-    assert_eq!(parse("approve this").map(|p| p.intent), Some(Intent::Approve));
+    assert_eq!(
+        parse("approve this").map(|p| p.intent),
+        Some(Intent::Approve)
+    );
     assert_eq!(parse("approve it").map(|p| p.intent), Some(Intent::Approve));
-    assert_eq!(parse("please approve").map(|p| p.intent), Some(Intent::Approve));
+    assert_eq!(
+        parse("please approve").map(|p| p.intent),
+        Some(Intent::Approve)
+    );
     assert_eq!(parse("deny this").map(|p| p.intent), Some(Intent::Deny));
     assert_eq!(parse("reject it").map(|p| p.intent), Some(Intent::Deny));
     assert_eq!(parse("claim this").map(|p| p.intent), Some(Intent::Claim));
-    assert_eq!(parse("please claim it").map(|p| p.intent), Some(Intent::Claim));
+    assert_eq!(
+        parse("please claim it").map(|p| p.intent),
+        Some(Intent::Claim)
+    );
 }
 
 #[test]
 fn invite_with_role_and_invitee() {
     match parse("invite alice as owner") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, ttl_secs: _ }, target_session }) => {
+        Some(ParsedIntent {
+            intent:
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs: _,
+                },
+            target_session,
+        }) => {
             assert_eq!(role, MemberRole::Owner);
             assert_eq!(invitee.as_deref(), Some("alice"));
             assert_eq!(target_session, None);
@@ -55,7 +100,10 @@ fn invite_with_role_and_invitee() {
 #[test]
 fn invite_defaults_to_collaborator_without_as_clause() {
     match parse("invite bob") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, .. }, .. }) => {
+        Some(ParsedIntent {
+            intent: Intent::Invite { role, invitee, .. },
+            ..
+        }) => {
             assert_eq!(role, MemberRole::Collaborator);
             assert_eq!(invitee.as_deref(), Some("bob"));
         }
@@ -66,7 +114,15 @@ fn invite_defaults_to_collaborator_without_as_clause() {
 #[test]
 fn invite_no_invitee_still_matches() {
     match parse("please invite") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, ttl_secs: _ }, target_session }) => {
+        Some(ParsedIntent {
+            intent:
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs: _,
+                },
+            target_session,
+        }) => {
             assert_eq!(role, MemberRole::Collaborator);
             assert_eq!(invitee, None);
             assert_eq!(target_session, None);
@@ -80,7 +136,15 @@ fn invite_extracts_target_session_from_to_clause() {
     // The user's own reported case: "to <session>" must stop the invitee
     // name AND surface as target_session, not get silently dropped.
     match parse("invite bob to roman-room1") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, ttl_secs: _ }, target_session }) => {
+        Some(ParsedIntent {
+            intent:
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs: _,
+                },
+            target_session,
+        }) => {
             assert_eq!(role, MemberRole::Collaborator);
             assert_eq!(invitee.as_deref(), Some("bob"));
             assert_eq!(target_session.as_deref(), Some("roman-room1"));
@@ -89,7 +153,15 @@ fn invite_extracts_target_session_from_to_clause() {
     }
     // Order-independent: role clause before the target-session clause.
     match parse("invite bob as owner to roman-room1") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, ttl_secs: _ }, target_session }) => {
+        Some(ParsedIntent {
+            intent:
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs: _,
+                },
+            target_session,
+        }) => {
             assert_eq!(role, MemberRole::Owner);
             assert_eq!(invitee.as_deref(), Some("bob"));
             assert_eq!(target_session.as_deref(), Some("roman-room1"));
@@ -98,7 +170,15 @@ fn invite_extracts_target_session_from_to_clause() {
     }
     // And the other order: target-session clause before role.
     match parse("invite bob to roman-room1 as owner") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, ttl_secs: _ }, target_session }) => {
+        Some(ParsedIntent {
+            intent:
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs: _,
+                },
+            target_session,
+        }) => {
             assert_eq!(role, MemberRole::Owner);
             assert_eq!(invitee.as_deref(), Some("bob"));
             assert_eq!(target_session.as_deref(), Some("roman-room1"));
@@ -110,18 +190,27 @@ fn invite_extracts_target_session_from_to_clause() {
 #[test]
 fn transfer_ownership_variants() {
     match parse("transfer ownership to bob") {
-        Some(ParsedIntent { intent: Intent::TransferOwnership { to }, target_session }) => {
+        Some(ParsedIntent {
+            intent: Intent::TransferOwnership { to },
+            target_session,
+        }) => {
             assert_eq!(to, "bob");
             assert_eq!(target_session, None);
         }
         other => panic!("expected TransferOwnership, got {other:?}"),
     }
     match parse("please transfer to alice") {
-        Some(ParsedIntent { intent: Intent::TransferOwnership { to }, .. }) => assert_eq!(to, "alice"),
+        Some(ParsedIntent {
+            intent: Intent::TransferOwnership { to },
+            ..
+        }) => assert_eq!(to, "alice"),
         other => panic!("expected TransferOwnership, got {other:?}"),
     }
     match parse("transfer bob") {
-        Some(ParsedIntent { intent: Intent::TransferOwnership { to }, .. }) => assert_eq!(to, "bob"),
+        Some(ParsedIntent {
+            intent: Intent::TransferOwnership { to },
+            ..
+        }) => assert_eq!(to, "bob"),
         other => panic!("expected TransferOwnership, got {other:?}"),
     }
 }
@@ -140,14 +229,20 @@ fn transfer_extracts_target_session_via_in_clause() {
     // "to" is taken by the recipient on transfer, so target-session uses
     // "in" instead — both orderings.
     match parse("transfer ownership to bob in roman-room1") {
-        Some(ParsedIntent { intent: Intent::TransferOwnership { to }, target_session }) => {
+        Some(ParsedIntent {
+            intent: Intent::TransferOwnership { to },
+            target_session,
+        }) => {
             assert_eq!(to, "bob");
             assert_eq!(target_session.as_deref(), Some("roman-room1"));
         }
         other => panic!("expected TransferOwnership, got {other:?}"),
     }
     match parse("transfer ownership in roman-room1 to bob") {
-        Some(ParsedIntent { intent: Intent::TransferOwnership { to }, target_session }) => {
+        Some(ParsedIntent {
+            intent: Intent::TransferOwnership { to },
+            target_session,
+        }) => {
             assert_eq!(to, "bob");
             assert_eq!(target_session.as_deref(), Some("roman-room1"));
         }
@@ -158,15 +253,21 @@ fn transfer_extracts_target_session_via_in_clause() {
 #[test]
 fn slot_less_verbs_extract_target_session_via_in_clause() {
     assert_eq!(
-        parse("pause session in roman-room1").and_then(|p| p.target_session).as_deref(),
+        parse("pause session in roman-room1")
+            .and_then(|p| p.target_session)
+            .as_deref(),
         Some("roman-room1"),
     );
     assert_eq!(
-        parse("archive session in roman-room1").and_then(|p| p.target_session).as_deref(),
+        parse("archive session in roman-room1")
+            .and_then(|p| p.target_session)
+            .as_deref(),
         Some("roman-room1"),
     );
     assert_eq!(
-        parse("approve this in roman-room1").and_then(|p| p.target_session).as_deref(),
+        parse("approve this in roman-room1")
+            .and_then(|p| p.target_session)
+            .as_deref(),
         Some("roman-room1"),
     );
     // No "in" clause — target_session is None, meaning "the current session".
@@ -176,14 +277,24 @@ fn slot_less_verbs_extract_target_session_via_in_clause() {
 #[test]
 fn invite_extracts_duration_as_ttl() {
     match parse("invite bob@gmail.com 1 day") {
-        Some(ParsedIntent { intent: Intent::Invite { invitee, ttl_secs, .. }, .. }) => {
+        Some(ParsedIntent {
+            intent: Intent::Invite {
+                invitee, ttl_secs, ..
+            },
+            ..
+        }) => {
             assert_eq!(invitee.as_deref(), Some("bob@gmail.com"));
             assert_eq!(ttl_secs, Some(86_400));
         }
         other => panic!("expected Invite, got {other:?}"),
     }
     match parse("invite bob 15 minutes") {
-        Some(ParsedIntent { intent: Intent::Invite { invitee, ttl_secs, .. }, .. }) => {
+        Some(ParsedIntent {
+            intent: Intent::Invite {
+                invitee, ttl_secs, ..
+            },
+            ..
+        }) => {
             assert_eq!(invitee.as_deref(), Some("bob"));
             assert_eq!(ttl_secs, Some(900));
         }
@@ -192,7 +303,16 @@ fn invite_extracts_duration_as_ttl() {
     // Duration clause interleaved with role/target-session clauses — must
     // not get swallowed into either.
     match parse("invite bob as owner 2 hours") {
-        Some(ParsedIntent { intent: Intent::Invite { role, invitee, ttl_secs, .. }, .. }) => {
+        Some(ParsedIntent {
+            intent:
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs,
+                    ..
+                },
+            ..
+        }) => {
             assert_eq!(role, MemberRole::Owner);
             assert_eq!(invitee.as_deref(), Some("bob"));
             assert_eq!(ttl_secs, Some(7_200));
@@ -201,17 +321,33 @@ fn invite_extracts_duration_as_ttl() {
     }
     // No duration clause — ttl_secs is None (caller falls back to a default).
     match parse("invite bob") {
-        Some(ParsedIntent { intent: Intent::Invite { ttl_secs, .. }, .. }) => assert_eq!(ttl_secs, None),
+        Some(ParsedIntent {
+            intent: Intent::Invite { ttl_secs, .. },
+            ..
+        }) => assert_eq!(ttl_secs, None),
         other => panic!("expected Invite, got {other:?}"),
     }
 }
 
 #[test]
 fn goto_variants() {
-    for text in ["go to roman-room1", "goto roman-room1", "jump to roman-room1", "switch to roman-room1", "please go to roman-room1"] {
+    for text in [
+        "go to roman-room1",
+        "goto roman-room1",
+        "jump to roman-room1",
+        "switch to roman-room1",
+        "please go to roman-room1",
+    ] {
         match parse(text) {
-            Some(ParsedIntent { intent: Intent::Navigate, target_session }) => {
-                assert_eq!(target_session.as_deref(), Some("roman-room1"), "for input {text:?}");
+            Some(ParsedIntent {
+                intent: Intent::Navigate,
+                target_session,
+            }) => {
+                assert_eq!(
+                    target_session.as_deref(),
+                    Some("roman-room1"),
+                    "for input {text:?}"
+                );
             }
             other => panic!("expected Navigate for {text:?}, got {other:?}"),
         }
@@ -229,7 +365,10 @@ fn goto_with_no_session_name_does_not_match() {
 #[test]
 fn attach_variants() {
     match parse("attach agent-x 15 minutes") {
-        Some(ParsedIntent { intent: Intent::AttachAgent { name, ttl_secs }, target_session }) => {
+        Some(ParsedIntent {
+            intent: Intent::AttachAgent { name, ttl_secs },
+            target_session,
+        }) => {
             assert_eq!(name.as_deref(), Some("agent-x"));
             assert_eq!(ttl_secs, Some(900));
             assert_eq!(target_session, None);
@@ -237,7 +376,10 @@ fn attach_variants() {
         other => panic!("expected AttachAgent, got {other:?}"),
     }
     match parse("please attach fs-agent") {
-        Some(ParsedIntent { intent: Intent::AttachAgent { name, ttl_secs }, .. }) => {
+        Some(ParsedIntent {
+            intent: Intent::AttachAgent { name, ttl_secs },
+            ..
+        }) => {
             assert_eq!(name.as_deref(), Some("fs-agent"));
             assert_eq!(ttl_secs, None);
         }
@@ -248,7 +390,10 @@ fn attach_variants() {
     // still_matches`; the frontend/modal already defaults the Agent ID
     // field, so there's nothing to fabricate here either.
     match parse("attach") {
-        Some(ParsedIntent { intent: Intent::AttachAgent { name, ttl_secs }, .. }) => {
+        Some(ParsedIntent {
+            intent: Intent::AttachAgent { name, ttl_secs },
+            ..
+        }) => {
             assert_eq!(name, None);
             assert_eq!(ttl_secs, None);
         }
@@ -259,7 +404,10 @@ fn attach_variants() {
 #[test]
 fn attach_extracts_target_session_via_in_clause() {
     match parse("attach agent-x in roman-room1 15 minutes") {
-        Some(ParsedIntent { intent: Intent::AttachAgent { name, ttl_secs }, target_session }) => {
+        Some(ParsedIntent {
+            intent: Intent::AttachAgent { name, ttl_secs },
+            target_session,
+        }) => {
             assert_eq!(name.as_deref(), Some("agent-x"));
             assert_eq!(ttl_secs, Some(900));
             assert_eq!(target_session.as_deref(), Some("roman-room1"));
@@ -279,7 +427,10 @@ fn adversarial_attach_only_matches_as_the_leading_word() {
     // the resulting Command entry, and even then only opens the Attach
     // Agent modal pre-filled — it never mints a token on its own.
     match parse("attach the file to your reply") {
-        Some(ParsedIntent { intent: Intent::AttachAgent { name, .. }, .. }) => {
+        Some(ParsedIntent {
+            intent: Intent::AttachAgent { name, .. },
+            ..
+        }) => {
             assert_eq!(name.as_deref(), Some("the file to your reply"));
         }
         other => panic!("expected the documented false-positive shape, got {other:?}"),
@@ -341,7 +492,10 @@ fn adversarial_goto_words_only_match_as_the_leading_phrase() {
     // auto-executed. Documented here as a deliberate tradeoff, not
     // overlooked.
     match parse("switch to a different plan") {
-        Some(ParsedIntent { intent: Intent::Navigate, target_session }) => {
+        Some(ParsedIntent {
+            intent: Intent::Navigate,
+            target_session,
+        }) => {
             assert_eq!(target_session.as_deref(), Some("a different plan"));
         }
         other => panic!("expected the documented false-positive shape, got {other:?}"),

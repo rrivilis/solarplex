@@ -10,8 +10,8 @@
 use splx_ir::algebra::ConditionValue;
 use splx_ir::parse::AnyOrInt;
 use splx_ir::resource::Resource;
-use splx_ir::{AuthorityEntry, CapAction, Capability, Delegation, Delta, Effect};
 use splx_ir::saga::{SagaLog, SagaLogPayload, SendReceipt, TransferReceipt};
+use splx_ir::{AuthorityEntry, CapAction, Capability, Delegation, Delta, Effect};
 
 fn parse_value(s: &str) -> lexpr::Value {
     lexpr::from_str(s).unwrap_or_else(|e| panic!("lexpr parse failed for {s:?}: {e}"))
@@ -23,7 +23,12 @@ fn fs_authority_entry_no_conditions() {
     let s = r#"(:entry :resource (:fs :path "/data/**") :ops (:read :write) :conditions nil)"#;
     let v = parse_value(s);
     let entry = AuthorityEntry::from_value(&v).expect("parse authority-entry");
-    assert_eq!(entry.resource, Resource::Fs { path: "/data/**".into() });
+    assert_eq!(
+        entry.resource,
+        Resource::Fs {
+            path: "/data/**".into()
+        }
+    );
     assert_eq!(entry.ops.0, vec!["read", "write"]);
     assert!(entry.conditions.is_none());
 }
@@ -35,7 +40,10 @@ fn fs_authority_entry_with_conditions() {
     let entry = AuthorityEntry::from_value(&parse_value(s)).unwrap();
     let cond = entry.conditions.expect("conditions present");
     assert_eq!(cond.get("ttl"), Some(&ConditionValue::Int(900)));
-    assert_eq!(cond.get("quorum"), Some(&ConditionValue::Symbol("guardian".into())));
+    assert_eq!(
+        cond.get("quorum"),
+        Some(&ConditionValue::Symbol("guardian".into()))
+    );
     assert!(cond.get("single-use").unwrap().is_true());
 }
 
@@ -44,19 +52,35 @@ fn net_resource_defaults() {
     // net-resource-port-min/-max default to 0/65535 in ir.lisp when absent.
     let s = r#"(:net :host "db.internal" :port-min 0 :port-max 65535 :path-prefix "/")"#;
     let r = Resource::from_value(&parse_value(s)).unwrap();
-    assert_eq!(r, Resource::Net {
-        host: "db.internal".into(), port_min: 0, port_max: 65535, path_prefix: "/".into(),
-    });
+    assert_eq!(
+        r,
+        Resource::Net {
+            host: "db.internal".into(),
+            port_min: 0,
+            port_max: 65535,
+            path_prefix: "/".into(),
+        }
+    );
     assert_eq!(r.provider(), "linux-net");
 }
 
 #[test]
 fn pid_resource_any_and_exact() {
     let any = Resource::from_value(&parse_value(r#"(:pid :ref :any)"#)).unwrap();
-    assert_eq!(any, Resource::Pid { pid_ref: AnyOrInt::Any });
+    assert_eq!(
+        any,
+        Resource::Pid {
+            pid_ref: AnyOrInt::Any
+        }
+    );
 
     let exact = Resource::from_value(&parse_value(r#"(:pid :ref 1234)"#)).unwrap();
-    assert_eq!(exact, Resource::Pid { pid_ref: AnyOrInt::Id(1234) });
+    assert_eq!(
+        exact,
+        Resource::Pid {
+            pid_ref: AnyOrInt::Id(1234)
+        }
+    );
 }
 
 #[test]
@@ -72,7 +96,12 @@ fn delegation_with_two_entries() {
     assert_eq!(d.grantor, "SHIM");
     assert_eq!(d.grantee, "worker");
     assert_eq!(d.authority.len(), 2);
-    assert_eq!(d.authority[0].resource, Resource::Fs { path: "/app/**".into() });
+    assert_eq!(
+        d.authority[0].resource,
+        Resource::Fs {
+            path: "/app/**".into()
+        }
+    );
 }
 
 #[test]

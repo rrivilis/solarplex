@@ -82,7 +82,9 @@ pub async fn mark_seen(pool: &PgPool, route_id: &str, actor_id: &str) -> DbResul
 /// they had an account. Called once, right after actor creation, on first
 /// OIDC login.
 pub async fn backfill_for_email(pool: &PgPool, actor_id: &str, email: &str) -> DbResult<()> {
-    if email.is_empty() { return Ok(()); }
+    if email.is_empty() {
+        return Ok(());
+    }
     let invites = crate::invites::list_pending_by_email(pool, email).await?;
     for invite in invites {
         let uri = format!("invite/{}", invite.id);

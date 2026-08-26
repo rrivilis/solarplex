@@ -45,13 +45,13 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 #[repr(C)]
 #[allow(dead_code)] // constructed only under #[cfg(test)]; documents the C layout either way
 struct SeccompData {
-    nr:   i32,
+    nr: i32,
     arch: u32,
     instruction_pointer: u64,
     args: [u64; 6],
 }
 
-const SECCOMP_DATA_NR_OFFSET:   u32 = 0;
+const SECCOMP_DATA_NR_OFFSET: u32 = 0;
 const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
 
 const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
@@ -63,33 +63,43 @@ const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
 #[derive(Clone, Copy)]
 struct SockFilter {
     code: u16,
-    jt:   u8,
-    jf:   u8,
-    k:    u32,
+    jt: u8,
+    jf: u8,
+    k: u32,
 }
 
 #[repr(C)]
 struct SockFprog {
-    len:    u16,
+    len: u16,
     filter: *const SockFilter,
 }
 
-const BPF_LD:  u16 = 0x00;
+const BPF_LD: u16 = 0x00;
 const BPF_JMP: u16 = 0x05;
 const BPF_RET: u16 = 0x06;
-const BPF_W:   u16 = 0x00;
+const BPF_W: u16 = 0x00;
 const BPF_ABS: u16 = 0x20;
 const BPF_JEQ: u16 = 0x10;
-const BPF_K:   u16 = 0x00;
+const BPF_K: u16 = 0x00;
 
 const fn bpf_stmt(code: u16, k: u32) -> SockFilter {
-    SockFilter { code: code | BPF_K, jt: 0, jf: 0, k }
+    SockFilter {
+        code: code | BPF_K,
+        jt: 0,
+        jf: 0,
+        k,
+    }
 }
 const fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> SockFilter {
-    SockFilter { code: code | BPF_K, jt, jf, k }
+    SockFilter {
+        code: code | BPF_K,
+        jt,
+        jf,
+        k,
+    }
 }
 
-const SECCOMP_RET_ALLOW:      u32 = 0x7fff_0000;
+const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_USER_NOTIF: u32 = 0x7fc0_0000;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 
@@ -135,7 +145,7 @@ fn build_notify_filter_program(notify_syscalls: &[i64]) -> Vec<SockFilter> {
         let jt = (n - i) as u8;
         prog.push(bpf_jump(BPF_JMP | BPF_JEQ, nr as u32, jt, 0));
     }
-    prog.push(bpf_stmt(BPF_RET, SECCOMP_RET_ALLOW));      // nothing matched
+    prog.push(bpf_stmt(BPF_RET, SECCOMP_RET_ALLOW)); // nothing matched
     prog.push(bpf_stmt(BPF_RET, SECCOMP_RET_USER_NOTIF)); // landing spot for any match
 
     prog
@@ -148,7 +158,10 @@ fn build_notify_filter_program(notify_syscalls: &[i64]) -> Vec<SockFilter> {
 /// notify fd.
 pub fn install_notify_filter(notify_syscalls: &[i64]) -> io::Result<OwnedFd> {
     let prog = build_notify_filter_program(notify_syscalls);
-    let fprog = SockFprog { len: prog.len() as u16, filter: prog.as_ptr() };
+    let fprog = SockFprog {
+        len: prog.len() as u16,
+        filter: prog.as_ptr(),
+    };
 
     let rc = unsafe {
         libc::syscall(
@@ -170,34 +183,36 @@ pub fn install_notify_filter(notify_syscalls: &[i64]) -> io::Result<OwnedFd> {
 #[repr(C)]
 #[derive(Default)]
 pub struct SeccompNotif {
-    pub id:    u64,
-    pub pid:   u32,
+    pub id: u64,
+    pub pid: u32,
     pub flags: u32,
-    nr:        i32,
-    arch:      u32,
+    nr: i32,
+    arch: u32,
     instruction_pointer: u64,
-    pub args:  [u64; 6],
+    pub args: [u64; 6],
 }
 
 impl SeccompNotif {
-    pub fn syscall_nr(&self) -> i64 { self.nr as i64 }
+    pub fn syscall_nr(&self) -> i64 {
+        self.nr as i64
+    }
 }
 
 #[repr(C)]
 #[derive(Default)]
 struct SeccompNotifResp {
-    id:    u64,
-    val:   i64,
+    id: u64,
+    val: i64,
     error: i32,
     flags: u32,
 }
 
 #[repr(C)]
 struct SeccompNotifAddfd {
-    id:          u64,
-    flags:       u32,
-    srcfd:       u32,
-    newfd:       u32,
+    id: u64,
+    flags: u32,
+    srcfd: u32,
+    newfd: u32,
     newfd_flags: u32,
 }
 
@@ -228,7 +243,7 @@ const fn ioc(dir: u32, ty: u32, nr: u32, size: u32) -> u64 {
     ((dir as u64) << 30) | ((ty as u64) << 8) | (nr as u64) | ((size as u64) << 16)
 }
 const IOC_WRITE: u32 = 1;
-const IOC_READ:  u32 = 2;
+const IOC_READ: u32 = 2;
 const SECCOMP_IOC_MAGIC: u32 = b'!' as u32;
 
 // RECV/SEND ioctl numbers are NOT hardcoded from `size_of` here -- the
@@ -246,17 +261,21 @@ const SECCOMP_IOC_MAGIC: u32 = b'!' as u32;
 // short of a kernel-provided size query that doesn't exist for it.
 const SECCOMP_IOCTL_NOTIF_ID_VALID: u64 =
     ioc(IOC_WRITE, SECCOMP_IOC_MAGIC, 2, size_of::<u64>() as u32);
-const SECCOMP_IOCTL_NOTIF_ADDFD: u64 =
-    ioc(IOC_WRITE, SECCOMP_IOC_MAGIC, 3, size_of::<SeccompNotifAddfd>() as u32);
+const SECCOMP_IOCTL_NOTIF_ADDFD: u64 = ioc(
+    IOC_WRITE,
+    SECCOMP_IOC_MAGIC,
+    3,
+    size_of::<SeccompNotifAddfd>() as u32,
+);
 
 const SECCOMP_GET_NOTIF_SIZES: u32 = 3; // seccomp(2) operation (not SET_MODE_FILTER)
 
 #[repr(C)]
 #[derive(Default)]
 struct SeccompNotifSizes {
-    seccomp_notif:      u16,
+    seccomp_notif: u16,
     seccomp_notif_resp: u16,
-    seccomp_data:       u16,
+    seccomp_data: u16,
 }
 
 struct NotifIoctls {
@@ -269,12 +288,29 @@ fn notif_ioctls() -> io::Result<&'static NotifIoctls> {
     CELL.get_or_init(|| {
         let mut sizes = SeccompNotifSizes::default();
         let rc = unsafe {
-            libc::syscall(libc::SYS_seccomp, SECCOMP_GET_NOTIF_SIZES, 0u32, &mut sizes as *mut SeccompNotifSizes)
+            libc::syscall(
+                libc::SYS_seccomp,
+                SECCOMP_GET_NOTIF_SIZES,
+                0u32,
+                &mut sizes as *mut SeccompNotifSizes,
+            )
         };
-        if rc < 0 { return Err(io::Error::last_os_error()); }
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(NotifIoctls {
-            recv: ioc(IOC_READ | IOC_WRITE, SECCOMP_IOC_MAGIC, 0, sizes.seccomp_notif as u32),
-            send: ioc(IOC_READ | IOC_WRITE, SECCOMP_IOC_MAGIC, 1, sizes.seccomp_notif_resp as u32),
+            recv: ioc(
+                IOC_READ | IOC_WRITE,
+                SECCOMP_IOC_MAGIC,
+                0,
+                sizes.seccomp_notif as u32,
+            ),
+            send: ioc(
+                IOC_READ | IOC_WRITE,
+                SECCOMP_IOC_MAGIC,
+                1,
+                sizes.seccomp_notif_resp as u32,
+            ),
         })
     })
     .as_ref()
@@ -288,7 +324,9 @@ pub fn notif_recv(notify_fd: RawFd) -> io::Result<SeccompNotif> {
     let ioctls = notif_ioctls()?;
     let mut req = SeccompNotif::default();
     let rc = unsafe { libc::ioctl(notify_fd, ioctls.recv, &mut req as *mut SeccompNotif) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(req)
 }
 
@@ -299,7 +337,9 @@ pub fn notif_recv(notify_fd: RawFd) -> io::Result<SeccompNotif> {
 /// misattributed to a *different*, later process reusing the same pid).
 pub fn notif_id_valid(notify_fd: RawFd, id: u64) -> io::Result<()> {
     let rc = unsafe { libc::ioctl(notify_fd, SECCOMP_IOCTL_NOTIF_ID_VALID, &id as *const u64) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 
@@ -308,9 +348,16 @@ pub fn notif_id_valid(notify_fd: RawFd, id: u64) -> io::Result<()> {
 /// resolves to -- see the module doc).
 pub fn notif_continue(notify_fd: RawFd, id: u64) -> io::Result<()> {
     let ioctls = notif_ioctls()?;
-    let resp = SeccompNotifResp { id, val: 0, error: 0, flags: SECCOMP_USER_NOTIF_FLAG_CONTINUE };
+    let resp = SeccompNotifResp {
+        id,
+        val: 0,
+        error: 0,
+        flags: SECCOMP_USER_NOTIF_FLAG_CONTINUE,
+    };
     let rc = unsafe { libc::ioctl(notify_fd, ioctls.send, &resp as *const SeccompNotifResp) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 
@@ -320,9 +367,16 @@ pub fn notif_continue(notify_fd: RawFd, id: u64) -> io::Result<()> {
 /// which uses `notif_continue` instead).
 pub fn notif_deny(notify_fd: RawFd, id: u64, errno: i32) -> io::Result<()> {
     let ioctls = notif_ioctls()?;
-    let resp = SeccompNotifResp { id, val: -1, error: errno, flags: 0 };
+    let resp = SeccompNotifResp {
+        id,
+        val: -1,
+        error: errno,
+        flags: 0,
+    };
     let rc = unsafe { libc::ioctl(notify_fd, ioctls.send, &resp as *const SeccompNotifResp) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 
@@ -340,8 +394,16 @@ pub fn notif_addfd(notify_fd: RawFd, id: u64, src_fd: RawFd) -> io::Result<i32> 
         newfd: 0,
         newfd_flags: libc::O_CLOEXEC as u32,
     };
-    let rc = unsafe { libc::ioctl(notify_fd, SECCOMP_IOCTL_NOTIF_ADDFD, &addfd as *const SeccompNotifAddfd) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    let rc = unsafe {
+        libc::ioctl(
+            notify_fd,
+            SECCOMP_IOCTL_NOTIF_ADDFD,
+            &addfd as *const SeccompNotifAddfd,
+        )
+    };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(rc)
 }
 
@@ -373,8 +435,16 @@ mod tests {
         // checked directly against a fresh fetch of
         // include/uapi/linux/seccomp.h, not against local memory of an
         // earlier "confirmed" value.
-        assert_eq!(SECCOMP_ADDFD_FLAG_SEND, 1 << 1, "must NOT equal SETFD's value (1 << 0)");
-        assert_ne!(SECCOMP_ADDFD_FLAG_SEND, 1 << 0, "1 << 0 is SECCOMP_ADDFD_FLAG_SETFD, not SEND");
+        assert_eq!(
+            SECCOMP_ADDFD_FLAG_SEND,
+            1 << 1,
+            "must NOT equal SETFD's value (1 << 0)"
+        );
+        assert_ne!(
+            SECCOMP_ADDFD_FLAG_SEND,
+            1 << 0,
+            "1 << 0 is SECCOMP_ADDFD_FLAG_SETFD, not SEND"
+        );
     }
 
     /// A minimal BPF interpreter covering exactly the instruction shapes
@@ -393,7 +463,8 @@ mod tests {
             let ins = &prog[pc];
             let class = ins.code & 0x07;
             match class {
-                0x00 => { // LD
+                0x00 => {
+                    // LD
                     let offset = ins.k;
                     acc = if offset == SECCOMP_DATA_ARCH_OFFSET {
                         data.arch
@@ -404,8 +475,13 @@ mod tests {
                     };
                     pc += 1;
                 }
-                0x05 => { // JMP (only JEQ used here)
-                    pc += 1 + if acc == ins.k { ins.jt as usize } else { ins.jf as usize };
+                0x05 => {
+                    // JMP (only JEQ used here)
+                    pc += 1 + if acc == ins.k {
+                        ins.jt as usize
+                    } else {
+                        ins.jf as usize
+                    };
                 }
                 0x06 => return ins.k, // RET
                 other => panic!("unhandled BPF class {other} at pc {pc}"),
@@ -414,16 +490,27 @@ mod tests {
     }
 
     fn data_for(nr: i64) -> SeccompData {
-        SeccompData { nr: nr as i32, arch: AUDIT_ARCH_X86_64, instruction_pointer: 0, args: [0; 6] }
+        SeccompData {
+            nr: nr as i32,
+            arch: AUDIT_ARCH_X86_64,
+            instruction_pointer: 0,
+            args: [0; 6],
+        }
     }
 
     #[test]
     fn every_listed_syscall_reaches_user_notif() {
-        let syscalls = [257i64 /* openat */, 437 /* openat2 */, 87 /* unlink */, 263 /* unlinkat */];
+        let syscalls = [
+            257i64, /* openat */
+            437,    /* openat2 */
+            87,     /* unlink */
+            263,    /* unlinkat */
+        ];
         let prog = build_notify_filter_program(&syscalls);
         for &nr in &syscalls {
             assert_eq!(
-                run(&prog, &data_for(nr)), SECCOMP_RET_USER_NOTIF,
+                run(&prog, &data_for(nr)),
+                SECCOMP_RET_USER_NOTIF,
                 "syscall {nr} did not reach RET USER_NOTIF"
             );
         }

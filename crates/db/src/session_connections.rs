@@ -35,7 +35,9 @@ pub async fn record(pool: &PgPool, session_id: &str, actor_id: &str, event: &str
 }
 
 pub async fn list_for_session(
-    pool: &PgPool, session_id: &str, limit: i64,
+    pool: &PgPool,
+    session_id: &str,
+    limit: i64,
 ) -> DbResult<Vec<ConnectionEventRow>> {
     sqlx::query_as::<_, ConnectionEventRow>(
         "SELECT id, session_id, actor_id, event, at

@@ -56,7 +56,7 @@ pub fn spawn_gc_tasks(pool: PgPool) {
 ///    audit value; delete after a short grace period (1 hour).
 /// 2. Consumed receipts — retain for 30-day audit window then drop.
 async fn receipt_gc(pool: PgPool) {
-    const EXPIRED_GRACE_SECS:  i64 = 3600; // 1 h after expiry
+    const EXPIRED_GRACE_SECS: i64 = 3600; // 1 h after expiry
     const CONSUMED_RETAIN_DAYS: i64 = 30;
 
     let mut ticker = interval(Duration::from_secs(3600));
@@ -64,13 +64,13 @@ async fn receipt_gc(pool: PgPool) {
         ticker.tick().await;
 
         match db::receipts::compact_expired(&pool, EXPIRED_GRACE_SECS).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "receipt_gc: compacted expired unused receipts"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "receipt_gc: compacted expired unused receipts"),
             Err(e) => tracing::warn!(error = %e, "receipt_gc: compact_expired failed"),
         }
         match db::receipts::compact_consumed(&pool, CONSUMED_RETAIN_DAYS).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "receipt_gc: expired consumed receipts"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "receipt_gc: expired consumed receipts"),
             Err(e) => tracing::warn!(error = %e, "receipt_gc: compact_consumed failed"),
         }
     }
@@ -94,18 +94,21 @@ async fn proposal_gc(pool: PgPool) {
         ticker.tick().await;
 
         match db::proposals::compact_expired(&pool).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(expired = n, "proposal_gc: expired pending proposals"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(expired = n, "proposal_gc: expired pending proposals"),
             Err(e) => tracing::warn!(error = %e, "proposal_gc: compact_expired failed"),
         }
         match db::proposals::compact_resolved(&pool, RETAIN_DAYS).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "proposal_gc: deleted resolved proposals"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "proposal_gc: deleted resolved proposals"),
             Err(e) => tracing::warn!(error = %e, "proposal_gc: compact_resolved failed"),
         }
         match db::proposals::compact_attestations(&pool, RETAIN_DAYS).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "proposal_gc: deleted non-mismatch attestations"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                deleted = n,
+                "proposal_gc: deleted non-mismatch attestations"
+            ),
             Err(e) => tracing::warn!(error = %e, "proposal_gc: compact_attestations failed"),
         }
     }
@@ -123,8 +126,8 @@ async fn cap_gc(pool: PgPool) {
     loop {
         ticker.tick().await;
         match db::tokens::compact_revoked(&pool, RETENTION_DAYS).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "cap_gc: compacted revoked token rows"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "cap_gc: compacted revoked token rows"),
             Err(e) => tracing::warn!(error = %e, "cap_gc: pass failed"),
         }
     }
@@ -138,7 +141,7 @@ async fn cap_gc(pool: PgPool) {
 /// 1. Ring-buffer compaction: keep the 50 most recent clean rows per session.
 /// 2. Dirty sentinel compaction: drop dirty markers older than 30 days.
 async fn snapshot_gc(pool: PgPool) {
-    const KEEP_N_CLEAN:      i64 = 50;
+    const KEEP_N_CLEAN: i64 = 50;
     const DIRTY_RETENTION_DAYS: i64 = 30;
 
     let mut ticker = interval(Duration::from_secs(3600));
@@ -147,15 +150,15 @@ async fn snapshot_gc(pool: PgPool) {
 
         // Pass 1: ring-buffer compaction of clean rows.
         match db::snapshots::compact_all(&pool, KEEP_N_CLEAN).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "snapshot_gc: compacted clean rows"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "snapshot_gc: compacted clean rows"),
             Err(e) => tracing::warn!(error = %e, "snapshot_gc: compact_all failed"),
         }
 
         // Pass 2: expire old dirty sentinels.
         match db::snapshots::compact_dirty_sentinels(&pool, DIRTY_RETENTION_DAYS).await {
-            Ok(0)  => {}
-            Ok(n)  => tracing::info!(deleted = n, "snapshot_gc: expired dirty sentinels"),
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "snapshot_gc: expired dirty sentinels"),
             Err(e) => tracing::warn!(error = %e, "snapshot_gc: compact_dirty_sentinels failed"),
         }
     }

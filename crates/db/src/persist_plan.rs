@@ -34,8 +34,8 @@ use crate::{DbError, DbResult};
 
 /// One event tuple to append within the plan.
 pub struct EventSpec<'a> {
-    pub type_name:    &'a str,
-    pub actor_id:     &'a str,
+    pub type_name: &'a str,
+    pub actor_id: &'a str,
     pub payload_json: &'a str,
 }
 
@@ -47,13 +47,17 @@ pub struct EventSpec<'a> {
 /// [`execute_async`](Self::execute_async).
 pub struct PersistPlan<'a> {
     session_id: &'a str,
-    events:     Vec<EventSpec<'a>>,
-    notify:     bool,
+    events: Vec<EventSpec<'a>>,
+    notify: bool,
 }
 
 impl<'a> PersistPlan<'a> {
     pub fn new(session_id: &'a str) -> Self {
-        Self { session_id, events: Vec::new(), notify: false }
+        Self {
+            session_id,
+            events: Vec::new(),
+            notify: false,
+        }
     }
 
     /// Append an event tuple to the plan.
@@ -113,12 +117,12 @@ impl<'a> PersistPlan<'a> {
             crate::events::alloc_seq_block_in_tx(&mut tx, self.session_id, n as i64).await?;
 
         // Build parallel column arrays for the single UNNEST INSERT.
-        let mut ids:      Vec<String> = Vec::with_capacity(n);
-        let mut aids:     Vec<&str>   = Vec::with_capacity(n);
-        let mut etypes:   Vec<&str>   = Vec::with_capacity(n);
-        let mut payloads: Vec<&str>   = Vec::with_capacity(n);
-        let mut seqs:     Vec<i64>    = Vec::with_capacity(n);
-        let     sids:     Vec<&str>   = vec![self.session_id; n];
+        let mut ids: Vec<String> = Vec::with_capacity(n);
+        let mut aids: Vec<&str> = Vec::with_capacity(n);
+        let mut etypes: Vec<&str> = Vec::with_capacity(n);
+        let mut payloads: Vec<&str> = Vec::with_capacity(n);
+        let mut seqs: Vec<i64> = Vec::with_capacity(n);
+        let sids: Vec<&str> = vec![self.session_id; n];
 
         for (i, ev) in self.events.iter().enumerate() {
             ids.push(Ulid::new().to_string());

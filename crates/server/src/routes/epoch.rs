@@ -31,11 +31,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use protocol::types::MemberRole;
 use crate::state::AppState;
 use crate::ws::emit_to_session;
-use protocol::messages::{EpochAdvancedPayload, WsMessage, WsPayload};
 use autometrics::autometrics;
+use protocol::messages::{EpochAdvancedPayload, WsMessage, WsPayload};
+use protocol::types::MemberRole;
 
 // ── GET /api/sessions/:id/epoch ───────────────────────────────────────────────
 
@@ -46,7 +46,10 @@ pub async fn get_epoch(
     Path(session_id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer).await {
+    if let Err(res) =
+        crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer)
+            .await
+    {
         return res;
     }
     let epoch = match db::epochs::current(&state.db, &session_id).await {
@@ -64,7 +67,8 @@ pub async fn get_epoch(
         "session_id":  session_id,
         "epoch":       epoch,
         "revocations": revocations,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -89,14 +93,16 @@ pub struct RevokeBody {
     pub reroot: bool,
 }
 
-fn default_drain_window() -> u64 { 30 }
+fn default_drain_window() -> u64 {
+    30
+}
 
 #[derive(Serialize)]
 pub struct RevokeResponse {
-    pub new_epoch:     i64,
-    pub closed_epoch:  i64,
+    pub new_epoch: i64,
+    pub closed_epoch: i64,
     pub revoked_count: u64,
-    pub drain_seq:     i64,
+    pub drain_seq: i64,
     pub drain_deadline: String, // ISO-8601
 }
 
@@ -112,13 +118,22 @@ pub async fn revoke(
     // RevokeBody doc comment already said this "must be a session
     // owner/collaborator"; this is the first place that's actually enforced.
     if let Err(e) = db::sessions::require_membership(
-        &state.db, &session_id, &body.revoked_by, protocol::types::MemberRole::Collaborator,
-    ).await {
+        &state.db,
+        &session_id,
+        &body.revoked_by,
+        protocol::types::MemberRole::Collaborator,
+    )
+    .await
+    {
         return match e {
-            db::DbError::NotFound =>
-                (StatusCode::FORBIDDEN, "not a member of this session").into_response(),
-            db::DbError::Unauthorized =>
-                (StatusCode::FORBIDDEN, "epoch revocation requires collaborator or owner role").into_response(),
+            db::DbError::NotFound => {
+                (StatusCode::FORBIDDEN, "not a member of this session").into_response()
+            }
+            db::DbError::Unauthorized => (
+                StatusCode::FORBIDDEN,
+                "epoch revocation requires collaborator or owner role",
+            )
+                .into_response(),
             e => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
     }
@@ -127,20 +142,29 @@ pub async fn revoke(
     match body.strategy.as_str() {
         "cap" => {
             if body.target_cap_id.is_none() {
-                return (StatusCode::UNPROCESSABLE_ENTITY,
-                    "strategy 'cap' requires target_cap_id").into_response();
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "strategy 'cap' requires target_cap_id",
+                )
+                    .into_response();
             }
         }
         "stratum" => {
             if body.target_stratum.is_none() {
-                return (StatusCode::UNPROCESSABLE_ENTITY,
-                    "strategy 'stratum' requires target_stratum").into_response();
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "strategy 'stratum' requires target_stratum",
+                )
+                    .into_response();
             }
         }
         "epoch" => {}
         s => {
-            return (StatusCode::UNPROCESSABLE_ENTITY,
-                format!("unknown strategy '{s}'; expected cap | stratum | epoch")).into_response();
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("unknown strategy '{s}'; expected cap | stratum | epoch"),
+            )
+                .into_response();
         }
     }
 
@@ -172,39 +196,52 @@ pub async fn revoke(
                 // children can be rerooted to the grandparent.  Direct children
                 // are rerooted first; deeper descendants follow their own parent
                 // pointers and naturally land on the new root.
-                let grandparent_id = db::tokens::get_parent_id(&state.db, cap_id).await
+                let grandparent_id = db::tokens::get_parent_id(&state.db, cap_id)
+                    .await
                     .unwrap_or(None);
                 if let Err(e) = db::tokens::reroot_caps(
-                    &state.db, &session_id, cap_id, grandparent_id.as_deref(),
-                ).await {
+                    &state.db,
+                    &session_id,
+                    cap_id,
+                    grandparent_id.as_deref(),
+                )
+                .await
+                {
                     tracing::warn!(session_id, "reroot_caps failed: {e}");
                 }
             }
             match db::tokens::revoke_cap_subtree(&state.db, cap_id).await {
                 Ok(ids) => ids,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             }
         }
         "stratum" => {
             let threshold = body.target_stratum.unwrap();
-            match db::tokens::revoke_by_stratum(&state.db, &session_id, closed_epoch, threshold).await {
+            match db::tokens::revoke_by_stratum(&state.db, &session_id, closed_epoch, threshold)
+                .await
+            {
                 Ok(ids) => ids,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
             }
         }
-        "epoch" => {
-            match db::tokens::revoke_epoch(&state.db, &session_id, closed_epoch).await {
-                Ok(ids) => ids,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            }
-        }
+        "epoch" => match db::tokens::revoke_epoch(&state.db, &session_id, closed_epoch).await {
+            Ok(ids) => ids,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
         _ => unreachable!(),
     };
     // Primary descriptor cleanup — resolve()'s live-cap join is defense in
     // depth, this is what actually keeps the table from accumulating dead
     // rows under normal revocation traffic.
     if let Err(e) = db::descriptors::delete_for_caps(&state.db, &revoked_ids).await {
-        tracing::warn!(session_id, "descriptor cleanup after revocation failed: {e}");
+        tracing::warn!(
+            session_id,
+            "descriptor cleanup after revocation failed: {e}"
+        );
     }
     let revoked_count = revoked_ids.len() as u64;
 
@@ -228,7 +265,9 @@ pub async fn revoke(
         closed_epoch,
         new_epoch,
         &body.revoked_by,
-    ).await {
+    )
+    .await
+    {
         tracing::warn!(session_id, "record_revocation audit log failed: {e}");
         // Non-fatal: revocation has already happened; continue.
     }
@@ -237,18 +276,18 @@ pub async fn revoke(
     // Insert a dirty sentinel row so cold-attach detects the revocation boundary
     // and rebuilds the snapshot from fact tables rather than trusting stale state.
     let current_snap_state = if let Some(hub) = state.hubs.get(&session_id) {
-        hub.snapshot.load_full().as_ref().as_ref().map(|ls| {
-            serde_json::to_value(&ls.state).unwrap_or_default()
-        }).unwrap_or_default()
+        hub.snapshot
+            .load_full()
+            .as_ref()
+            .as_ref()
+            .map(|ls| serde_json::to_value(&ls.state).unwrap_or_default())
+            .unwrap_or_default()
     } else {
         serde_json::json!({})
     };
-    if let Err(e) = db::snapshots::mark_dirty(
-        &state.db,
-        &session_id,
-        &current_snap_state,
-        drain_seq,
-    ).await {
+    if let Err(e) =
+        db::snapshots::mark_dirty(&state.db, &session_id, &current_snap_state, drain_seq).await
+    {
         tracing::warn!(session_id, "mark_dirty snapshot failed: {e}");
     }
     // Invalidate the ArcSwap so the next hot-path read rebuilds from DB.
@@ -277,7 +316,9 @@ pub async fn revoke(
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(body.drain_window_secs)).await;
             // After deadline: close all fenced actors that are still connected.
-            let to_close: Vec<String> = hub_arc.fenced_actors.iter()
+            let to_close: Vec<String> = hub_arc
+                .fenced_actors
+                .iter()
                 .filter(|entry| Instant::now() > *entry.value())
                 .map(|entry| entry.key().clone())
                 .collect();
@@ -330,5 +371,6 @@ pub async fn revoke(
         revoked_count,
         drain_seq,
         drain_deadline: drain_deadline_utc.to_rfc3339(),
-    }).into_response()
+    })
+    .into_response()
 }

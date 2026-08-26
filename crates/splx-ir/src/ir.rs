@@ -64,7 +64,10 @@ impl CapAction {
             Some("delegate") => Ok(CapAction::Delegate),
             Some("invoke") => Ok(CapAction::Invoke),
             Some(other) => Ok(CapAction::Other(other.to_string())),
-            None => Err(IrError::BadValue { key: "action", detail: format!("expected keyword, got {v}") }),
+            None => Err(IrError::BadValue {
+                key: "action",
+                detail: format!("expected keyword, got {v}"),
+            }),
         }
     }
 }
@@ -113,7 +116,10 @@ fn parse_entry_list(v: &Value) -> Result<Vec<AuthorityEntry>, IrError> {
         return Ok(Vec::new());
     }
     v.list_iter()
-        .ok_or_else(|| IrError::BadValue { key: "authority", detail: format!("expected a list, got {v}") })?
+        .ok_or_else(|| IrError::BadValue {
+            key: "authority",
+            detail: format!("expected a list, got {v}"),
+        })?
         .map(AuthorityEntry::from_value)
         .collect()
 }

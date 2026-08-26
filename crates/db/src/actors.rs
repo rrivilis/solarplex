@@ -138,8 +138,13 @@ pub async fn ensure_agent(pool: &PgPool, id: &str, name: &str) -> DbResult<Actor
 /// Fetch multiple actors by id in a single query.
 /// Returns a map of `id → ActorRow` for O(1) lookup when stitching query results.
 /// Missing ids are silently omitted (actor may have been deleted).
-pub async fn get_many(pool: &PgPool, ids: &[String]) -> DbResult<std::collections::HashMap<String, ActorRow>> {
-    if ids.is_empty() { return Ok(Default::default()); }
+pub async fn get_many(
+    pool: &PgPool,
+    ids: &[String],
+) -> DbResult<std::collections::HashMap<String, ActorRow>> {
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
     let rows = sqlx::query_as::<_, ActorRow>(
         "SELECT id, type, name, email, provider, model, config, created_at
          FROM actors WHERE id = ANY($1)",
@@ -215,11 +220,18 @@ pub async fn list_teammates(pool: &PgPool, viewer_actor_id: &str) -> DbResult<Ve
 /// (see `routes/agents.rs`). Shares `TeammateRow`'s shape rather than a
 /// parallel struct: session_count/roles/last_active_at mean exactly the
 /// same thing for an agent actor as a human one.
-pub async fn list_agent_directory(pool: &PgPool, viewer_actor_id: &str) -> DbResult<Vec<TeammateRow>> {
+pub async fn list_agent_directory(
+    pool: &PgPool,
+    viewer_actor_id: &str,
+) -> DbResult<Vec<TeammateRow>> {
     list_actors_of_type(pool, viewer_actor_id, "agent").await
 }
 
-async fn list_actors_of_type(pool: &PgPool, viewer_actor_id: &str, actor_type: &str) -> DbResult<Vec<TeammateRow>> {
+async fn list_actors_of_type(
+    pool: &PgPool,
+    viewer_actor_id: &str,
+    actor_type: &str,
+) -> DbResult<Vec<TeammateRow>> {
     sqlx::query_as::<_, TeammateRow>(
         // `session_memberships` gets a row the instant a Collaborator mints
         // an attach cap (`issue_attach_token`), before the agent process

@@ -53,7 +53,9 @@ pub fn top_level_router() -> Router<Arc<AppState>> {
         .route("/sessions/{a}/link/{b}", post(direct_link))
 }
 
-fn default_ttl_secs() -> i64 { 259_200 } // 3 days — matches create_invite's default
+fn default_ttl_secs() -> i64 {
+    259_200
+} // 3 days — matches create_invite's default
 
 #[derive(Deserialize)]
 struct MintLinkInviteBody {
@@ -68,13 +70,27 @@ async fn mint_link_invite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<MintLinkInviteBody>,
 ) -> impl IntoResponse {
-    let actor_id = match crate::auth::require_session_member(&state.db, &headers, &source_id, MemberRole::Collaborator).await {
+    let actor_id = match crate::auth::require_session_member(
+        &state.db,
+        &headers,
+        &source_id,
+        MemberRole::Collaborator,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(res) => return res,
     };
     if let Some(res) = gate_session(
-        &state, &source_id, &actor_id, RateLimitKey::SessionLinkMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &source_id,
+        &actor_id,
+        RateLimitKey::SessionLinkMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
     match db::session_links::mint_invite(&state.db, &source_id, &actor_id, body.ttl_secs).await {
@@ -95,19 +111,43 @@ async fn redeem_link_invite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RedeemLinkInviteBody>,
 ) -> impl IntoResponse {
-    let actor_id = match crate::auth::require_session_member(&state.db, &headers, &body.target_session_id, MemberRole::Collaborator).await {
+    let actor_id = match crate::auth::require_session_member(
+        &state.db,
+        &headers,
+        &body.target_session_id,
+        MemberRole::Collaborator,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(res) => return res,
     };
     if let Some(res) = gate_session(
-        &state, &body.target_session_id, &actor_id, RateLimitKey::SessionLinkMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &body.target_session_id,
+        &actor_id,
+        RateLimitKey::SessionLinkMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
-    match db::session_links::redeem_invite(&state.db, &invite_id, &body.target_session_id, &actor_id).await {
+    match db::session_links::redeem_invite(
+        &state.db,
+        &invite_id,
+        &body.target_session_id,
+        &actor_id,
+    )
+    .await
+    {
         Ok(row) => Json(row).into_response(),
-        Err(db::DbError::NotFound) =>
-            (StatusCode::GONE, "link invite expired, already redeemed, or not found").into_response(),
+        Err(db::DbError::NotFound) => (
+            StatusCode::GONE,
+            "link invite expired, already redeemed, or not found",
+        )
+            .into_response(),
         Err(db::DbError::Conflict(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -126,16 +166,32 @@ async fn direct_link(
     // sessions — this is what makes it a fast path rather than a privilege
     // escalation: it's exactly the authority they could already exercise on
     // each session alone, just without a round trip through the other side.
-    let actor_id = match crate::auth::require_session_member(&state.db, &headers, &a, MemberRole::Collaborator).await {
+    let actor_id = match crate::auth::require_session_member(
+        &state.db,
+        &headers,
+        &a,
+        MemberRole::Collaborator,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(res) => return res,
     };
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &b, MemberRole::Collaborator).await {
+    if let Err(res) =
+        crate::auth::require_session_member(&state.db, &headers, &b, MemberRole::Collaborator).await
+    {
         return res;
     }
     if let Some(res) = gate_session(
-        &state, &a, &actor_id, RateLimitKey::SessionLinkMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &a,
+        &actor_id,
+        RateLimitKey::SessionLinkMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
     match db::session_links::direct_link(&state.db, &a, &b, &actor_id).await {
@@ -150,19 +206,26 @@ async fn list_links(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let actor_id = match crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer).await {
-        Ok(a) => a,
-        Err(res) => return res,
-    };
+    let actor_id =
+        match crate::auth::require_session_member(&state.db, &headers, &id, MemberRole::Observer)
+            .await
+        {
+            Ok(a) => a,
+            Err(res) => return res,
+        };
     // Rendered against this specific viewer, not the full set of `id`'s
     // links — see list_visible_for_session's doc comment.
     let links = match db::session_links::list_visible_for_session(&state.db, &id, &actor_id).await {
-        Ok(l) => l, Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(l) => l,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     let mut out = Vec::with_capacity(links.len());
     for link in links {
         let peer_id = link.peer_of(&id).to_string();
-        let peer_name = db::sessions::get(&state.db, &peer_id).await.map(|s| s.name).unwrap_or_else(|_| peer_id.clone());
+        let peer_name = db::sessions::get(&state.db, &peer_id)
+            .await
+            .map(|s| s.name)
+            .unwrap_or_else(|_| peer_id.clone());
         out.push(json!({
             "id": link.id,
             "peer_session_id": peer_id,
@@ -190,7 +253,9 @@ async fn list_links(
 /// `approvals.rs`'s `require_shim_auth`: callers that need to rate-limit
 /// gate afterward shouldn't have to re-resolve the actor's identity.
 async fn require_link_admin(
-    state: &Arc<AppState>, headers: &HeaderMap, link_id: &str,
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    link_id: &str,
 ) -> Result<(String, db::session_links::SessionLinkRow), axum::response::Response> {
     let link = match db::session_links::get(&state.db, link_id).await {
         Ok(l) => l,
@@ -198,8 +263,22 @@ async fn require_link_admin(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
     };
     let actor_id = crate::auth::require_sp_auth(&state.db, headers).await?;
-    let in_a = db::sessions::require_membership(&state.db, &link.session_a, &actor_id, MemberRole::Collaborator).await.is_ok();
-    let in_b = db::sessions::require_membership(&state.db, &link.session_b, &actor_id, MemberRole::Collaborator).await.is_ok();
+    let in_a = db::sessions::require_membership(
+        &state.db,
+        &link.session_a,
+        &actor_id,
+        MemberRole::Collaborator,
+    )
+    .await
+    .is_ok();
+    let in_b = db::sessions::require_membership(
+        &state.db,
+        &link.session_b,
+        &actor_id,
+        MemberRole::Collaborator,
+    )
+    .await
+    .is_ok();
     if !in_a && !in_b {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
@@ -219,15 +298,26 @@ async fn mute_link(
     Json(body): Json<MuteLinkBody>,
 ) -> impl IntoResponse {
     let (actor_id, link) = match require_link_admin(&state, &headers, &link_id).await {
-        Ok(v)    => v,
+        Ok(v) => v,
         Err(res) => return res,
     };
     if body.visibility != "full" && body.visibility != "muted" {
-        return (StatusCode::BAD_REQUEST, "visibility must be 'full' or 'muted'").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "visibility must be 'full' or 'muted'",
+        )
+            .into_response();
     }
     if let Some(res) = gate_session(
-        &state, &link.session_a, &actor_id, RateLimitKey::SessionLinkMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &link.session_a,
+        &actor_id,
+        RateLimitKey::SessionLinkMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
     match db::session_links::set_visibility(&state.db, &link_id, &body.visibility).await {
@@ -243,12 +333,19 @@ async fn delete_link(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let (actor_id, link) = match require_link_admin(&state, &headers, &link_id).await {
-        Ok(v)    => v,
+        Ok(v) => v,
         Err(res) => return res,
     };
     if let Some(res) = gate_session(
-        &state, &link.session_a, &actor_id, RateLimitKey::SessionLinkMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &link.session_a,
+        &actor_id,
+        RateLimitKey::SessionLinkMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
     match db::session_links::unlink(&state.db, &link_id).await {

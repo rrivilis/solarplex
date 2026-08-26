@@ -105,55 +105,89 @@ pub trait SagaProtocol {
 pub struct ApprovalSaga {
     pub approval_id: String,
     /// Approval policy slug: "single_vote" | "majority" | "unanimous"
-    pub policy:      String,
+    pub policy: String,
     /// Number of eligible approvers at saga begin time.
     /// Required for majority and unanimous threshold calculations.
-    pub eligible:    usize,
-    pub step:        SagaStepSpec,
+    pub eligible: usize,
+    pub step: SagaStepSpec,
 }
 
 impl SagaProtocol for ApprovalSaga {
-    fn step_count(&self) -> usize { 1 }
+    fn step_count(&self) -> usize {
+        1
+    }
 
-    fn step(&self, _idx: usize) -> &SagaStepSpec { &self.step }
+    fn step(&self, _idx: usize) -> &SagaStepSpec {
+        &self.step
+    }
 
     fn reduce(&self, _step_idx: usize, acks: &[SagaOutcome]) -> ProtocolOutcome {
-        let committed = acks.iter().filter(|a| *a == &SagaOutcome::Committed).count();
-        let denials   = acks.iter().filter(|a| matches!(a, SagaOutcome::Rejected { .. })).count();
-        let deny_reason = || acks.iter()
-            .find_map(|a| if let SagaOutcome::Rejected { reason } = a {
-                Some(reason.clone())
-            } else {
-                None
-            })
-            .unwrap_or_else(|| "denied".into());
+        let committed = acks
+            .iter()
+            .filter(|a| *a == &SagaOutcome::Committed)
+            .count();
+        let denials = acks
+            .iter()
+            .filter(|a| matches!(a, SagaOutcome::Rejected { .. }))
+            .count();
+        let deny_reason = || {
+            acks.iter()
+                .find_map(|a| {
+                    if let SagaOutcome::Rejected { reason } = a {
+                        Some(reason.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "denied".into())
+        };
 
         match self.policy.as_str() {
             "single_vote" => {
-                if committed > 0   { ProtocolOutcome::Advance }
-                else if denials > 0 { ProtocolOutcome::Abort { reason: deny_reason() } }
-                else                { ProtocolOutcome::Pending }
+                if committed > 0 {
+                    ProtocolOutcome::Advance
+                } else if denials > 0 {
+                    ProtocolOutcome::Abort {
+                        reason: deny_reason(),
+                    }
+                } else {
+                    ProtocolOutcome::Pending
+                }
             }
             "majority" => {
                 let threshold = self.eligible / 2 + 1;
-                if committed >= threshold { ProtocolOutcome::Advance }
-                else if denials >= threshold { ProtocolOutcome::Abort { reason: "denied by majority".into() } }
-                else { ProtocolOutcome::Pending }
+                if committed >= threshold {
+                    ProtocolOutcome::Advance
+                } else if denials >= threshold {
+                    ProtocolOutcome::Abort {
+                        reason: "denied by majority".into(),
+                    }
+                } else {
+                    ProtocolOutcome::Pending
+                }
             }
             "unanimous" => {
                 if self.eligible > 0 && committed == self.eligible {
                     ProtocolOutcome::Advance
                 } else if denials > 0 {
-                    ProtocolOutcome::Abort { reason: deny_reason() }
+                    ProtocolOutcome::Abort {
+                        reason: deny_reason(),
+                    }
                 } else {
                     ProtocolOutcome::Pending
                 }
             }
             // Unknown policy → fall back to single_vote semantics
             _ => {
-                if committed > 0   { ProtocolOutcome::Advance }
-                else if denials > 0 { ProtocolOutcome::Abort { reason: deny_reason() } }
-                else                { ProtocolOutcome::Pending }
+                if committed > 0 {
+                    ProtocolOutcome::Advance
+                } else if denials > 0 {
+                    ProtocolOutcome::Abort {
+                        reason: deny_reason(),
+                    }
+                } else {
+                    ProtocolOutcome::Pending
+                }
             }
         }
     }
@@ -172,23 +206,30 @@ impl SagaProtocol for ApprovalSaga {
 #[derive(Debug, Clone)]
 pub struct TransferSaga {
     pub from_session: String,
-    pub to_session:   String,
+    pub to_session: String,
     /// Must have exactly 2 elements: [step_lock_src, step_commit_dst].
-    pub steps:        Vec<SagaStepSpec>,
+    pub steps: Vec<SagaStepSpec>,
 }
 
 impl SagaProtocol for TransferSaga {
-    fn step_count(&self) -> usize { self.steps.len() }
+    fn step_count(&self) -> usize {
+        self.steps.len()
+    }
 
-    fn step(&self, idx: usize) -> &SagaStepSpec { &self.steps[idx] }
+    fn step(&self, idx: usize) -> &SagaStepSpec {
+        &self.steps[idx]
+    }
 
     fn reduce(&self, _step_idx: usize, acks: &[SagaOutcome]) -> ProtocolOutcome {
         // Atomic: first ack determines the outcome immediately.
         for ack in acks {
             match ack {
-                SagaOutcome::Committed          => return ProtocolOutcome::Advance,
-                SagaOutcome::Rejected { reason } =>
-                    return ProtocolOutcome::Abort { reason: reason.clone() },
+                SagaOutcome::Committed => return ProtocolOutcome::Advance,
+                SagaOutcome::Rejected { reason } => {
+                    return ProtocolOutcome::Abort {
+                        reason: reason.clone(),
+                    }
+                }
             }
         }
         ProtocolOutcome::Pending
@@ -208,31 +249,33 @@ pub enum SessionSaga {
     Approval(ApprovalSaga),
     OwnershipTransfer(TransferSaga),
     /// Ad-hoc saga: first-ack-wins reduction with arbitrary step count.
-    Custom { steps: Vec<SagaStepSpec> },
+    Custom {
+        steps: Vec<SagaStepSpec>,
+    },
 }
 
 impl SagaProtocol for SessionSaga {
     fn step_count(&self) -> usize {
         match self {
-            Self::Approval(s)          => s.step_count(),
+            Self::Approval(s) => s.step_count(),
             Self::OwnershipTransfer(s) => s.step_count(),
-            Self::Custom { steps }     => steps.len(),
+            Self::Custom { steps } => steps.len(),
         }
     }
 
     fn step(&self, idx: usize) -> &SagaStepSpec {
         match self {
-            Self::Approval(s)          => s.step(idx),
+            Self::Approval(s) => s.step(idx),
             Self::OwnershipTransfer(s) => s.step(idx),
-            Self::Custom { steps }     => &steps[idx],
+            Self::Custom { steps } => &steps[idx],
         }
     }
 
     fn reduce(&self, step_idx: usize, acks: &[SagaOutcome]) -> ProtocolOutcome {
         match self {
-            Self::Approval(s)          => s.reduce(step_idx, acks),
+            Self::Approval(s) => s.reduce(step_idx, acks),
             Self::OwnershipTransfer(s) => s.reduce(step_idx, acks),
-            Self::Custom { .. }        => first_ack_wins(acks),
+            Self::Custom { .. } => first_ack_wins(acks),
         }
     }
 }
@@ -251,24 +294,30 @@ pub(crate) fn build_session_saga(record: &SagaRecord) -> SessionSaga {
     match record.saga_type.as_str() {
         "approval" => SessionSaga::Approval(ApprovalSaga {
             approval_id: m["approval_id"].as_str().unwrap_or("").to_string(),
-            policy:      m["policy"].as_str().unwrap_or("single_vote").to_string(),
-            eligible:    m["eligible"].as_u64().unwrap_or(1) as usize,
+            policy: m["policy"].as_str().unwrap_or("single_vote").to_string(),
+            eligible: m["eligible"].as_u64().unwrap_or(1) as usize,
             // step is only used for step_count/timeout; reduce() does not inspect it.
-            step:        record.steps.first().cloned().unwrap_or_else(|| SagaStepSpec {
-                step_idx:     0,
-                participant:  String::new(),
-                message:      serde_json::Value::Null,
-                compensation: serde_json::Value::Null,
-                timeout_ms:   30_000,
-            }),
+            step: record
+                .steps
+                .first()
+                .cloned()
+                .unwrap_or_else(|| SagaStepSpec {
+                    step_idx: 0,
+                    participant: String::new(),
+                    message: serde_json::Value::Null,
+                    compensation: serde_json::Value::Null,
+                    timeout_ms: 30_000,
+                }),
         }),
         "ownership_transfer" => SessionSaga::OwnershipTransfer(TransferSaga {
             from_session: m["from_session"].as_str().unwrap_or("").to_string(),
-            to_session:   m["to_session"].as_str().unwrap_or("").to_string(),
-            steps:        record.steps.clone(),
+            to_session: m["to_session"].as_str().unwrap_or("").to_string(),
+            steps: record.steps.clone(),
         }),
         // "custom" and any unknown type → first-ack-wins semantics.
-        _ => SessionSaga::Custom { steps: record.steps.clone() },
+        _ => SessionSaga::Custom {
+            steps: record.steps.clone(),
+        },
     }
 }
 
@@ -281,9 +330,12 @@ pub(crate) fn build_session_saga(record: &SagaRecord) -> SessionSaga {
 pub(crate) fn first_ack_wins(acks: &[SagaOutcome]) -> ProtocolOutcome {
     for ack in acks {
         match ack {
-            SagaOutcome::Committed           => return ProtocolOutcome::Advance,
-            SagaOutcome::Rejected { reason } =>
-                return ProtocolOutcome::Abort { reason: reason.clone() },
+            SagaOutcome::Committed => return ProtocolOutcome::Advance,
+            SagaOutcome::Rejected { reason } => {
+                return ProtocolOutcome::Abort {
+                    reason: reason.clone(),
+                }
+            }
         }
     }
     ProtocolOutcome::Pending

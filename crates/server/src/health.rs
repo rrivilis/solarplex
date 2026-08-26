@@ -18,7 +18,11 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(_) => (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "health check: database ping failed");
-            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "unavailable" }))).into_response()
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "unavailable" })),
+            )
+                .into_response()
         }
     }
 }

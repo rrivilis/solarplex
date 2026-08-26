@@ -57,7 +57,13 @@ pub fn min_role_for_type(type_name: &str) -> Option<MemberRole> {
 /// has nothing left worth showing once the sensitive field is stripped.
 pub fn redact(msg: &WsMessage) -> Option<WsMessage> {
     let payload = match &msg.payload {
-        WsPayload::ApprovalRequested { session_id, actor, timestamp, seq, payload } => {
+        WsPayload::ApprovalRequested {
+            session_id,
+            actor,
+            timestamp,
+            seq,
+            payload,
+        } => {
             WsPayload::ApprovalRequested {
                 session_id: session_id.clone(),
                 actor: actor.clone(),
@@ -74,7 +80,13 @@ pub fn redact(msg: &WsMessage) -> Option<WsMessage> {
                 },
             }
         }
-        WsPayload::ApprovalContested { session_id, actor, timestamp, seq, payload } => {
+        WsPayload::ApprovalContested {
+            session_id,
+            actor,
+            timestamp,
+            seq,
+            payload,
+        } => {
             WsPayload::ApprovalContested {
                 session_id: session_id.clone(),
                 actor: actor.clone(),
@@ -123,25 +135,31 @@ mod tests {
     use chrono::Utc;
 
     fn approval_requested() -> WsMessage {
-        WsMessage::new("evt1", WsPayload::ApprovalRequested {
-            session_id: "s1".into(),
-            actor: "a1".into(),
-            timestamp: Utc::now(),
-            seq: 1,
-            payload: ApprovalRequestedPayload {
-                approval_id: "ap1".into(),
-                tool: "shell.exec".into(),
-                summary: "run a command".into(),
-                requested_by: "a1".into(),
-                expires_at: None,
-                arguments: serde_json::json!({"cmd": "rm -rf /secrets"}),
+        WsMessage::new(
+            "evt1",
+            WsPayload::ApprovalRequested {
+                session_id: "s1".into(),
+                actor: "a1".into(),
+                timestamp: Utc::now(),
+                seq: 1,
+                payload: ApprovalRequestedPayload {
+                    approval_id: "ap1".into(),
+                    tool: "shell.exec".into(),
+                    summary: "run a command".into(),
+                    requested_by: "a1".into(),
+                    expires_at: None,
+                    arguments: serde_json::json!({"cmd": "rm -rf /secrets"}),
+                },
             },
-        })
+        )
     }
 
     #[test]
     fn approval_requested_is_gated_at_collaborator() {
-        assert_eq!(min_role(&approval_requested().payload), Some(MemberRole::Collaborator));
+        assert_eq!(
+            min_role(&approval_requested().payload),
+            Some(MemberRole::Collaborator)
+        );
     }
 
     #[test]
@@ -162,17 +180,20 @@ mod tests {
         let mut votes = std::collections::HashMap::new();
         votes.insert("a1".to_string(), protocol::types::Vote::Approve);
         votes.insert("a2".to_string(), protocol::types::Vote::Deny);
-        let msg = WsMessage::new("evt2", WsPayload::ApprovalContested {
-            session_id: "s1".into(),
-            actor: "a1".into(),
-            timestamp: Utc::now(),
-            seq: 2,
-            payload: ApprovalContestedPayload {
-                approval_id: "ap1".into(),
-                votes,
-                pending_resolution: "owner".into(),
+        let msg = WsMessage::new(
+            "evt2",
+            WsPayload::ApprovalContested {
+                session_id: "s1".into(),
+                actor: "a1".into(),
+                timestamp: Utc::now(),
+                seq: 2,
+                payload: ApprovalContestedPayload {
+                    approval_id: "ap1".into(),
+                    votes,
+                    pending_resolution: "owner".into(),
+                },
             },
-        });
+        );
         let redacted = redact(&msg).expect("should have a safe residual");
         match redacted.payload {
             WsPayload::ApprovalContested { payload, .. } => {
@@ -185,44 +206,62 @@ mod tests {
 
     #[test]
     fn approval_delegated_has_no_safe_residual() {
-        let msg = WsMessage::new("evt3", WsPayload::ApprovalDelegated {
-            session_id: "s1".into(),
-            actor: "a1".into(),
-            timestamp: Utc::now(),
-            seq: 3,
-            payload: protocol::messages::ApprovalDelegatedPayload {
-                approval_id: "ap1".into(), from: "a1".into(), to: "a2".into(),
+        let msg = WsMessage::new(
+            "evt3",
+            WsPayload::ApprovalDelegated {
+                session_id: "s1".into(),
+                actor: "a1".into(),
+                timestamp: Utc::now(),
+                seq: 3,
+                payload: protocol::messages::ApprovalDelegatedPayload {
+                    approval_id: "ap1".into(),
+                    from: "a1".into(),
+                    to: "a2".into(),
+                },
             },
-        });
+        );
         assert_eq!(min_role(&msg.payload), Some(MemberRole::Collaborator));
         assert!(redact(&msg).is_none());
     }
 
     #[test]
     fn cap_epoch_advanced_is_never_gated() {
-        let msg = WsMessage::new("evt4", WsPayload::EpochAdvanced {
-            session_id: "s1".into(),
-            actor: "system".into(),
-            timestamp: Utc::now(),
-            seq: 4,
-            payload: protocol::messages::EpochAdvancedPayload {
-                new_epoch: 2, strategy: "cap".into(), target_cap_id: Some("c1".into()),
-                target_stratum: None, drain_seq: 3, drain_deadline_ms: 5000,
-                closed_epoch: 1, revoked_count: 1,
+        let msg = WsMessage::new(
+            "evt4",
+            WsPayload::EpochAdvanced {
+                session_id: "s1".into(),
+                actor: "system".into(),
+                timestamp: Utc::now(),
+                seq: 4,
+                payload: protocol::messages::EpochAdvancedPayload {
+                    new_epoch: 2,
+                    strategy: "cap".into(),
+                    target_cap_id: Some("c1".into()),
+                    target_stratum: None,
+                    drain_seq: 3,
+                    drain_deadline_ms: 5000,
+                    closed_epoch: 1,
+                    revoked_count: 1,
+                },
             },
-        });
+        );
         assert_eq!(min_role(&msg.payload), None);
     }
 
     #[test]
     fn ordinary_events_are_unrestricted() {
-        let msg = WsMessage::new("evt5", WsPayload::MessagePosted {
-            session_id: "s1".into(),
-            actor: "a1".into(),
-            timestamp: Utc::now(),
-            seq: 5,
-            payload: protocol::messages::MessagePostedPayload { content: "hi".into() },
-        });
+        let msg = WsMessage::new(
+            "evt5",
+            WsPayload::MessagePosted {
+                session_id: "s1".into(),
+                actor: "a1".into(),
+                timestamp: Utc::now(),
+                seq: 5,
+                payload: protocol::messages::MessagePostedPayload {
+                    content: "hi".into(),
+                },
+            },
+        );
         assert_eq!(min_role(&msg.payload), None);
     }
 }

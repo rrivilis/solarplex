@@ -28,36 +28,36 @@ use crate::{DbError, DbResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ProposalRow {
-    pub id:                   String,
-    pub receipt_id:           String,
-    pub cap_id:               String,
-    pub session_id:           String,
-    pub method:               String,
-    pub canonical_args_hash:  String,
-    pub effect_type:          String,
-    pub effect_payload:       serde_json::Value,
+    pub id: String,
+    pub receipt_id: String,
+    pub cap_id: String,
+    pub session_id: String,
+    pub method: String,
+    pub canonical_args_hash: String,
+    pub effect_type: String,
+    pub effect_payload: serde_json::Value,
     pub expected_hash_before: String,
-    pub claimed_hash_after:   String,
-    pub proposed_at:          DateTime<Utc>,
-    pub expires_at:           DateTime<Utc>,
-    pub committed_at:         Option<DateTime<Utc>>,
-    pub rejected_at:          Option<DateTime<Utc>>,
-    pub rejection_reason:     Option<String>,
-    pub commit_event_id:      Option<String>,
+    pub claimed_hash_after: String,
+    pub proposed_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub committed_at: Option<DateTime<Utc>>,
+    pub rejected_at: Option<DateTime<Utc>>,
+    pub rejection_reason: Option<String>,
+    pub commit_event_id: Option<String>,
 }
 
 pub struct CreateProposal {
-    pub receipt_id:           String,
-    pub cap_id:               String,
-    pub session_id:           String,
-    pub method:               String,
-    pub canonical_args_hash:  String,
-    pub effect_type:          String,
-    pub effect_payload:       serde_json::Value,
+    pub receipt_id: String,
+    pub cap_id: String,
+    pub session_id: String,
+    pub method: String,
+    pub canonical_args_hash: String,
+    pub effect_type: String,
+    pub effect_payload: serde_json::Value,
     pub expected_hash_before: String,
-    pub claimed_hash_after:   String,
+    pub claimed_hash_after: String,
     /// Seconds until this proposal expires if not acted on.
-    pub ttl_secs:             i64,
+    pub ttl_secs: i64,
 }
 
 pub async fn create(pool: &PgPool, input: CreateProposal) -> DbResult<ProposalRow> {
@@ -172,9 +172,9 @@ pub async fn get_for_commit(
 /// Must be called inside the same transaction that applied the effect, so the
 /// state mutation and the audit record land atomically.
 pub async fn mark_committed(
-    tx:          &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     proposal_id: &str,
-    event_id:    &str,
+    event_id: &str,
 ) -> DbResult<()> {
     let n = sqlx::query(
         "UPDATE write_proposals
@@ -200,9 +200,9 @@ pub async fn mark_committed(
 /// May be called inside a transaction (e.g. when the mismatch is discovered
 /// after locking the row) or on the pool directly (expiry GC path).
 pub async fn mark_rejected_in_tx(
-    tx:          &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     proposal_id: &str,
-    reason:      &str,
+    reason: &str,
 ) -> DbResult<()> {
     let n = sqlx::query(
         "UPDATE write_proposals
@@ -265,32 +265,32 @@ pub async fn compact_resolved(pool: &PgPool, retain_days: i64) -> DbResult<u64> 
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct AttestationRow {
-    pub id:                   String,
-    pub receipt_id:           String,
-    pub session_id:           String,
-    pub cap_id:               String,
-    pub actor_id:             String,
-    pub tool:                 String,
-    pub path:                 String,
+    pub id: String,
+    pub receipt_id: String,
+    pub session_id: String,
+    pub cap_id: String,
+    pub actor_id: String,
+    pub tool: String,
+    pub path: String,
     pub approved_hash_before: String,
-    pub approved_hash_after:  String,
+    pub approved_hash_after: String,
     pub observed_hash_before: String,
-    pub actual_hash_after:    String,
-    pub hash_mismatch:        bool,
-    pub attested_at:          DateTime<Utc>,
+    pub actual_hash_after: String,
+    pub hash_mismatch: bool,
+    pub attested_at: DateTime<Utc>,
 }
 
 pub struct CreateAttestation {
-    pub receipt_id:           String,
-    pub session_id:           String,
-    pub cap_id:               String,
-    pub actor_id:             String,
-    pub tool:                 String,
-    pub path:                 String,
+    pub receipt_id: String,
+    pub session_id: String,
+    pub cap_id: String,
+    pub actor_id: String,
+    pub tool: String,
+    pub path: String,
     pub approved_hash_before: String,
-    pub approved_hash_after:  String,
+    pub approved_hash_after: String,
     pub observed_hash_before: String,
-    pub actual_hash_after:    String,
+    pub actual_hash_after: String,
 }
 
 pub async fn attest(pool: &PgPool, input: CreateAttestation) -> DbResult<AttestationRow> {
@@ -327,9 +327,9 @@ pub async fn attest(pool: &PgPool, input: CreateAttestation) -> DbResult<Attesta
 }
 
 pub async fn list_attestations(
-    pool:       &PgPool,
+    pool: &PgPool,
     session_id: &str,
-    limit:      i64,
+    limit: i64,
 ) -> DbResult<Vec<AttestationRow>> {
     sqlx::query_as::<_, AttestationRow>(
         "SELECT id, receipt_id, session_id, cap_id, actor_id,
@@ -354,10 +354,7 @@ pub async fn list_attestations(
 /// These are security events: the filesystem was in a different state than the
 /// human approved, or the write produced a different result.  Use for alerting
 /// and audit dashboards.
-pub async fn list_mismatches(
-    pool:       &PgPool,
-    session_id: &str,
-) -> DbResult<Vec<AttestationRow>> {
+pub async fn list_mismatches(pool: &PgPool, session_id: &str) -> DbResult<Vec<AttestationRow>> {
     sqlx::query_as::<_, AttestationRow>(
         "SELECT id, receipt_id, session_id, cap_id, actor_id,
                 tool, path,

@@ -72,7 +72,10 @@ fn compile_expr(
             Ok(end)
         }
         XreExpr::Group(inner) => compile_expr(fst, vocab, &inner.value, start, grammar),
-        other => Err(IntentError::UnsupportedConstruct { grammar, detail: format!("{other:?}") }),
+        other => Err(IntentError::UnsupportedConstruct {
+            grammar,
+            detail: format!("{other:?}"),
+        }),
     }
 }
 
@@ -84,13 +87,17 @@ pub fn compile_grammar(
     vocab: &mut Vocab,
     grammar: &'static str,
 ) -> Result<VectorFst<TropicalWeight>, IntentError> {
-    let spanned = nfst_xre::parse(source)
-        .map_err(|e| IntentError::GrammarParse { grammar, detail: format!("{e:?}") })?;
+    let spanned = nfst_xre::parse(source).map_err(|e| IntentError::GrammarParse {
+        grammar,
+        detail: format!("{e:?}"),
+    })?;
     let mut fst = VectorFst::<TropicalWeight>::new();
     let start = fst.add_state();
-    fst.set_start(start).map_err(|e| IntentError::Fst(e.to_string()))?;
+    fst.set_start(start)
+        .map_err(|e| IntentError::Fst(e.to_string()))?;
     let end = compile_expr(&mut fst, vocab, &spanned.value, start, grammar)?;
-    fst.set_final(end, TropicalWeight::one()).map_err(|e| IntentError::Fst(e.to_string()))?;
+    fst.set_final(end, TropicalWeight::one())
+        .map_err(|e| IntentError::Fst(e.to_string()))?;
     rm_epsilon(&mut fst).map_err(|e| IntentError::Fst(e.to_string()))?;
     Ok(fst)
 }

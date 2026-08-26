@@ -5,14 +5,20 @@ use std::time::Duration;
 
 use axum::extract::connect_info::IntoMakeServiceWithConnectInfo;
 use axum::http::HeaderValue;
-use axum::{Router, routing::{delete, get, post}};
+use axum::{
+    routing::{delete, get, post},
+    Router,
+};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use server::{auth, gc, health, metrics_route, notifier, rate_limit, reflector, routes, session_task, state::AppState, ws};
+use server::{
+    auth, gc, health, metrics_route, notifier, rate_limit, reflector, routes, session_task,
+    state::AppState, ws,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,7 +34,9 @@ async fn main() -> anyhow::Result<()> {
     // #[non_exhaustive] so it can't be built with struct-literal syntax
     // from outside the sentry crate anyway). Error/panic capture only, not
     // full performance tracing — the default traces_sample_rate is 0.0.
-    let glitchtip_dsn = std::env::var("GLITCHTIP_DSN").ok().filter(|s| !s.is_empty());
+    let glitchtip_dsn = std::env::var("GLITCHTIP_DSN")
+        .ok()
+        .filter(|s| !s.is_empty());
     let _sentry_guard = glitchtip_dsn.as_deref().map(sentry::init);
 
     // Pretty-print when stdout is an interactive terminal (local dev,
@@ -50,25 +58,31 @@ async fn main() -> anyhow::Result<()> {
         };
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            // `server` (the library crate -- lib.rs's own doc comment: "All
-            // modules live in lib.rs; this binary is a thin entry point")
-            // was missing here, meaning every tracing call in notifier.rs,
-            // reflector.rs, session_task.rs, ws.rs, routes/*.rs -- virtually
-            // the entire application -- was silently dropped below ERROR.
-            // `solarplex` only ever covered this file's own handful of
-            // direct calls. Found while checking whether the new placement-
-            // heartbeat/forward-listener log lines were showing up: they
-            // weren't, and neither was notifier.rs's own pre-existing
-            // startup line, which is what gave this away as a filter bug
-            // rather than something specific to the new code.
-            .unwrap_or_else(|_| "solarplex=debug,server=debug,tower_http=debug".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                // `server` (the library crate -- lib.rs's own doc comment: "All
+                // modules live in lib.rs; this binary is a thin entry point")
+                // was missing here, meaning every tracing call in notifier.rs,
+                // reflector.rs, session_task.rs, ws.rs, routes/*.rs -- virtually
+                // the entire application -- was silently dropped below ERROR.
+                // `solarplex` only ever covered this file's own handful of
+                // direct calls. Found while checking whether the new placement-
+                // heartbeat/forward-listener log lines were showing up: they
+                // weren't, and neither was notifier.rs's own pre-existing
+                // startup line, which is what gave this away as a filter bug
+                // rather than something specific to the new code.
+                .unwrap_or_else(|_| "solarplex=debug,server=debug,tower_http=debug".into()),
+        )
         .with(fmt_layer)
         // ERROR-level events become GlitchTip issues, WARN-and-below become
         // breadcrumbs attached to the next captured event — sentry's own
         // default event_filter, not customized here. `Option<Layer>` is a
         // real `Layer` impl, so this cleanly no-ops when GLITCHTIP_DSN is unset.
-        .with(glitchtip_dsn.is_some().then(sentry::integrations::tracing::layer))
+        .with(
+            glitchtip_dsn
+                .is_some()
+                .then(sentry::integrations::tracing::layer),
+        )
         .init();
 
     // No fallback. A missing DATABASE_URL used to fall back silently to
@@ -91,7 +105,9 @@ async fn main() -> anyhow::Result<()> {
             Some(oidc_state)
         }
         None => {
-            tracing::info!("OIDC not configured (OIDC_ISSUER_URL unset) — human auth via sp_token disabled");
+            tracing::info!(
+                "OIDC not configured (OIDC_ISSUER_URL unset) — human auth via sp_token disabled"
+            );
             None
         }
     };
@@ -130,7 +146,10 @@ async fn main() -> anyhow::Result<()> {
         ulid::Ulid::new().to_string()
     });
 
-    let state = Arc::new(AppState::new(pool.clone(), oidc, prometheus_handle, replica_id).with_numa_nodes(numa_nodes));
+    let state = Arc::new(
+        AppState::new(pool.clone(), oidc, prometheus_handle, replica_id)
+            .with_numa_nodes(numa_nodes),
+    );
 
     // Spawn background GC tasks (cap row compaction + snapshot ring-buffer).
     gc::spawn_gc_tasks(pool);
@@ -216,12 +235,12 @@ async fn main() -> anyhow::Result<()> {
         // access to this at the network layer in production.
         .route("/metrics", get(metrics_route::metrics))
         // OIDC auth routes at top-level /auth (not under /api — different auth semantics)
-        .route("/auth/oidc/start",    get(auth::oidc_start))
+        .route("/auth/oidc/start", get(auth::oidc_start))
         .route("/auth/oidc/callback", get(auth::oidc_callback))
-        .route("/auth/oidc/logout",   post(auth::oidc_logout))
-        .route("/auth/me",            get(auth::me).patch(auth::update_me))
-        .route("/auth/sessions",      get(auth::list_sessions))
-        .route("/auth/sessions/{id}",  delete(auth::revoke_session))
+        .route("/auth/oidc/logout", post(auth::oidc_logout))
+        .route("/auth/me", get(auth::me).patch(auth::update_me))
+        .route("/auth/sessions", get(auth::list_sessions))
+        .route("/auth/sessions/{id}", delete(auth::revoke_session))
         .route("/sessions/{session_id}/stream", get(ws::handler))
         .layer(cors_layer())
         // 10 MiB request body cap — generous for artifact content and DSL
@@ -330,7 +349,9 @@ async fn serve(addr: SocketAddr, app: App) -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
     #[cfg(unix)]
     let terminate = async {

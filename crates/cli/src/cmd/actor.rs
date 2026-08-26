@@ -40,11 +40,11 @@ pub async fn show(actor_id: &str, ctx: &Ctx) -> Result<()> {
     // undo the exact fix `client.rs::check_status` just made everywhere else.
     let actor = client.get_actor(actor_id).await?;
     let real_id = actor["id"].as_str().unwrap_or(actor_id).to_string();
-    let name    = actor["name"].as_str().map(sanitize_terminal);
+    let name = actor["name"].as_str().map(sanitize_terminal);
 
     match &name {
         Some(n) => println!("{}  {}", bold(n), dim(&actor_link(&real_id))),
-        None    => println!("{}", bold(&actor_link(&real_id))),
+        None => println!("{}", bold(&actor_link(&real_id))),
     }
     println!();
 
@@ -53,18 +53,23 @@ pub async fn show(actor_id: &str, ctx: &Ctx) -> Result<()> {
     let arr = sessions.as_array().cloned().unwrap_or_default();
 
     // Filter sessions where created_by matches or (in future) event log has actor
-    let owned: Vec<_> = arr.iter()
+    let owned: Vec<_> = arr
+        .iter()
         .filter(|s| s["created_by"].as_str() == Some(real_id.as_str()))
         .collect();
 
     if owned.is_empty() {
-        println!("  {} no sessions owned by {}", dim("·"), dim(name.as_deref().unwrap_or(&real_id)));
+        println!(
+            "  {} no sessions owned by {}",
+            dim("·"),
+            dim(name.as_deref().unwrap_or(&real_id))
+        );
     } else {
         println!("  {} {}", bold(&pad("SESSION", 10)), bold("TITLE"));
         for s in &owned {
-            let id    = s["id"].as_str().unwrap_or("?");
+            let id = s["id"].as_str().unwrap_or("?");
             let title = s["name"].as_str().unwrap_or("(untitled)");
-            let link  = entity_link("session", id, "", "");
+            let link = entity_link("session", id, "", "");
             println!("  {}  {}", pad(&link, 10), title);
         }
     }
@@ -72,19 +77,24 @@ pub async fn show(actor_id: &str, ctx: &Ctx) -> Result<()> {
     // If currently attached to a session, show their caps and approvals there
     if let Some(session_id) = ctx.session_id.as_deref() {
         println!();
-        println!("  {} in current session ({})", dim("─"), dim(&short_id(session_id).to_string()));
+        println!(
+            "  {} in current session ({})",
+            dim("─"),
+            dim(&short_id(session_id).to_string())
+        );
 
         if let Ok(caps) = client.list_caps(session_id).await {
             let caps_arr = caps.as_array().cloned().unwrap_or_default();
-            let actor_caps: Vec<_> = caps_arr.iter()
+            let actor_caps: Vec<_> = caps_arr
+                .iter()
                 .filter(|c| c["grantee"].as_str() == Some(real_id.as_str()))
                 .collect();
             if !actor_caps.is_empty() {
                 println!("  caps granted:");
                 for c in actor_caps {
-                    let cid   = c["id"].as_str().unwrap_or("?");
+                    let cid = c["id"].as_str().unwrap_or("?");
                     let scope = c["scope"].as_str().unwrap_or("?");
-                    let link  = entity_link("cap", cid, session_id, "");
+                    let link = entity_link("cap", cid, session_id, "");
                     println!("    {}  scope={}", link, dim(scope));
                 }
             }

@@ -18,8 +18,8 @@ use protocol::effects::DeclaredEffects;
 use std::os::fd::FromRawFd;
 
 pub struct ExecResult {
-    pub stdout:    String,
-    pub stderr:    String,
+    pub stdout: String,
+    pub stderr: String,
     pub exit_code: i32,
 }
 
@@ -64,11 +64,15 @@ pub async fn ring2_exec(command: &str, declared: &DeclaredEffects) -> Result<Exe
 }
 
 #[cfg(target_os = "linux")]
-async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) -> Result<ExecResult> {
+async fn exec_sandboxed(
+    command: &str,
+    declared: &DeclaredEffects,
+    bwrap: &str,
+) -> Result<ExecResult> {
     // The guardian binary itself is both the outer executor (this function)
     // and the inner sandbox-entry process (via the `sandbox-entry` subcommand).
-    let guardian_exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("solarplex-guardian"));
+    let guardian_exe =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("solarplex-guardian"));
 
     // std::process::Command, not tokio::process -- live supervision (pidfd +
     // seccomp-notify + stdio, all through one io_uring instance) happens on
@@ -84,8 +88,12 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
     // rootfs.rs's module doc for why the fallback is a WARN-and-degrade,
     // not a fail-closed refusal the way landlock/seccomp setup failures are.
     match crate::rootfs::sandbox_rootfs() {
-        Some(image_root) => { cmd.arg("--ro-bind").arg(image_root).arg("/"); }
-        None              => { cmd.args(["--ro-bind", "/", "/"]); }
+        Some(image_root) => {
+            cmd.arg("--ro-bind").arg(image_root).arg("/");
+        }
+        None => {
+            cmd.args(["--ro-bind", "/", "/"]);
+        }
     }
     cmd.args(["--tmpfs", "/tmp"]);
     cmd.args(["--dev", "/dev"]);
@@ -100,7 +108,9 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
         }
     }
 
-    let tmp_declared = declared.file_effects.iter()
+    let tmp_declared = declared
+        .file_effects
+        .iter()
         .any(|fe| fe.path.matches("/tmp") || fe.path.anchor_path() == "/tmp");
     if tmp_declared {
         cmd.args(["--bind", "/tmp", "/tmp"]);
@@ -117,18 +127,28 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
     cmd.arg(guardian_exe.to_string_lossy().as_ref());
     cmd.arg("sandbox-entry");
 
-    if !declared.network_access    { cmd.arg("--no-network"); }
-    if !declared.subprocess_exec   { cmd.arg("--no-subprocess"); }
-    if declared.allow_dynamic_paths { cmd.arg("--allow-dynamic"); }
+    if !declared.network_access {
+        cmd.arg("--no-network");
+    }
+    if !declared.subprocess_exec {
+        cmd.arg("--no-subprocess");
+    }
+    if declared.allow_dynamic_paths {
+        cmd.arg("--allow-dynamic");
+    }
 
     for fe in &declared.file_effects {
         if fe.ops.any() {
             let (dev, ino) = match fe.identity {
                 Some((d, i)) => (d.to_string(), i.to_string()),
-                None         => ("-".to_string(), "-".to_string()),
+                None => ("-".to_string(), "-".to_string()),
             };
             cmd.arg("--file-effect");
-            cmd.arg(format!("{}:{dev}:{ino}:{}", encode_file_ops(&fe.ops), fe.path.anchor_path()));
+            cmd.arg(format!(
+                "{}:{dev}:{ino}:{}",
+                encode_file_ops(&fe.ops),
+                fe.path.anchor_path()
+            ));
         }
     }
 
@@ -153,7 +173,10 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
     // see this function's opening comment.
     let mut sv = [0i32; 2];
     if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()) } != 0 {
-        return Err(anyhow::anyhow!("socketpair failed: {}", std::io::Error::last_os_error()));
+        return Err(anyhow::anyhow!(
+            "socketpair failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     let (parent_end, child_end) = (sv[0], sv[1]);
 
@@ -174,10 +197,14 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
         });
     }
 
-    let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("bwrap spawn failed: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("bwrap spawn failed: {e}"))?;
     // Parent's own copy of the child's socket end is no longer needed --
     // the child has its own (dup2'd) copy now via pre_exec above.
-    unsafe { libc::close(child_end); }
+    unsafe {
+        libc::close(child_end);
+    }
 
     // pidfd_open immediately after spawn -- the same "nothing else in this
     // process reaps children behind our back" pattern already validated
@@ -189,7 +216,10 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
     let pidfd = unsafe {
         let fd = libc::syscall(libc::SYS_pidfd_open, child_pid, 0) as i32;
         if fd < 0 {
-            return Err(anyhow::anyhow!("pidfd_open failed: {}", std::io::Error::last_os_error()));
+            return Err(anyhow::anyhow!(
+                "pidfd_open failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         std::os::fd::OwnedFd::from_raw_fd(fd)
     };
@@ -197,7 +227,9 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
     let notify_fd = match crate::fd_passing::recv_fd(parent_end) {
         Ok(fd) => fd,
         Err(e) => {
-            unsafe { libc::close(parent_end); }
+            unsafe {
+                libc::close(parent_end);
+            }
             // The sandboxed child failed before ever reaching the point of
             // sending the notify fd back -- whatever it (or bwrap) printed
             // about why is sitting unread in its stdout/stderr pipes.
@@ -205,8 +237,12 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
             // since this is otherwise a dead end to debug.
             let mut stdout_buf = Vec::new();
             let mut stderr_buf = Vec::new();
-            if let Some(mut s) = child.stdout.take() { let _ = std::io::Read::read_to_end(&mut s, &mut stdout_buf); }
-            if let Some(mut s) = child.stderr.take() { let _ = std::io::Read::read_to_end(&mut s, &mut stderr_buf); }
+            if let Some(mut s) = child.stdout.take() {
+                let _ = std::io::Read::read_to_end(&mut s, &mut stdout_buf);
+            }
+            if let Some(mut s) = child.stderr.take() {
+                let _ = std::io::Read::read_to_end(&mut s, &mut stderr_buf);
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Err(anyhow::anyhow!(
@@ -218,12 +254,20 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
             ));
         }
     };
-    unsafe { libc::close(parent_end); }
+    unsafe {
+        libc::close(parent_end);
+    }
 
-    let stdout_owned: std::os::fd::OwnedFd = child.stdout.take()
-        .ok_or_else(|| anyhow::anyhow!("bwrap child has no stdout pipe"))?.into();
-    let stderr_owned: std::os::fd::OwnedFd = child.stderr.take()
-        .ok_or_else(|| anyhow::anyhow!("bwrap child has no stderr pipe"))?.into();
+    let stdout_owned: std::os::fd::OwnedFd = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("bwrap child has no stdout pipe"))?
+        .into();
+    let stderr_owned: std::os::fd::OwnedFd = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("bwrap child has no stderr pipe"))?
+        .into();
 
     let supervised = crate::notify::SupervisedProcess {
         pidfd,
@@ -231,8 +275,8 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
         stdout_fd: stdout_owned,
         stderr_fd: stderr_owned,
         child_pid,
-        declared:   std::sync::Arc::new(declared.clone()),
-        state:      crate::notify::ProcessState::Starting,
+        declared: std::sync::Arc::new(declared.clone()),
+        state: crate::notify::ProcessState::Starting,
         stdout_buf: Vec::new(),
         stderr_buf: Vec::new(),
     };
@@ -250,8 +294,8 @@ async fn exec_sandboxed(command: &str, declared: &DeclaredEffects, bwrap: &str) 
         .map_err(|e| anyhow::anyhow!("supervisor thread panicked: {e}"))??;
 
     Ok(ExecResult {
-        stdout:    String::from_utf8_lossy(&result.stdout).into_owned(),
-        stderr:    String::from_utf8_lossy(&result.stderr).into_owned(),
+        stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
         exit_code: result.exit_code,
     })
 }
@@ -277,25 +321,34 @@ fn find_bwrap() -> Option<String> {
 #[cfg(target_os = "linux")]
 fn encode_file_ops(ops: &protocol::effects::FileOps) -> String {
     let mut s = String::with_capacity(4);
-    if ops.create { s.push('c'); }
-    if ops.write  { s.push('w'); }
-    if ops.delete { s.push('d'); }
-    if ops.rename { s.push('r'); }
+    if ops.create {
+        s.push('c');
+    }
+    if ops.write {
+        s.push('w');
+    }
+    if ops.delete {
+        s.push('d');
+    }
+    if ops.rename {
+        s.push('r');
+    }
     s
 }
 
 async fn exec_unsandboxed(command: &str) -> Result<ExecResult> {
     let shell = if cfg!(windows) { "cmd" } else { "sh" };
-    let flag  = if cfg!(windows) { "/C" } else { "-c" };
+    let flag = if cfg!(windows) { "/C" } else { "-c" };
     let out = tokio::process::Command::new(shell)
         .args([flag, command])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .output().await
+        .output()
+        .await
         .map_err(|e| anyhow::anyhow!("shell exec failed: {e}"))?;
     Ok(ExecResult {
-        stdout:    String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr:    String::from_utf8_lossy(&out.stderr).into_owned(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         exit_code: out.status.code().unwrap_or(-1),
     })
 }

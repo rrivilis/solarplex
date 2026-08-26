@@ -10,7 +10,7 @@ use crate::DbResult;
 
 #[derive(Debug, Clone, FromRow)]
 struct ReflectorCursorRow {
-    seq:   i64,
+    seq: i64,
     epoch: i32,
 }
 

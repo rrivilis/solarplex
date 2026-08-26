@@ -47,11 +47,11 @@ use autometrics::autometrics;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/propose",                    post(propose_handler))
-        .route("/proposals",                  get(list_proposals_handler))
-        .route("/proposals/{pid}/commit",      post(commit_handler))
-        .route("/attest",                     post(attest_handler))
-        .route("/attestations",               get(list_attestations_handler))
+        .route("/propose", post(propose_handler))
+        .route("/proposals", get(list_proposals_handler))
+        .route("/proposals/{pid}/commit", post(commit_handler))
+        .route("/attest", post(attest_handler))
+        .route("/attestations", get(list_attestations_handler))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -66,12 +66,12 @@ pub fn sha256_hex(data: &str) -> String {
 
 #[derive(Deserialize)]
 struct ProposeBody {
-    receipt_id:           String,
-    cap_id:               String,
-    effect_type:          String,
-    effect_payload:       serde_json::Value,
+    receipt_id: String,
+    cap_id: String,
+    effect_type: String,
+    effect_payload: serde_json::Value,
     expected_hash_before: String,
-    claimed_hash_after:   String,
+    claimed_hash_after: String,
     /// TTL for this proposal; defaults to 300 s (5 min) if omitted.
     ttl_secs: Option<i64>,
 }
@@ -86,17 +86,21 @@ async fn propose_handler(
     if Tier1Type::from_db_str(&body.effect_type).is_none() {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("unsupported effect_type '{}'; must be artifact_patch or context_entry", body.effect_type),
-        ).into_response();
+            format!(
+                "unsupported effect_type '{}'; must be artifact_patch or context_entry",
+                body.effect_type
+            ),
+        )
+            .into_response();
     }
 
     // Validate the receipt exists and belongs to this session + actor.
     let receipt = match db::receipts::get(&state.db, &body.receipt_id).await {
         Ok(r) => r,
-        Err(db::DbError::NotFound) =>
-            return (StatusCode::NOT_FOUND, "receipt not found").into_response(),
-        Err(e) =>
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, "receipt not found").into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
     if receipt.session_id != session_id {
@@ -112,27 +116,31 @@ async fn propose_handler(
 
     let ttl = body.ttl_secs.unwrap_or(300);
 
-    match db::proposals::create(&state.db, db::proposals::CreateProposal {
-        receipt_id:           body.receipt_id,
-        cap_id:               body.cap_id,
-        session_id,
-        method:               receipt.method,
-        canonical_args_hash,
-        effect_type:          body.effect_type,
-        effect_payload:       body.effect_payload,
-        expected_hash_before: body.expected_hash_before,
-        claimed_hash_after:   body.claimed_hash_after,
-        ttl_secs:             ttl,
-    }).await {
+    match db::proposals::create(
+        &state.db,
+        db::proposals::CreateProposal {
+            receipt_id: body.receipt_id,
+            cap_id: body.cap_id,
+            session_id,
+            method: receipt.method,
+            canonical_args_hash,
+            effect_type: body.effect_type,
+            effect_payload: body.effect_payload,
+            expected_hash_before: body.expected_hash_before,
+            claimed_hash_after: body.claimed_hash_after,
+            ttl_secs: ttl,
+        },
+    )
+    .await
+    {
         Ok(row) => Json(serde_json::json!({
             "proposal_id": row.id,
             "status":      "pending",
             "expires_at":  row.expires_at,
-        })).into_response(),
-        Err(db::DbError::Conflict(msg)) =>
-            (StatusCode::CONFLICT, msg).into_response(),
-        Err(e) =>
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }))
+        .into_response(),
+        Err(db::DbError::Conflict(msg)) => (StatusCode::CONFLICT, msg).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -147,12 +155,15 @@ async fn list_proposals_handler(
     // Human-facing audit view (proposal status) — gated same as other
     // session reads. propose/commit/attest stay cap-driven (receipt_id/
     // cap_id chain), a different trust boundary this doesn't touch.
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer).await {
+    if let Err(res) =
+        crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer)
+            .await
+    {
         return res;
     }
     match db::proposals::list_pending(&state.db, &session_id).await {
         Ok(rows) => Json(rows).into_response(),
-        Err(e)   => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -171,7 +182,7 @@ async fn commit_handler(
 ) -> impl IntoResponse {
     // Open a serializable transaction — the whole CAS lives in here.
     let mut tx = match state.db.begin().await {
-        Ok(t)  => t,
+        Ok(t) => t,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
@@ -215,16 +226,19 @@ async fn commit_handler(
         Some(t) => t,
         None => {
             let _ = tx.rollback().await;
-            return (StatusCode::UNPROCESSABLE_ENTITY,
-                    format!("unknown effect_type in proposal: {}", proposal.effect_type)).into_response();
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("unknown effect_type in proposal: {}", proposal.effect_type),
+            )
+                .into_response();
         }
     };
 
     let commit_result = match tier1_type {
-        Tier1Type::ArtifactPatch =>
-            commit_artifact_patch(&state.db, &mut tx, &proposal, &body.actor_id).await,
-        Tier1Type::ContextEntry =>
-            commit_context_entry(&mut tx, &proposal, &body.actor_id).await,
+        Tier1Type::ArtifactPatch => {
+            commit_artifact_patch(&state.db, &mut tx, &proposal, &body.actor_id).await
+        }
+        Tier1Type::ContextEntry => commit_context_entry(&mut tx, &proposal, &body.actor_id).await,
     };
 
     match commit_result {
@@ -238,9 +252,9 @@ async fn commit_handler(
                     "proposal_id": proposal_id,
                     "status":      "committed",
                     "event_id":    event_id,
-                })).into_response(),
-                Err(e) =>
-                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                }))
+                .into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
         }
         Err(CommitError::CasMismatch(reason)) => {
@@ -272,15 +286,17 @@ enum CommitError {
 }
 
 impl From<db::DbError> for CommitError {
-    fn from(e: db::DbError) -> Self { CommitError::Db(e) }
+    fn from(e: db::DbError) -> Self {
+        CommitError::Db(e)
+    }
 }
 
 /// Artifact-patch commit: full CAS inside the transaction.
 ///
 /// Effect payload shape: `{ "artifact_id": "...", "content": "..." }`
 async fn commit_artifact_patch(
-    _pool:    &sqlx::PgPool,
-    tx:       &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    _pool: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proposal: &db::proposals::ProposalRow,
     actor_id: &str,
 ) -> Result<String, CommitError> {
@@ -352,7 +368,8 @@ async fn commit_artifact_patch(
             "h_after":     actual_after,
         }),
         seq,
-    ).await?;
+    )
+    .await?;
 
     Ok(event.id)
 }
@@ -361,7 +378,7 @@ async fn commit_artifact_patch(
 ///
 /// Effect payload shape: `{ "kind": "hypothesis|decision|...", "content": "..." }`
 async fn commit_context_entry(
-    tx:       &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proposal: &db::proposals::ProposalRow,
     actor_id: &str,
 ) -> Result<String, CommitError> {
@@ -389,7 +406,8 @@ async fn commit_context_entry(
             "content":     content,
         }),
         seq,
-    ).await?;
+    )
+    .await?;
 
     Ok(event.id)
 }
@@ -398,15 +416,15 @@ async fn commit_context_entry(
 
 #[derive(Deserialize)]
 struct AttestBody {
-    receipt_id:           String,
-    cap_id:               String,
-    actor_id:             String,
-    tool:                 String,
-    path:                 String,
+    receipt_id: String,
+    cap_id: String,
+    actor_id: String,
+    tool: String,
+    path: String,
     approved_hash_before: String,
-    approved_hash_after:  String,
+    approved_hash_after: String,
     observed_hash_before: String,
-    actual_hash_after:    String,
+    actual_hash_after: String,
 }
 
 #[autometrics]
@@ -418,27 +436,32 @@ async fn attest_handler(
     // Verify the receipt exists and belongs to this session.
     let receipt = match db::receipts::get(&state.db, &body.receipt_id).await {
         Ok(r) => r,
-        Err(db::DbError::NotFound) =>
-            return (StatusCode::NOT_FOUND, "receipt not found").into_response(),
-        Err(e) =>
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, "receipt not found").into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     if receipt.session_id != session_id {
         return (StatusCode::FORBIDDEN, "receipt session mismatch").into_response();
     }
 
-    match db::proposals::attest(&state.db, db::proposals::CreateAttestation {
-        receipt_id:           body.receipt_id,
-        session_id:           session_id.clone(),
-        cap_id:               body.cap_id,
-        actor_id:             body.actor_id,
-        tool:                 body.tool,
-        path:                 body.path,
-        approved_hash_before: body.approved_hash_before,
-        approved_hash_after:  body.approved_hash_after,
-        observed_hash_before: body.observed_hash_before,
-        actual_hash_after:    body.actual_hash_after,
-    }).await {
+    match db::proposals::attest(
+        &state.db,
+        db::proposals::CreateAttestation {
+            receipt_id: body.receipt_id,
+            session_id: session_id.clone(),
+            cap_id: body.cap_id,
+            actor_id: body.actor_id,
+            tool: body.tool,
+            path: body.path,
+            approved_hash_before: body.approved_hash_before,
+            approved_hash_after: body.approved_hash_after,
+            observed_hash_before: body.observed_hash_before,
+            actual_hash_after: body.actual_hash_after,
+        },
+    )
+    .await
+    {
         Ok(row) => {
             let status = if row.hash_mismatch {
                 tracing::warn!(
@@ -451,13 +474,16 @@ async fn attest_handler(
             } else {
                 StatusCode::CREATED
             };
-            (status, Json(serde_json::json!({
-                "attestation_id": row.id,
-                "hash_mismatch":  row.hash_mismatch,
-            }))).into_response()
+            (
+                status,
+                Json(serde_json::json!({
+                    "attestation_id": row.id,
+                    "hash_mismatch":  row.hash_mismatch,
+                })),
+            )
+                .into_response()
         }
-        Err(e) =>
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -466,29 +492,32 @@ async fn attest_handler(
 #[derive(Deserialize)]
 struct AttestationsQuery {
     mismatch_only: Option<bool>,
-    limit:         Option<i64>,
+    limit: Option<i64>,
 }
 
 #[autometrics]
 async fn list_attestations_handler(
-    State(state):    State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-    Query(params):   Query<AttestationsQuery>,
+    Query(params): Query<AttestationsQuery>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer).await {
+    if let Err(res) =
+        crate::auth::require_session_member(&state.db, &headers, &session_id, MemberRole::Observer)
+            .await
+    {
         return res;
     }
     if params.mismatch_only.unwrap_or(false) {
         match db::proposals::list_mismatches(&state.db, &session_id).await {
             Ok(rows) => Json(rows).into_response(),
-            Err(e)   => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
         let limit = params.limit.unwrap_or(100).min(500);
         match db::proposals::list_attestations(&state.db, &session_id, limit).await {
             Ok(rows) => Json(rows).into_response(),
-            Err(e)   => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
 }

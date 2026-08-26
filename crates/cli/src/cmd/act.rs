@@ -19,8 +19,12 @@
 use anyhow::{anyhow, Result};
 use clap::Args;
 
-use crate::{client::Client, config::Ctx, output::{bold, dim, short_id}};
 use super::{approval, artifact, cap, context, session};
+use crate::{
+    client::Client,
+    config::Ctx,
+    output::{bold, dim, short_id},
+};
 
 // ── Clap types ────────────────────────────────────────────────────────────────
 //
@@ -263,16 +267,14 @@ fn parse_entity(s: &str) -> (&str, Option<&str>) {
 }
 
 /// Require that `id_opt` is `Some` — gives a context-rich error if it's None.
-fn require_id<'a>(
-    id_opt:     Option<&'a str>,
-    kind:       &str,
-    transition: &str,
-) -> Result<&'a str> {
-    id_opt.ok_or_else(|| anyhow!(
-        "`{transition}` requires an entity id\n  \
+fn require_id<'a>(id_opt: Option<&'a str>, kind: &str, transition: &str) -> Result<&'a str> {
+    id_opt.ok_or_else(|| {
+        anyhow!(
+            "`{transition}` requires an entity id\n  \
          use: sp act {kind}/<id> {transition}\n  \
          (exception: `session New` for creating a new session)"
-    ))
+        )
+    })
 }
 
 /// Build a Ctx with a specific session_id, inheriting everything else.

@@ -37,10 +37,10 @@ use ulid::Ulid;
 /// Write `n` events one transaction each. Returns total elapsed ms.
 /// `sync_commit`: if false, sets `synchronous_commit = off` (Tier-2 async path).
 async fn bench_single(
-    pool:        &sqlx::PgPool,
-    session_id:  &str,
-    actor_id:    &str,
-    n:           usize,
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    actor_id: &str,
+    n: usize,
     sync_commit: bool,
 ) -> f64 {
     let t = Instant::now();
@@ -49,12 +49,23 @@ async fn bench_single(
         let mut tx = pool.begin().await.unwrap();
         if !sync_commit {
             sqlx::query("SET LOCAL synchronous_commit = off")
-                .execute(&mut *tx).await.unwrap();
+                .execute(&mut *tx)
+                .await
+                .unwrap();
         }
-        let seq = db::events::alloc_seq_block_in_tx(&mut tx, session_id, 1).await.unwrap();
+        let seq = db::events::alloc_seq_block_in_tx(&mut tx, session_id, 1)
+            .await
+            .unwrap();
         db::events::append_raw_in_tx(
-            &mut tx, session_id, actor_id, "saga_step_sent", &payload, seq,
-        ).await.unwrap();
+            &mut tx,
+            session_id,
+            actor_id,
+            "saga_step_sent",
+            &payload,
+            seq,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
     }
     t.elapsed().as_secs_f64() * 1000.0
@@ -63,11 +74,11 @@ async fn bench_single(
 /// Write `n` events in transactions of size `batch`. Returns total elapsed ms.
 /// `sync_commit`: if false, sets `synchronous_commit = off` (Tier-2 async path).
 async fn bench_batch(
-    pool:        &sqlx::PgPool,
-    session_id:  &str,
-    actor_id:    &str,
-    n:           usize,
-    batch:       usize,
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    actor_id: &str,
+    n: usize,
+    batch: usize,
     sync_commit: bool,
 ) -> f64 {
     let t = Instant::now();
@@ -77,28 +88,35 @@ async fn bench_batch(
         let mut tx = pool.begin().await.unwrap();
         if !sync_commit {
             sqlx::query("SET LOCAL synchronous_commit = off")
-                .execute(&mut *tx).await.unwrap();
+                .execute(&mut *tx)
+                .await
+                .unwrap();
         }
 
         let mut rows_data: Vec<(i64, String)> = Vec::with_capacity(count);
-        let first_seq = db::events::alloc_seq_block_in_tx(&mut tx, session_id, count as i64).await.unwrap();
+        let first_seq = db::events::alloc_seq_block_in_tx(&mut tx, session_id, count as i64)
+            .await
+            .unwrap();
         for j in 0..count {
             let seq = first_seq + j as i64;
             let payload = serde_json::json!({ "seq": i + j, "data": "batch" }).to_string();
             rows_data.push((seq, payload));
         }
 
-        let rows: Vec<db::events::RawEventRow<'_>> = rows_data.iter().map(|(seq, payload)| {
-            db::events::RawEventRow {
+        let rows: Vec<db::events::RawEventRow<'_>> = rows_data
+            .iter()
+            .map(|(seq, payload)| db::events::RawEventRow {
                 session_id,
                 actor_id,
-                event_type:   "saga_step_sent",
+                event_type: "saga_step_sent",
                 payload_json: payload,
-                seq:          *seq,
-            }
-        }).collect();
+                seq: *seq,
+            })
+            .collect();
 
-        db::events::append_batch_raw_in_tx(&mut tx, &rows).await.unwrap();
+        db::events::append_batch_raw_in_tx(&mut tx, &rows)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         i += count;
     }
@@ -147,9 +165,15 @@ async fn setup_session(pool: &sqlx::PgPool, session_id: &str) -> String {
 async fn teardown_session(pool: &sqlx::PgPool, session_id: &str, actor_id: &str) {
     // events and session_sequences both CASCADE on sessions delete.
     sqlx::query("DELETE FROM sessions WHERE id = $1")
-        .bind(session_id).execute(pool).await.unwrap();
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM actors WHERE id = $1")
-        .bind(actor_id).execute(pool).await.unwrap();
+        .bind(actor_id)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -161,33 +185,36 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(100);
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://localhost/solarplex".into());
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/solarplex".into());
 
     let pool = db::connect(&database_url).await.expect("connect");
 
     println!("batch_commit_bench: n={n} events per strategy, url={database_url}");
-    println!("{:<18} {:>12} {:>16} {:>16}", "strategy", "total ms", "per-event µs", "events/s");
+    println!(
+        "{:<18} {:>12} {:>16} {:>16}",
+        "strategy", "total ms", "per-event µs", "events/s"
+    );
     println!("{}", "-".repeat(66));
 
     // (label, batch_size, sync_commit)
     // sync=true  → Tier-1 durable path (fsync per commit)
     // sync=false → Tier-2 async path   (no fsync, wal_writer_delay flush)
     for (label, batch_size, sync_commit) in [
-        ("single",          1usize, true),
-        ("batch-2",         2,      true),
-        ("batch-4",         4,      true),
-        ("batch-8",         8,      true),
-        ("batch-16",        16,     true),
-        ("batch-32",        32,     true),
-        ("batch-64",        64,     true),
-        ("batch-128",       128,    true),
-        ("async-single",    1,      false),
-        ("async-batch-4",   4,      false),
-        ("async-batch-8",   8,      false),
-        ("async-batch-32",  32,     false),
-        ("async-batch-64",  64,     false),
-        ("async-batch-128", 128,    false),
+        ("single", 1usize, true),
+        ("batch-2", 2, true),
+        ("batch-4", 4, true),
+        ("batch-8", 8, true),
+        ("batch-16", 16, true),
+        ("batch-32", 32, true),
+        ("batch-64", 64, true),
+        ("batch-128", 128, true),
+        ("async-single", 1, false),
+        ("async-batch-4", 4, false),
+        ("async-batch-8", 8, false),
+        ("async-batch-32", 32, false),
+        ("async-batch-64", 64, false),
+        ("async-batch-128", 128, false),
     ] {
         let session_id = Ulid::new().to_string();
         let actor_id = setup_session(&pool, &session_id).await;

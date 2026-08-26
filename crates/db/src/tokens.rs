@@ -163,7 +163,11 @@ pub fn parse_permissions(row: &TokenRow) -> Vec<String> {
 pub fn parse_permissions_from_json(permissions: &serde_json::Value) -> Vec<String> {
     permissions
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -173,9 +177,9 @@ pub fn parse_permissions_from_json(permissions: &serde_json::Value) -> Vec<Strin
 /// `used_at` is shown in the response so callers can distinguish an already-exchanged
 /// root token (agent has attached) from a pending one.
 pub async fn actor_caps_in_session(
-    pool:       &PgPool,
+    pool: &PgPool,
     session_id: &str,
-    actor_id:   &str,
+    actor_id: &str,
 ) -> DbResult<Vec<TokenRow>> {
     sqlx::query_as::<_, TokenRow>(
         "SELECT id, session_id, actor_id, expires_at, used_at, created_at,
@@ -197,22 +201,19 @@ pub async fn actor_caps_in_session(
 /// Row type for `sp auth who-can`: one cap held by one actor.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CapHolderRow {
-    pub cap_id:      String,
-    pub actor_id:    String,
+    pub cap_id: String,
+    pub actor_id: String,
     pub permissions: serde_json::Value,
-    pub expires_at:  chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
     pub observed_seq: i64,
-    pub parent_cap:  Option<String>,
+    pub parent_cap: Option<String>,
 }
 
 /// All non-expired, non-revoked cap holders in a session, ordered by actor then seq.
 ///
 /// Used by `sp auth who-can` to list every actor that holds an active capability
 /// in the session regardless of their formal membership role.
-pub async fn session_cap_holders(
-    pool:       &PgPool,
-    session_id: &str,
-) -> DbResult<Vec<CapHolderRow>> {
+pub async fn session_cap_holders(pool: &PgPool, session_id: &str) -> DbResult<Vec<CapHolderRow>> {
     sqlx::query_as::<_, CapHolderRow>(
         "SELECT id AS cap_id, actor_id, permissions, expires_at, observed_seq, parent_cap
          FROM session_tokens
@@ -312,10 +313,7 @@ pub async fn revoke_owned_root_cap(
 /// Returns the ids of every cap actually revoked (including the root, not
 /// counting already-revoked caps) — callers use this to also clean up any
 /// `actor_descriptors` rows pointing at them (see `descriptors::delete_for_caps`).
-pub async fn revoke_cap_subtree(
-    pool:   &PgPool,
-    cap_id: &str,
-) -> DbResult<Vec<String>> {
+pub async fn revoke_cap_subtree(pool: &PgPool, cap_id: &str) -> DbResult<Vec<String>> {
     let ids: Vec<String> = sqlx::query_scalar(
         "WITH RECURSIVE subtree AS (
              SELECT id FROM session_tokens WHERE id = $1
@@ -341,9 +339,9 @@ pub async fn revoke_cap_subtree(
 /// Used for stratum-based revocation: closes all caps at depth >= N in the
 /// specified epoch, preserving shallower roots. Returns the ids revoked.
 pub async fn revoke_by_stratum(
-    pool:              &PgPool,
-    session_id:        &str,
-    epoch:             i64,
+    pool: &PgPool,
+    session_id: &str,
+    epoch: i64,
     stratum_threshold: i64,
 ) -> DbResult<Vec<String>> {
     let ids: Vec<String> = sqlx::query_scalar(
@@ -367,11 +365,7 @@ pub async fn revoke_by_stratum(
 ///
 /// Closes every active cap in the session that belongs to the given epoch.
 /// Returns the ids revoked.
-pub async fn revoke_epoch(
-    pool:       &PgPool,
-    session_id: &str,
-    epoch:      i64,
-) -> DbResult<Vec<String>> {
+pub async fn revoke_epoch(pool: &PgPool, session_id: &str, epoch: i64) -> DbResult<Vec<String>> {
     let ids: Vec<String> = sqlx::query_scalar(
         "UPDATE session_tokens
          SET revoked_at = NOW()
@@ -401,8 +395,8 @@ pub async fn revoke_epoch(
 ///
 /// Returns the count of caps rerooted.
 pub async fn reroot_caps(
-    pool:          &PgPool,
-    session_id:    &str,
+    pool: &PgPool,
+    session_id: &str,
     old_parent_id: &str,
     new_parent_id: Option<&str>,
 ) -> DbResult<u64> {
@@ -477,7 +471,7 @@ pub async fn is_revoked(pool: &PgPool, cap_id: &str) -> DbResult<bool> {
 /// Result returned by `transfer_root_in_tx`.
 pub struct TransferResult {
     /// The newly-created root cap (now authoritative).
-    pub new_root_id:    String,
+    pub new_root_id: String,
     /// How many child caps were reparented to the new root.
     pub rerooted_count: u64,
 }
@@ -488,9 +482,9 @@ pub struct TransferResult {
 /// Returns `None` for sessions that predate the cap system — callers should
 /// treat this as a clean no-op and proceed with display-label-only transfer.
 pub async fn find_root_cap_in_tx(
-    tx:         &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     session_id: &str,
-    actor_id:   &str,
+    actor_id: &str,
 ) -> DbResult<Option<String>> {
     let id = sqlx::query_scalar::<_, String>(
         "SELECT id FROM session_tokens
@@ -523,11 +517,11 @@ pub async fn find_root_cap_in_tx(
 /// in the new root's authority namespace.  The old root's `transferred_to`
 /// field distinguishes this retirement from adversarial revocation.
 pub async fn transfer_root_in_tx(
-    tx:           &mut Transaction<'_, Postgres>,
-    session_id:   &str,
-    old_root_id:  &str,
+    tx: &mut Transaction<'_, Postgres>,
+    session_id: &str,
+    old_root_id: &str,
     new_actor_id: &str,
-    ttl_hours:    i64,
+    ttl_hours: i64,
 ) -> DbResult<TransferResult> {
     // Read old root's permissions — new root inherits them verbatim.
     let old_permissions = sqlx::query_scalar::<_, serde_json::Value>(
@@ -541,7 +535,7 @@ pub async fn transfer_root_in_tx(
     // Step 1: insert new root cap.
     // Epoch is inherited from session_epochs (same epoch — no advance).
     // observed_seq is the current committed seq at transfer time.
-    let new_id     = Ulid::new().to_string();
+    let new_id = Ulid::new().to_string();
     let expires_at = Utc::now() + Duration::hours(ttl_hours);
 
     let new_root_id: String = sqlx::query_scalar(
@@ -594,9 +588,9 @@ pub async fn transfer_root_in_tx(
 /// event (identified by the drain_seq and epoch).  Used to populate the
 /// `fenced_actors` set in the session hub immediately after revocation.
 pub async fn actors_in_revoked_epoch(
-    pool:       &PgPool,
+    pool: &PgPool,
     session_id: &str,
-    epoch:      i64,
+    epoch: i64,
 ) -> DbResult<Vec<String>> {
     let ids = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT actor_id FROM session_tokens

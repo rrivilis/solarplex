@@ -39,13 +39,23 @@ use crate::DbResult;
 pub fn entry_to_permissions(entry: &AuthorityEntry) -> Vec<String> {
     let provider = entry.resource.provider();
     let repr = resource_repr(&entry.resource);
-    entry.ops.0.iter().map(|op| format!("{provider}:{repr}:{op}")).collect()
+    entry
+        .ops
+        .0
+        .iter()
+        .map(|op| format!("{provider}:{repr}:{op}"))
+        .collect()
 }
 
 fn resource_repr(resource: &Resource) -> String {
     match resource {
         Resource::Fs { path } => path.clone(),
-        Resource::Net { host, port_min, port_max, path_prefix } => {
+        Resource::Net {
+            host,
+            port_min,
+            port_max,
+            path_prefix,
+        } => {
             let port = if *port_min == 0 && *port_max == 65535 {
                 String::new()
             } else {
@@ -53,16 +63,16 @@ fn resource_repr(resource: &Resource) -> String {
             };
             format!("{host}{port}{path_prefix}")
         }
-        Resource::Pid { pid_ref }  => any_or_int_repr(pid_ref),
-        Resource::IpcFd { fd }     => format!("fd:{}", any_or_int_repr(fd)),
+        Resource::Pid { pid_ref } => any_or_int_repr(pid_ref),
+        Resource::IpcFd { fd } => format!("fd:{}", any_or_int_repr(fd)),
         Resource::Http { url_pattern, .. } => url_pattern.clone(),
-        Resource::Wasm { module }  => module.clone(),
+        Resource::Wasm { module } => module.clone(),
     }
 }
 
 fn any_or_int_repr(v: &AnyOrInt) -> String {
     match v {
-        AnyOrInt::Any    => "any".to_string(),
+        AnyOrInt::Any => "any".to_string(),
         AnyOrInt::Id(id) => id.to_string(),
     }
 }
@@ -86,10 +96,10 @@ pub fn authority_to_permissions(authority: &[AuthorityEntry]) -> Vec<String> {
 /// `import_delegation` below for the case where the caller *has* already
 /// resolved a parent).
 pub async fn import_capability(
-    arena:    &AuthorityArena,
+    arena: &AuthorityArena,
     actor_id: &str,
-    cap:      &Capability,
-    ttl:      Duration,
+    cap: &Capability,
+    ttl: Duration,
 ) -> DbResult<Authority> {
     let perms = authority_to_permissions(&cap.authority);
     arena.alloc(actor_id, &perms, ttl).await
@@ -101,10 +111,10 @@ pub async fn import_capability(
 /// narrow what `parent` already holds here — never expand it, regardless
 /// of what the DSL source claims.
 pub async fn import_delegation(
-    parent:            &Authority,
-    grantee_actor_id:  &str,
-    delegation:        &Delegation,
-    ttl:               Duration,
+    parent: &Authority,
+    grantee_actor_id: &str,
+    delegation: &Delegation,
+    ttl: Duration,
 ) -> DbResult<Authority> {
     let perms = authority_to_permissions(&delegation.authority);
     parent.delegate(grantee_actor_id, &perms, ttl).await
@@ -125,45 +135,94 @@ mod tests {
 
     #[test]
     fn fs_entry_becomes_one_permission_per_op() {
-        let e = entry(Resource::Fs { path: "/data/**".to_string() }, &["read", "write"]);
+        let e = entry(
+            Resource::Fs {
+                path: "/data/**".to_string(),
+            },
+            &["read", "write"],
+        );
         let mut perms = entry_to_permissions(&e);
         perms.sort();
-        assert_eq!(perms, vec!["linux-fs:/data/**:read", "linux-fs:/data/**:write"]);
+        assert_eq!(
+            perms,
+            vec!["linux-fs:/data/**:read", "linux-fs:/data/**:write"]
+        );
     }
 
     #[test]
     fn net_entry_with_default_port_range_omits_port_suffix() {
         let e = entry(
-            Resource::Net { host: "db.internal".to_string(), port_min: 0, port_max: 65535, path_prefix: "/".to_string() },
+            Resource::Net {
+                host: "db.internal".to_string(),
+                port_min: 0,
+                port_max: 65535,
+                path_prefix: "/".to_string(),
+            },
             &["connect"],
         );
-        assert_eq!(entry_to_permissions(&e), vec!["linux-net:db.internal/:connect"]);
+        assert_eq!(
+            entry_to_permissions(&e),
+            vec!["linux-net:db.internal/:connect"]
+        );
     }
 
     #[test]
     fn net_entry_with_narrowed_port_range_includes_it() {
         let e = entry(
-            Resource::Net { host: "db.internal".to_string(), port_min: 5432, port_max: 5432, path_prefix: "/".to_string() },
+            Resource::Net {
+                host: "db.internal".to_string(),
+                port_min: 5432,
+                port_max: 5432,
+                path_prefix: "/".to_string(),
+            },
             &["connect"],
         );
-        assert_eq!(entry_to_permissions(&e), vec!["linux-net:db.internal:5432-5432/:connect"]);
+        assert_eq!(
+            entry_to_permissions(&e),
+            vec!["linux-net:db.internal:5432-5432/:connect"]
+        );
     }
 
     #[test]
     fn pid_any_and_exact() {
-        let any = entry(Resource::Pid { pid_ref: AnyOrInt::Any }, &["signal"]);
+        let any = entry(
+            Resource::Pid {
+                pid_ref: AnyOrInt::Any,
+            },
+            &["signal"],
+        );
         assert_eq!(entry_to_permissions(&any), vec!["linux-pid:any:signal"]);
-        let exact = entry(Resource::Pid { pid_ref: AnyOrInt::Id(1234) }, &["signal"]);
+        let exact = entry(
+            Resource::Pid {
+                pid_ref: AnyOrInt::Id(1234),
+            },
+            &["signal"],
+        );
         assert_eq!(entry_to_permissions(&exact), vec!["linux-pid:1234:signal"]);
     }
 
     #[test]
     fn authority_to_permissions_is_deduplicated_and_order_independent() {
         let a = vec![
-            entry(Resource::Fs { path: "/data/**".to_string() }, &["read"]),
-            entry(Resource::Fs { path: "/data/**".to_string() }, &["read"]), // duplicate entry
+            entry(
+                Resource::Fs {
+                    path: "/data/**".to_string(),
+                },
+                &["read"],
+            ),
+            entry(
+                Resource::Fs {
+                    path: "/data/**".to_string(),
+                },
+                &["read"],
+            ), // duplicate entry
         ];
-        let b = vec![entry(Resource::Fs { path: "/data/**".to_string() }, &["read"])];
+        let b = vec![entry(
+            Resource::Fs {
+                path: "/data/**".to_string(),
+            },
+            &["read"],
+        )];
         assert_eq!(authority_to_permissions(&a), authority_to_permissions(&b));
         assert_eq!(authority_to_permissions(&a), vec!["linux-fs:/data/**:read"]);
     }

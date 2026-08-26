@@ -49,9 +49,9 @@ use tokio::task::JoinHandle;
 use ulid::Ulid;
 
 use session::{
-    build_snapshot, transition, DisconnectReason, Effect, InboundEvent, LiveEvent,
-    ReflectorCursor, SagaBundle, SagaOutcome, SessionArena, SessionEvent, SessionMemory,
-    SessionState, VoteDecision, SNAPSHOT_DEPENDS_ON,
+    build_snapshot, transition, DisconnectReason, Effect, InboundEvent, LiveEvent, ReflectorCursor,
+    SagaBundle, SagaOutcome, SessionArena, SessionEvent, SessionMemory, SessionState, VoteDecision,
+    SNAPSHOT_DEPENDS_ON,
 };
 
 use crate::lease::ConflictClass;
@@ -74,22 +74,28 @@ use autometrics::autometrics;
 /// so callers can make routing decisions without re-computing the hash.
 #[derive(Clone)]
 pub struct SessionTaskHandle {
-    sender:         mpsc::Sender<InboundEvent>,
+    sender: mpsc::Sender<InboundEvent>,
     /// NUMA node this session's task is assigned to.
-    pub numa_node:  u8,
+    pub numa_node: u8,
 }
 
 impl SessionTaskHandle {
     /// Send an event to the session actor (async, back-pressured).
     ///
     /// Returns `Err` only if the task has already exited.
-    pub async fn send(&self, event: InboundEvent) -> Result<(), mpsc::error::SendError<InboundEvent>> {
+    pub async fn send(
+        &self,
+        event: InboundEvent,
+    ) -> Result<(), mpsc::error::SendError<InboundEvent>> {
         self.sender.send(event).await
     }
 
     /// Non-blocking send — drops the event if the mailbox is full.
     #[allow(dead_code)]
-    pub fn try_send(&self, event: InboundEvent) -> Result<(), mpsc::error::TrySendError<InboundEvent>> {
+    pub fn try_send(
+        &self,
+        event: InboundEvent,
+    ) -> Result<(), mpsc::error::TrySendError<InboundEvent>> {
         self.sender.try_send(event)
     }
 
@@ -118,18 +124,18 @@ impl SessionTaskHandle {
 /// (e.g. `Effect::Forward` → `RouteKind::Local` vs `RouteKind::CrossNode`).
 pub fn spawn_session_task(
     session_id: String,
-    owner_id:   String,
-    db:         PgPool,
-    hub:        Arc<SessionHub>,
+    owner_id: String,
+    db: PgPool,
+    hub: Arc<SessionHub>,
     // Session topology: keyed by session_id, used to route Effect::Forward.
-    sessions:   Arc<DashMap<String, SessionTaskHandle>>,
+    sessions: Arc<DashMap<String, SessionTaskHandle>>,
     // Global bundle reflector for cross-session saga relay.
-    reflector:  Arc<Reflector>,
-    num_nodes:  u8,
+    reflector: Arc<Reflector>,
+    num_nodes: u8,
 ) -> SessionTaskHandle {
     let local_node = session_numa_node(&session_id, num_nodes);
-    let (tx, rx)   = mpsc::channel::<InboundEvent>(256);
-    let self_tx    = tx.clone();
+    let (tx, rx) = mpsc::channel::<InboundEvent>(256);
+    let self_tx = tx.clone();
     tokio::spawn(run_session_task(
         rx, self_tx, session_id, owner_id, db, hub, sessions, reflector, local_node,
     ));
@@ -137,20 +143,23 @@ pub fn spawn_session_task(
     // `run_session_task` rather than as its own parameter — it's already
     // reachable there and adding a second way to say the same thing would
     // just be one more place for the two to drift apart.)
-    SessionTaskHandle { sender: tx, numa_node: local_node }
+    SessionTaskHandle {
+        sender: tx,
+        numa_node: local_node,
+    }
 }
 
 // ── Actor task loop ───────────────────────────────────────────────────────────
 
 async fn run_session_task(
-    mut rx:     mpsc::Receiver<InboundEvent>,
-    self_tx:    mpsc::Sender<InboundEvent>,
+    mut rx: mpsc::Receiver<InboundEvent>,
+    self_tx: mpsc::Sender<InboundEvent>,
     session_id: String,
-    owner_id:   String,
-    db:         PgPool,
-    hub:        Arc<SessionHub>,
-    sessions:   Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  Arc<Reflector>,
+    owner_id: String,
+    db: PgPool,
+    hub: Arc<SessionHub>,
+    sessions: Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: Arc<Reflector>,
     local_node: u8,
 ) {
     let timers: Arc<DashMap<String, JoinHandle<()>>> = Arc::new(DashMap::new());
@@ -163,7 +172,13 @@ async fn run_session_task(
         &session_id,
         SessionState::Active,
         SessionMemory::new(session_id.clone(), owner_id),
-        &db, &hub, &timers, &self_tx, &sessions, &reflector, local_node,
+        &db,
+        &hub,
+        &timers,
+        &self_tx,
+        &sessions,
+        &reflector,
+        local_node,
     )
     .await;
 
@@ -181,7 +196,14 @@ async fn run_session_task(
     // `dispatch`'s claims staying in-process-only for now).
     // `spawn_placement_heartbeat` renews this on a timer for as long as
     // this task stays alive.
-    match db::session_placements::claim(&db, &session_id, reflector.replica_id(), crate::reflector::PLACEMENT_TTL_SECS).await {
+    match db::session_placements::claim(
+        &db,
+        &session_id,
+        reflector.replica_id(),
+        crate::reflector::PLACEMENT_TTL_SECS,
+    )
+    .await
+    {
         Ok(Some(_)) => {}
         Ok(None) => tracing::warn!(
             session_id,
@@ -198,18 +220,23 @@ async fn run_session_task(
     // across successive sagas without additional heap allocation.
     let mut arena = SessionArena::with_capacity(4 * 256);
 
-    tracing::debug!(session_id, local_node, cursor = memory.cursor, "session task: started");
+    tracing::debug!(
+        session_id,
+        local_node,
+        cursor = memory.cursor,
+        "session task: started"
+    );
 
     while let Some(event) = rx.recv().await {
         let (new_state, new_memory, effects) = transition(state, memory, event);
-        state  = new_state;
+        state = new_state;
         memory = new_memory;
 
         // Check before `run_effects` so the flag is correct even if `run_effects`
         // recursively processes replay effects that don't emit SagaTerminated.
-        let saga_terminated = effects.iter().any(|e| {
-            matches!(e, Effect::Persist(SessionEvent::SagaTerminated { .. }))
-        });
+        let saga_terminated = effects
+            .iter()
+            .any(|e| matches!(e, Effect::Persist(SessionEvent::SagaTerminated { .. })));
 
         Box::pin(run_effects(
             &session_id,
@@ -233,7 +260,7 @@ async fn run_session_task(
             tracing::debug!(
                 session_id,
                 allocated_bytes = arena.allocated_bytes(),
-                alloc_count     = arena.alloc_count(),
+                alloc_count = arena.alloc_count(),
                 "session task: saga terminated — arena reset",
             );
             arena.reset();
@@ -274,31 +301,37 @@ async fn run_session_task(
 /// change needed here when that happens.
 async fn replay_history(
     session_id: &str,
-    mut state:  SessionState,
+    mut state: SessionState,
     mut memory: SessionMemory,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
-    timers:     &Arc<DashMap<String, JoinHandle<()>>>,
-    self_tx:    &mpsc::Sender<InboundEvent>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  &Arc<Reflector>,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
+    timers: &Arc<DashMap<String, JoinHandle<()>>>,
+    self_tx: &mpsc::Sender<InboundEvent>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: &Arc<Reflector>,
     local_node: u8,
 ) -> (SessionState, SessionMemory) {
     let rows = match db::events::list(db, session_id, None, i64::MAX).await {
         Ok(rows) => rows,
         Err(e) => {
-            tracing::error!(session_id, "session task: replay_history: failed to load event log: {e}");
+            tracing::error!(
+                session_id,
+                "session task: replay_history: failed to load event log: {e}"
+            );
             return (state, memory);
         }
     };
 
     let mut replayed = 0usize;
-    let mut skipped   = 0usize;
+    let mut skipped = 0usize;
 
     for row in rows {
         let event: SessionEvent = match serde_json::from_value(row.payload) {
-            Ok(e)  => e,
-            Err(_) => { skipped += 1; continue; }
+            Ok(e) => e,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
         };
 
         // `transition()` itself debug-asserts a `Replayed` transition never
@@ -307,20 +340,39 @@ async fn replay_history(
         // Broadcast are real runtime commands regardless of whether the
         // triggering event is historical or live; e.g. BundleDeferred
         // re-arms a timer for its remaining wall-clock duration on replay).
-        let (s, m, effects) = transition(state, memory, InboundEvent::Replayed { seq: row.seq, event });
-        state  = s;
+        let (s, m, effects) = transition(
+            state,
+            memory,
+            InboundEvent::Replayed {
+                seq: row.seq,
+                event,
+            },
+        );
+        state = s;
         memory = m;
         replayed += 1;
 
         Box::pin(run_effects(
-            session_id, &mut state, &mut memory, effects, db, hub, timers, self_tx, sessions,
-            reflector, local_node,
+            session_id,
+            &mut state,
+            &mut memory,
+            effects,
+            db,
+            hub,
+            timers,
+            self_tx,
+            sessions,
+            reflector,
+            local_node,
         ))
         .await;
     }
 
     tracing::debug!(
-        session_id, replayed, skipped, cursor = memory.cursor,
+        session_id,
+        replayed,
+        skipped,
+        cursor = memory.cursor,
         "session task: cold-start replay complete",
     );
     (state, memory)
@@ -356,19 +408,25 @@ async fn replay_history(
 /// cold-start replay, before any live traffic.
 async fn drain_reflector_backlog(
     session_id: &str,
-    db:         &PgPool,
-    self_tx:    &mpsc::Sender<InboundEvent>,
-    reflector:  &Arc<Reflector>,
+    db: &PgPool,
+    self_tx: &mpsc::Sender<InboundEvent>,
+    reflector: &Arc<Reflector>,
 ) {
-    let (seq, epoch) = db::reflector_cursors::get(db, session_id).await.unwrap_or((0, 0));
-    let from = ReflectorCursor { seq, epoch: epoch as u32, view: 0 };
+    let (seq, epoch) = db::reflector_cursors::get(db, session_id)
+        .await
+        .unwrap_or((0, 0));
+    let from = ReflectorCursor {
+        seq,
+        epoch: epoch as u32,
+        view: 0,
+    };
 
     let backlog = reflector.replay(from);
     if backlog.is_empty() {
         return;
     }
 
-    let mut delivered      = 0usize;
+    let mut delivered = 0usize;
     let mut high_watermark = from;
     for (cursor, bundle) in backlog {
         high_watermark = cursor;
@@ -378,21 +436,38 @@ async fn drain_reflector_backlog(
         let msg = InboundEvent::Live(LiveEvent::BundleIntercepted {
             bundle,
             interceptor_cap_id: String::new(),
-            reflector_cursor:   cursor,
+            reflector_cursor: cursor,
         });
         if let Err(e) = self_tx.send(msg).await {
-            tracing::warn!(session_id, "session task: reflector backlog drain: send failed: {e}");
+            tracing::warn!(
+                session_id,
+                "session task: reflector backlog drain: send failed: {e}"
+            );
             break;
         }
         delivered += 1;
     }
 
-    if let Err(e) = db::reflector_cursors::upsert(db, session_id, high_watermark.seq, high_watermark.epoch as i32).await {
-        tracing::warn!(session_id, "session task: reflector backlog drain: failed to persist watermark: {e}");
+    if let Err(e) = db::reflector_cursors::upsert(
+        db,
+        session_id,
+        high_watermark.seq,
+        high_watermark.epoch as i32,
+    )
+    .await
+    {
+        tracing::warn!(
+            session_id,
+            "session task: reflector backlog drain: failed to persist watermark: {e}"
+        );
     }
 
     if delivered > 0 {
-        tracing::debug!(session_id, delivered, "session task: reflector backlog drained");
+        tracing::debug!(
+            session_id,
+            delivered,
+            "session task: reflector backlog drained"
+        );
     }
 }
 
@@ -400,15 +475,15 @@ async fn drain_reflector_backlog(
 
 async fn run_effects(
     session_id: &str,
-    state:      &mut SessionState,
-    memory:     &mut SessionMemory,
-    effects:    Vec<Effect>,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
-    timers:     &Arc<DashMap<String, JoinHandle<()>>>,
-    self_tx:    &mpsc::Sender<InboundEvent>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  &Arc<Reflector>,
+    state: &mut SessionState,
+    memory: &mut SessionMemory,
+    effects: Vec<Effect>,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
+    timers: &Arc<DashMap<String, JoinHandle<()>>>,
+    self_tx: &mpsc::Sender<InboundEvent>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: &Arc<Reflector>,
     local_node: u8,
 ) {
     for effect in effects {
@@ -448,7 +523,10 @@ async fn run_effects(
             // target's assigned node.  Currently both paths use the same mpsc
             // send; the `RouteKind` is logged and will drive a separate
             // cross-node broker queue once the bundle-relay is wired (task 4).
-            Effect::Forward { to_session, payload } => {
+            Effect::Forward {
+                to_session,
+                payload,
+            } => {
                 if let Some(target) = sessions.get(&to_session) {
                     let kind = route_kind(local_node, target.numa_node);
                     tracing::debug!(
@@ -492,7 +570,11 @@ async fn run_effects(
             }
 
             // ── Connection management ────────────────────────────────────────
-            Effect::CloseConnection { actor_id, code, reason } => {
+            Effect::CloseConnection {
+                actor_id,
+                code,
+                reason,
+            } => {
                 tracing::info!(
                     session_id, actor_id = %actor_id, code, reason = %reason,
                     "session task: sending close frame",
@@ -584,15 +666,15 @@ fn is_machine_autonomous(event: &SessionEvent) -> bool {
 
 async fn handle_persist(
     session_id: &str,
-    state:      &mut SessionState,
-    memory:     &mut SessionMemory,
-    event:      SessionEvent,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
-    timers:     &Arc<DashMap<String, JoinHandle<()>>>,
-    self_tx:    &mpsc::Sender<InboundEvent>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  &Arc<Reflector>,
+    state: &mut SessionState,
+    memory: &mut SessionMemory,
+    event: SessionEvent,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
+    timers: &Arc<DashMap<String, JoinHandle<()>>>,
+    self_tx: &mpsc::Sender<InboundEvent>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: &Arc<Reflector>,
     local_node: u8,
 ) {
     // Cross-session glue: the real DB side effects (creating B's approval,
@@ -619,8 +701,17 @@ async fn handle_persist(
                     "session task: real Persist failed ({e}), shadow fallback",
                 );
                 shadow_persist(
-                    session_id, state, memory, event_fallback, db, hub, timers, self_tx, sessions,
-                    reflector, local_node,
+                    session_id,
+                    state,
+                    memory,
+                    event_fallback,
+                    db,
+                    hub,
+                    timers,
+                    self_tx,
+                    sessions,
+                    reflector,
+                    local_node,
                 )
                 .await;
             }
@@ -628,7 +719,8 @@ async fn handle_persist(
     } else {
         // Shadow mode: hub already writes this event; machine just advances memory.
         tracing::debug!(
-            session_id, algebra = event.algebra(),
+            session_id,
+            algebra = event.algebra(),
             "session task: shadow Persist (hub owns this event's DB write)",
         );
         shadow_persist(
@@ -669,11 +761,11 @@ async fn handle_persist(
 ///     carry its issuing epoch, which it doesn't yet.
 async fn handle_cross_session_side_effects(
     session_id: &str,
-    event:      &SessionEvent,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  &Arc<Reflector>,
+    event: &SessionEvent,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: &Arc<Reflector>,
 ) {
     let replica_id = reflector.replica_id();
     match event {
@@ -682,19 +774,33 @@ async fn handle_cross_session_side_effects(
         // unchanged. See the event's own doc comment for why this can't
         // happen inside transition() itself.
         SessionEvent::CrossSessionDelegationReceived {
-            saga_id, source_session_id, source_approval_id, arguments, ..
+            saga_id,
+            source_session_id,
+            source_approval_id,
+            arguments,
+            ..
         } => {
             let approval_id = Ulid::new().to_string();
-            let timeout_at  = Utc::now() + chrono::Duration::hours(24);
+            let timeout_at = Utc::now() + chrono::Duration::hours(24);
 
             let mut tx = match db.begin().await {
                 Ok(t) => t,
-                Err(e) => { tracing::error!(session_id, %saga_id, "cross-session delegation: begin tx: {e}"); return; }
+                Err(e) => {
+                    tracing::error!(session_id, %saga_id, "cross-session delegation: begin tx: {e}");
+                    return;
+                }
             };
             if let Err(e) = db::approvals::insert_in_tx(
-                &mut tx, &approval_id, session_id, "system",
-                "cross_session_delegation", arguments, Some(timeout_at),
-            ).await {
+                &mut tx,
+                &approval_id,
+                session_id,
+                "system",
+                "cross_session_delegation",
+                arguments,
+                Some(timeout_at),
+            )
+            .await
+            {
                 tracing::error!(session_id, %saga_id, "cross-session delegation: insert approval: {e}");
                 return;
             }
@@ -702,7 +808,10 @@ async fn handle_cross_session_side_effects(
                 tracing::error!(session_id, %saga_id, "cross-session delegation: commit: {e}");
                 return;
             }
-            if let Err(e) = db::cross_session_delegations::set_target_approval_id(db, saga_id, &approval_id).await {
+            if let Err(e) =
+                db::cross_session_delegations::set_target_approval_id(db, saga_id, &approval_id)
+                    .await
+            {
                 tracing::error!(session_id, %saga_id, "cross-session delegation: set_target_approval_id: {e}");
             }
 
@@ -734,13 +843,32 @@ async fn handle_cross_session_side_effects(
         // hold — B can request a decision, it can never directly overwrite
         // A's row (B never even has A's DB handle in scope here; this whole
         // branch runs inside A's own session task).
-        SessionEvent::CrossSessionDelegationResolved { saga_id, approval_id, decision, .. } => {
-            let db_state = if decision == "granted" { "Approved" } else { "Denied" };
+        SessionEvent::CrossSessionDelegationResolved {
+            saga_id,
+            approval_id,
+            decision,
+            ..
+        } => {
+            let db_state = if decision == "granted" {
+                "Approved"
+            } else {
+                "Denied"
+            };
             let mut tx = match db.begin().await {
                 Ok(t) => t,
-                Err(e) => { tracing::error!(session_id, %saga_id, "cross-session delegation: resolve begin tx: {e}"); return; }
+                Err(e) => {
+                    tracing::error!(session_id, %saga_id, "cross-session delegation: resolve begin tx: {e}");
+                    return;
+                }
             };
-            let resolved = match approvals::resolve_if_pending_in_tx(&mut tx, approval_id, db_state, "system").await {
+            let resolved = match approvals::resolve_if_pending_in_tx(
+                &mut tx,
+                approval_id,
+                db_state,
+                "system",
+            )
+            .await
+            {
                 Ok(Some(row)) => row,
                 Ok(None) => {
                     // Not Pending anymore — resolved/cancelled/expired via
@@ -751,7 +879,8 @@ async fn handle_cross_session_side_effects(
                         "cross-session delegation: source approval no longer Pending, B's decision discarded",
                     );
                     let _ = tx.rollback().await;
-                    if let Err(e) = db::cross_session_delegations::mark_resolved(db, saga_id).await {
+                    if let Err(e) = db::cross_session_delegations::mark_resolved(db, saga_id).await
+                    {
                         tracing::error!(session_id, %saga_id, "cross-session delegation: mark_resolved: {e}");
                     }
                     return;
@@ -772,16 +901,23 @@ async fn handle_cross_session_side_effects(
 
             let payload = if decision == "granted" {
                 WsPayload::ApprovalGranted {
-                    session_id: session_id.to_string(), actor: "system".to_string(),
-                    timestamp: Utc::now(), seq: 0,
-                    payload: protocol::messages::ApprovalEventPayload { approval_id: approval_id.clone() },
+                    session_id: session_id.to_string(),
+                    actor: "system".to_string(),
+                    timestamp: Utc::now(),
+                    seq: 0,
+                    payload: protocol::messages::ApprovalEventPayload {
+                        approval_id: approval_id.clone(),
+                    },
                 }
             } else {
                 WsPayload::ApprovalDenied {
-                    session_id: session_id.to_string(), actor: "system".to_string(),
-                    timestamp: Utc::now(), seq: 0,
+                    session_id: session_id.to_string(),
+                    actor: "system".to_string(),
+                    timestamp: Utc::now(),
+                    seq: 0,
                     payload: protocol::messages::ApprovalDeniedPayload {
-                        approval_id: approval_id.clone(), reason: Some("denied by delegated session".to_string()),
+                        approval_id: approval_id.clone(),
+                        reason: Some("denied by delegated session".to_string()),
                     },
                 }
             };
@@ -801,17 +937,33 @@ async fn handle_cross_session_side_effects(
         // (notifier.rs) needs a durable write + pg_notify to pick them up,
         // the same requirement Part A fixed for ordinary session writes.
         SessionEvent::CrossSessionArtifactImportReceived {
-            source_session_id, source_artifact_id, source_seq, name, artifact_type,
-            storage_ref, content_hash, source_created_by, source_created_at,
-            imported_by, link_id, source_name, target_name, ..
+            source_session_id,
+            source_artifact_id,
+            source_seq,
+            name,
+            artifact_type,
+            storage_ref,
+            content_hash,
+            source_created_by,
+            source_created_at,
+            imported_by,
+            link_id,
+            source_name,
+            target_name,
+            ..
         } => {
-            let new_artifact = match db::artifacts::create(db, db::artifacts::CreateArtifact {
-                session_id:    session_id.to_string(),
-                created_by:    imported_by.clone(),
-                name:          name.clone(),
-                artifact_type: artifact_type.clone(),
-                storage_ref:   storage_ref.clone(),
-            }).await {
+            let new_artifact = match db::artifacts::create(
+                db,
+                db::artifacts::CreateArtifact {
+                    session_id: session_id.to_string(),
+                    created_by: imported_by.clone(),
+                    name: name.clone(),
+                    artifact_type: artifact_type.clone(),
+                    storage_ref: storage_ref.clone(),
+                },
+            )
+            .await
+            {
                 Ok(a) => a,
                 Err(e) => {
                     tracing::error!(session_id, %source_session_id, "artifact import: create artifact: {e}");
@@ -821,12 +973,21 @@ async fn handle_cross_session_side_effects(
 
             let receipt_id = Ulid::new().to_string();
             if let Err(e) = db::artifact_imports::insert(
-                db, &receipt_id,
-                source_session_id, source_artifact_id, *source_seq,
-                session_id, &new_artifact.id,
-                content_hash, source_created_by, *source_created_at,
-                imported_by, link_id.as_deref(),
-            ).await {
+                db,
+                &receipt_id,
+                source_session_id,
+                source_artifact_id,
+                *source_seq,
+                session_id,
+                &new_artifact.id,
+                content_hash,
+                source_created_by,
+                *source_created_at,
+                imported_by,
+                link_id.as_deref(),
+            )
+            .await
+            {
                 // Lost a concurrent double-import race — the winning
                 // request's row already carries a real target artifact.
                 // `new_artifact` above is now a harmless orphan copy with no
@@ -843,13 +1004,20 @@ async fn handle_cross_session_side_effects(
                 return;
             }
 
-            let artifact_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ArtifactCreated {
-                session_id: session_id.to_string(), actor: imported_by.clone(), timestamp: Utc::now(), seq: 0,
-                payload: ArtifactPayload {
-                    artifact_id: new_artifact.id.clone(), name: new_artifact.name.clone(),
-                    artifact_type: Some(new_artifact.r#type.clone()),
+            let artifact_event = WsMessage::new(
+                Ulid::new().to_string(),
+                WsPayload::ArtifactCreated {
+                    session_id: session_id.to_string(),
+                    actor: imported_by.clone(),
+                    timestamp: Utc::now(),
+                    seq: 0,
+                    payload: ArtifactPayload {
+                        artifact_id: new_artifact.id.clone(),
+                        name: new_artifact.name.clone(),
+                        artifact_type: Some(new_artifact.r#type.clone()),
+                    },
                 },
-            });
+            );
             emit_via_task(db, hub, session_id, imported_by, artifact_event, replica_id).await;
 
             // Audit note — resolve display names first, same fix
@@ -857,11 +1025,15 @@ async fn handle_cross_session_side_effects(
             // human-facing note is exactly the bug already fixed everywhere
             // else names get surfaced).
             let name_ids = vec![source_created_by.clone(), imported_by.clone()];
-            let names = db::actors::get_many(db, &name_ids).await.unwrap_or_default();
-            let source_creator_name = names.get(source_created_by)
+            let names = db::actors::get_many(db, &name_ids)
+                .await
+                .unwrap_or_default();
+            let source_creator_name = names
+                .get(source_created_by)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| source_created_by.clone());
-            let importer_name = names.get(imported_by)
+            let importer_name = names
+                .get(imported_by)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| imported_by.clone());
             let note = format!(
@@ -869,13 +1041,21 @@ async fn handle_cross_session_side_effects(
                 source_created_at.to_rfc3339(),
             );
             let entry_id = Ulid::new().to_string();
-            let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
-                session_id: session_id.to_string(), actor: imported_by.clone(), timestamp: Utc::now(), seq: 0,
-                payload: ContextEntryAddedPayload {
-                    entry_id: entry_id.clone(), kind: protocol::types::ContextEntryKind::Fact,
-                    content: note.clone(), authored_by: Some(imported_by.clone()),
+            let context_event = WsMessage::new(
+                Ulid::new().to_string(),
+                WsPayload::ContextEntryAdded {
+                    session_id: session_id.to_string(),
+                    actor: imported_by.clone(),
+                    timestamp: Utc::now(),
+                    seq: 0,
+                    payload: ContextEntryAddedPayload {
+                        entry_id: entry_id.clone(),
+                        kind: protocol::types::ContextEntryKind::Fact,
+                        content: note.clone(),
+                        authored_by: Some(imported_by.clone()),
+                    },
                 },
-            });
+            );
             emit_via_task(db, hub, session_id, imported_by, context_event, replica_id).await;
 
             tracing::info!(
@@ -890,11 +1070,21 @@ async fn handle_cross_session_side_effects(
         // write (via emit_via_task) IS the target-side record; see the
         // event's own doc comment.
         SessionEvent::CrossSessionContextReceived {
-            source_session_id, kind, content, source_authored_by, source_authored_at,
-            imported_by, source_name, target_name, ..
+            source_session_id,
+            kind,
+            content,
+            source_authored_by,
+            source_authored_at,
+            imported_by,
+            source_name,
+            target_name,
+            ..
         } => {
-            let names = db::actors::get_many(db, &[source_authored_by.clone()]).await.unwrap_or_default();
-            let author_name = names.get(source_authored_by)
+            let names = db::actors::get_many(db, &[source_authored_by.clone()])
+                .await
+                .unwrap_or_default();
+            let author_name = names
+                .get(source_authored_by)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| source_authored_by.clone());
             let note = format!(
@@ -902,13 +1092,21 @@ async fn handle_cross_session_side_effects(
                 source_authored_at.to_rfc3339(),
             );
             let entry_id = Ulid::new().to_string();
-            let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
-                session_id: session_id.to_string(), actor: imported_by.clone(), timestamp: Utc::now(), seq: 0,
-                payload: ContextEntryAddedPayload {
-                    entry_id, kind: kind.clone(),
-                    content: note, authored_by: Some(imported_by.clone()),
+            let context_event = WsMessage::new(
+                Ulid::new().to_string(),
+                WsPayload::ContextEntryAdded {
+                    session_id: session_id.to_string(),
+                    actor: imported_by.clone(),
+                    timestamp: Utc::now(),
+                    seq: 0,
+                    payload: ContextEntryAddedPayload {
+                        entry_id,
+                        kind: kind.clone(),
+                        content: note,
+                        authored_by: Some(imported_by.clone()),
+                    },
                 },
-            });
+            );
             emit_via_task(db, hub, session_id, imported_by, context_event, replica_id).await;
             tracing::info!(
                 session_id, %source_session_id, %target_name,
@@ -920,23 +1118,40 @@ async fn handle_cross_session_side_effects(
         // session's member onto one of this session's own objects. Same
         // "no relational insert" posture as context-summary-send above.
         SessionEvent::CrossSessionAnnotationReceived {
-            source_session_id, object_type, object_name, note, authored_by, source_name, ..
+            source_session_id,
+            object_type,
+            object_name,
+            note,
+            authored_by,
+            source_name,
+            ..
         } => {
-            let names = db::actors::get_many(db, &[authored_by.clone()]).await.unwrap_or_default();
-            let author_name = names.get(authored_by)
+            let names = db::actors::get_many(db, &[authored_by.clone()])
+                .await
+                .unwrap_or_default();
+            let author_name = names
+                .get(authored_by)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| authored_by.clone());
             let full_note = format!(
                 "Annotation from {source_name} ({author_name}) on {object_type} '{object_name}':\n{note}",
             );
             let entry_id = Ulid::new().to_string();
-            let context_event = WsMessage::new(Ulid::new().to_string(), WsPayload::ContextEntryAdded {
-                session_id: session_id.to_string(), actor: authored_by.clone(), timestamp: Utc::now(), seq: 0,
-                payload: ContextEntryAddedPayload {
-                    entry_id, kind: protocol::types::ContextEntryKind::Fact,
-                    content: full_note, authored_by: Some(authored_by.clone()),
+            let context_event = WsMessage::new(
+                Ulid::new().to_string(),
+                WsPayload::ContextEntryAdded {
+                    session_id: session_id.to_string(),
+                    actor: authored_by.clone(),
+                    timestamp: Utc::now(),
+                    seq: 0,
+                    payload: ContextEntryAddedPayload {
+                        entry_id,
+                        kind: protocol::types::ContextEntryKind::Fact,
+                        content: full_note,
+                        authored_by: Some(authored_by.clone()),
+                    },
                 },
-            });
+            );
             emit_via_task(db, hub, session_id, authored_by, context_event, replica_id).await;
             tracing::info!(
                 session_id, %source_session_id, %object_name,
@@ -957,26 +1172,39 @@ async fn handle_cross_session_side_effects(
 /// Not `emit_to_session` itself: that function is HTTP-handler-specific,
 /// looking its hub up from `state.hubs` — callers here already hold both.
 async fn emit_via_task(
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
     session_id: &str,
-    actor_id:   &str,
-    event:      WsMessage,
+    actor_id: &str,
+    event: WsMessage,
     replica_id: &str,
 ) {
     let snap_ref = crate::ws::current_snap(hub);
     let mut tx = match db.begin().await {
         Ok(t) => t,
-        Err(e) => { tracing::error!(session_id, "emit_via_task: begin tx: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id, "emit_via_task: begin tx: {e}");
+            return;
+        }
     };
     let (seq, new_snap, stamped) = match crate::ws::stamp_append_snapshot(
-        &mut tx, snap_ref.as_ref(), session_id, actor_id, event,
-    ).await {
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => { tracing::error!(session_id, "emit_via_task: stamp: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id, "emit_via_task: stamp: {e}");
+            return;
+        }
     };
     if let Err(e) = tx.commit().await {
-        tracing::error!(session_id, "emit_via_task: commit: {e}"); return;
+        tracing::error!(session_id, "emit_via_task: commit: {e}");
+        return;
     }
     let _ = db::events::notify_session(db, session_id, seq, replica_id).await;
     crate::ws::store_and_broadcast(hub, seq, new_snap, &stamped).await;
@@ -1006,19 +1234,19 @@ async fn emit_via_task(
 /// committed event).
 async fn real_persist(
     session_id: &str,
-    state:      &mut SessionState,
-    memory:     &mut SessionMemory,
-    event:      SessionEvent,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
-    timers:     &Arc<DashMap<String, JoinHandle<()>>>,
-    self_tx:    &mpsc::Sender<InboundEvent>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  &Arc<Reflector>,
+    state: &mut SessionState,
+    memory: &mut SessionMemory,
+    event: SessionEvent,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
+    timers: &Arc<DashMap<String, JoinHandle<()>>>,
+    self_tx: &mpsc::Sender<InboundEvent>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: &Arc<Reflector>,
     local_node: u8,
 ) -> anyhow::Result<()> {
-    let type_name  = event.type_name();
-    let actor_id   = actor_of(&event).to_owned();
+    let type_name = event.type_name();
+    let actor_id = actor_of(&event).to_owned();
     let event_json = serde_json::to_string(&event)?;
     // Capture before event is moved into the plan.
     let needs_snapshot = event.algebra_mask().intersects(SNAPSHOT_DEPENDS_ON);
@@ -1028,7 +1256,7 @@ async fn real_persist(
     let seq = db::persist_plan::PersistPlan::new(session_id)
         .append(db::persist_plan::EventSpec {
             type_name,
-            actor_id:     &actor_id,
+            actor_id: &actor_id,
             payload_json: &event_json,
         })
         .notify()
@@ -1057,7 +1285,7 @@ async fn real_persist(
         mem::replace(memory, SessionMemory::new(String::new(), String::new())),
         InboundEvent::Replayed { seq, event },
     );
-    *state  = new_state;
+    *state = new_state;
     *memory = new_memory;
 
     // Build snapshot from the already-advanced state — no second transition call.
@@ -1072,13 +1300,16 @@ async fn real_persist(
     };
 
     // Machine is now the authoritative in-memory snapshot source.
-    hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: snap.clone() })));
+    hub.snapshot.store(Arc::new(Some(LiveSnapshot {
+        seq,
+        state: snap.clone(),
+    })));
 
     // Tier-2: write snapshot asynchronously — it's a projection, always
     // recoverable from the event log; losing it on crash costs replay, not data.
     let snap_json = serde_json::to_string(&snap)?;
-    let db_snap   = db.clone();
-    let sid_snap  = session_id.to_string();
+    let db_snap = db.clone();
+    let sid_snap = session_id.to_string();
     tokio::spawn(async move {
         if let Err(e) = db::snapshots::write_async(&db_snap, &sid_snap, seq, &snap_json).await {
             tracing::warn!(session_id = %sid_snap, seq, "real_persist: snapshot write: {e}");
@@ -1086,7 +1317,10 @@ async fn real_persist(
     });
 
     tracing::debug!(
-        session_id, seq, type_name, actor_id,
+        session_id,
+        seq,
+        type_name,
+        actor_id,
         "session task: real Persist committed",
     );
 
@@ -1096,7 +1330,16 @@ async fn real_persist(
     // connected clients see the change, since apply_logged is where their
     // memory update actually lands).
     Box::pin(run_effects(
-        session_id, state, memory, replay_effects, db, hub, timers, self_tx, sessions, reflector,
+        session_id,
+        state,
+        memory,
+        replay_effects,
+        db,
+        hub,
+        timers,
+        self_tx,
+        sessions,
+        reflector,
         local_node,
     ))
     .await;
@@ -1130,15 +1373,15 @@ async fn real_persist(
 /// design; see git history around this comment for the reproduction.
 async fn shadow_persist(
     session_id: &str,
-    state:      &mut SessionState,
-    memory:     &mut SessionMemory,
-    event:      SessionEvent,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
-    timers:     &Arc<DashMap<String, JoinHandle<()>>>,
-    self_tx:    &mpsc::Sender<InboundEvent>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
-    reflector:  &Arc<Reflector>,
+    state: &mut SessionState,
+    memory: &mut SessionMemory,
+    event: SessionEvent,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
+    timers: &Arc<DashMap<String, JoinHandle<()>>>,
+    self_tx: &mpsc::Sender<InboundEvent>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
+    reflector: &Arc<Reflector>,
     local_node: u8,
 ) {
     let seq = match db::events::alloc_seq(db, session_id).await {
@@ -1151,7 +1394,8 @@ async fn shadow_persist(
             // always was, but no worse, and only reachable on connectivity
             // failure rather than on every shadow-persisted event.
             tracing::error!(
-                session_id, "session task: shadow_persist: alloc_seq failed ({e}), \
+                session_id,
+                "session task: shadow_persist: alloc_seq failed ({e}), \
                  falling back to a locally-computed seq",
             );
             memory.cursor + 1
@@ -1162,10 +1406,19 @@ async fn shadow_persist(
         mem::replace(memory, SessionMemory::new(String::new(), String::new())),
         InboundEvent::Replayed { seq, event },
     );
-    *state  = new_state;
+    *state = new_state;
     *memory = new_memory;
     Box::pin(run_effects(
-        session_id, state, memory, replay_effects, db, hub, timers, self_tx, sessions, reflector,
+        session_id,
+        state,
+        memory,
+        replay_effects,
+        db,
+        hub,
+        timers,
+        self_tx,
+        sessions,
+        reflector,
         local_node,
     ))
     .await;
@@ -1175,24 +1428,32 @@ async fn shadow_persist(
 
 async fn persist_snapshot(
     session_id: &str,
-    state:      &SessionState,
-    memory:     &SessionMemory,
-    db:         &PgPool,
-    hub:        &Arc<SessionHub>,
+    state: &SessionState,
+    memory: &SessionMemory,
+    db: &PgPool,
+    hub: &Arc<SessionHub>,
 ) {
-    let seq  = memory.cursor;
+    let seq = memory.cursor;
     let snap = build_snapshot(state, memory);
     let snap_json = match serde_json::to_string(&snap) {
-        Ok(s)  => s,
-        Err(e) => { tracing::warn!(session_id, "session task: PersistSnapshot serialize: {e}"); return; }
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(session_id, "session task: PersistSnapshot serialize: {e}");
+            return;
+        }
     };
     // Tier-2: async commit — snapshot is always recoverable from the event log.
     if let Err(e) = db::snapshots::write_async(db, session_id, seq, &snap_json).await {
         tracing::warn!(session_id, "session task: PersistSnapshot DB write: {e}");
         return;
     }
-    hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: snap })));
-    tracing::debug!(session_id, seq, "session task: PersistSnapshot committed (async)");
+    hub.snapshot
+        .store(Arc::new(Some(LiveSnapshot { seq, state: snap })));
+    tracing::debug!(
+        session_id,
+        seq,
+        "session task: PersistSnapshot committed (async)"
+    );
 }
 
 // ── Bundle relay ──────────────────────────────────────────────────────────────
@@ -1219,15 +1480,15 @@ async fn persist_snapshot(
 /// skips `live_saga_begin`'s machinery entirely — see Part 3 of the plan).
 pub(crate) async fn route_bundle(
     session_id: &str,
-    bundle:     SagaBundle,
-    reflector:  &Arc<Reflector>,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
+    bundle: SagaBundle,
+    reflector: &Arc<Reflector>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
     local_node: u8,
 ) {
-    let to_session  = bundle.to_session.clone();
-    let bundle_id   = bundle.bundle_id.clone();
-    let saga_id     = bundle.saga_id.clone();
-    let step_idx    = bundle.step_idx;
+    let to_session = bundle.to_session.clone();
+    let bundle_id = bundle.bundle_id.clone();
+    let saga_id = bundle.saga_id.clone();
+    let step_idx = bundle.step_idx;
 
     // Step 1: dispatch through the lease-gated path.
     const MAX_DISPATCH_ATTEMPTS: u8 = 3;
@@ -1258,7 +1519,16 @@ pub(crate) async fn route_bundle(
                 reflector_seq = cursor.seq, reflector_epoch = cursor.epoch,
                 "session task: Effect::Bundle appended to reflector",
             );
-            deliver_or_queue(session_id, &to_session, bundle, &bundle_id, cursor, sessions, local_node).await;
+            deliver_or_queue(
+                session_id,
+                &to_session,
+                bundle,
+                &bundle_id,
+                cursor,
+                sessions,
+                local_node,
+            )
+            .await;
         }
         Some(DispatchOutcome::Forwarded) => {
             // Durably handed off to whichever replica actually holds this
@@ -1282,7 +1552,16 @@ pub(crate) async fn route_bundle(
                  attempts (lease race did not resolve), falling back to a plain append",
             );
             let cursor = reflector.append(bundle.clone());
-            deliver_or_queue(session_id, &to_session, bundle, &bundle_id, cursor, sessions, local_node).await;
+            deliver_or_queue(
+                session_id,
+                &to_session,
+                bundle,
+                &bundle_id,
+                cursor,
+                sessions,
+                local_node,
+            )
+            .await;
         }
     }
 }
@@ -1297,10 +1576,10 @@ pub(crate) async fn route_bundle(
 async fn deliver_or_queue(
     session_id: &str,
     to_session: &str,
-    bundle:     SagaBundle,
-    bundle_id:  &str,
-    cursor:     ReflectorCursor,
-    sessions:   &Arc<DashMap<String, SessionTaskHandle>>,
+    bundle: SagaBundle,
+    bundle_id: &str,
+    cursor: ReflectorCursor,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
     local_node: u8,
 ) {
     if let Some(target) = sessions.get(to_session) {
@@ -1318,7 +1597,7 @@ async fn deliver_or_queue(
         let msg = InboundEvent::Live(LiveEvent::BundleIntercepted {
             bundle,
             interceptor_cap_id: String::new(),
-            reflector_cursor:   cursor,
+            reflector_cursor: cursor,
         });
         if let Err(e) = target.send(msg).await {
             tracing::warn!(
@@ -1352,9 +1631,9 @@ async fn deliver_or_queue(
 /// Spawns its own background task; fire-and-forget from the caller's side,
 /// same shape as `notifier::spawn_event_notifier`.
 pub fn spawn_reflector_forward_listener(
-    pool:      PgPool,
+    pool: PgPool,
     reflector: Arc<Reflector>,
-    sessions:  Arc<DashMap<String, SessionTaskHandle>>,
+    sessions: Arc<DashMap<String, SessionTaskHandle>>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -1367,13 +1646,16 @@ pub fn spawn_reflector_forward_listener(
 }
 
 async fn run_reflector_forward_listener(
-    pool:      &PgPool,
+    pool: &PgPool,
     reflector: &Arc<Reflector>,
-    sessions:  &Arc<DashMap<String, SessionTaskHandle>>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
 ) -> anyhow::Result<()> {
     let mut listener = sqlx::postgres::PgListener::connect_with(pool).await?;
     listener.listen("reflector_bundles").await?;
-    tracing::info!(replica_id = reflector.replica_id(), "reflector forward listener: listening on reflector_bundles");
+    tracing::info!(
+        replica_id = reflector.replica_id(),
+        "reflector forward listener: listening on reflector_bundles"
+    );
 
     loop {
         let claim_deadline = tokio::time::sleep(Duration::from_secs(15));
@@ -1386,22 +1668,25 @@ async fn run_reflector_forward_listener(
 }
 
 async fn drain_forwarded_bundles(
-    pool:      &PgPool,
+    pool: &PgPool,
     reflector: &Arc<Reflector>,
-    sessions:  &Arc<DashMap<String, SessionTaskHandle>>,
+    sessions: &Arc<DashMap<String, SessionTaskHandle>>,
 ) {
-    let claimed = match db::reflector_forwarding::claim_pending::<SagaBundle>(pool, reflector.replica_id()).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!("reflector forward listener: claim_pending failed: {e}");
-            return;
-        }
-    };
+    let claimed =
+        match db::reflector_forwarding::claim_pending::<SagaBundle>(pool, reflector.replica_id())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("reflector forward listener: claim_pending failed: {e}");
+                return;
+            }
+        };
     for (forward_id, bundle) in claimed {
-        let to_session   = bundle.to_session.clone();
+        let to_session = bundle.to_session.clone();
         let from_session = bundle.from_session.clone();
-        let bundle_id    = bundle.bundle_id.clone();
-        let cursor       = reflector.append(bundle.clone());
+        let bundle_id = bundle.bundle_id.clone();
+        let cursor = reflector.append(bundle.clone());
         tracing::debug!(
             forward_id, %to_session, %bundle_id,
             reflector_seq = cursor.seq, reflector_epoch = cursor.epoch,
@@ -1411,28 +1696,37 @@ async fn drain_forwarded_bundles(
         // listener isn't tied to any one session task) — `from_session`
         // is the closest real equivalent for the log line, and NUMA
         // routing is a no-op today either way (see numa.rs's module doc).
-        deliver_or_queue(&from_session, &to_session, bundle, &bundle_id, cursor, sessions, 0).await;
+        deliver_or_queue(
+            &from_session,
+            &to_session,
+            bundle,
+            &bundle_id,
+            cursor,
+            sessions,
+            0,
+        )
+        .await;
     }
 }
 
 // ── Timer management ──────────────────────────────────────────────────────────
 
 fn arm_timer(
-    session_id:  &str,
-    id:          String,
+    session_id: &str,
+    id: String,
     duration_ms: u64,
-    timers:      &Arc<DashMap<String, JoinHandle<()>>>,
-    self_tx:     &mpsc::Sender<InboundEvent>,
+    timers: &Arc<DashMap<String, JoinHandle<()>>>,
+    self_tx: &mpsc::Sender<InboundEvent>,
 ) {
     // Cancel any prior timer with the same ID before arming the new one.
     if let Some((_, old)) = timers.remove(&id) {
         old.abort();
     }
 
-    let tx         = self_tx.clone();
-    let id_clone   = id.clone();
+    let tx = self_tx.clone();
+    let id_clone = id.clone();
     let timers_ref = Arc::clone(timers);
-    let sid        = session_id.to_string();
+    let sid = session_id.to_string();
 
     let handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(duration_ms)).await;
@@ -1454,60 +1748,60 @@ fn arm_timer(
 
 fn actor_of(event: &SessionEvent) -> &str {
     match event {
-        SessionEvent::SessionCreated      { owner_id, .. }    => owner_id,
-        SessionEvent::SessionPaused       { paused_by, .. }   => paused_by,
-        SessionEvent::SessionResumed      { resumed_by, .. }  => resumed_by,
-        SessionEvent::SessionArchived     { archived_by, .. } => archived_by,
-        SessionEvent::ParticipantJoined   { actor_id, .. }    => actor_id,
-        SessionEvent::ParticipantLeft     { actor_id, .. }    => actor_id,
+        SessionEvent::SessionCreated { owner_id, .. } => owner_id,
+        SessionEvent::SessionPaused { paused_by, .. } => paused_by,
+        SessionEvent::SessionResumed { resumed_by, .. } => resumed_by,
+        SessionEvent::SessionArchived { archived_by, .. } => archived_by,
+        SessionEvent::ParticipantJoined { actor_id, .. } => actor_id,
+        SessionEvent::ParticipantLeft { actor_id, .. } => actor_id,
         SessionEvent::OwnershipTransferred { from_actor, .. } => from_actor,
-        SessionEvent::AgentAttached       { actor_id, .. }    => actor_id,
-        SessionEvent::AgentDetached       { actor_id, .. }    => actor_id,
-        SessionEvent::CapDelegated        { actor_id, .. }    => actor_id,
-        SessionEvent::CapRevoked          { revoked_by, .. }  => revoked_by,
-        SessionEvent::EpochAdvanced       { advanced_by, .. } => advanced_by,
-        SessionEvent::ApprovalRequested   { actor_id, .. }    => actor_id,
-        SessionEvent::ApprovalClaimed     { claimed_by, .. }  => claimed_by,
-        SessionEvent::ApprovalVoted       { voter_id, .. }    => voter_id,
-        SessionEvent::ApprovalGranted     { resolved_by, .. } => resolved_by,
-        SessionEvent::ApprovalDenied      { resolved_by, .. } => resolved_by,
-        SessionEvent::ApprovalExpired     { .. }              => "system",
-        SessionEvent::ApprovalInterrupted { .. }              => "system",
-        SessionEvent::MessagePosted        { actor_id, .. }   => actor_id,
-        SessionEvent::ContextEntryAdded    { actor_id, .. }   => actor_id,
+        SessionEvent::AgentAttached { actor_id, .. } => actor_id,
+        SessionEvent::AgentDetached { actor_id, .. } => actor_id,
+        SessionEvent::CapDelegated { actor_id, .. } => actor_id,
+        SessionEvent::CapRevoked { revoked_by, .. } => revoked_by,
+        SessionEvent::EpochAdvanced { advanced_by, .. } => advanced_by,
+        SessionEvent::ApprovalRequested { actor_id, .. } => actor_id,
+        SessionEvent::ApprovalClaimed { claimed_by, .. } => claimed_by,
+        SessionEvent::ApprovalVoted { voter_id, .. } => voter_id,
+        SessionEvent::ApprovalGranted { resolved_by, .. } => resolved_by,
+        SessionEvent::ApprovalDenied { resolved_by, .. } => resolved_by,
+        SessionEvent::ApprovalExpired { .. } => "system",
+        SessionEvent::ApprovalInterrupted { .. } => "system",
+        SessionEvent::MessagePosted { actor_id, .. } => actor_id,
+        SessionEvent::ContextEntryAdded { actor_id, .. } => actor_id,
         SessionEvent::ContextEntryResolved { resolved_by, .. } => resolved_by,
-        SessionEvent::ArtifactCreated      { actor_id, .. }   => actor_id,
-        SessionEvent::ArtifactUpdated      { actor_id, .. }   => actor_id,
-        SessionEvent::ArtifactDeleted      { actor_id, .. }   => actor_id,
-        SessionEvent::ApprovalCancelled    { cancelled_by, .. } => cancelled_by,
-        SessionEvent::ApprovalDelegated    { from, .. }         => from,
-        SessionEvent::ApprovalDisputed     { disputed_by, .. }  => disputed_by,
+        SessionEvent::ArtifactCreated { actor_id, .. } => actor_id,
+        SessionEvent::ArtifactUpdated { actor_id, .. } => actor_id,
+        SessionEvent::ArtifactDeleted { actor_id, .. } => actor_id,
+        SessionEvent::ApprovalCancelled { cancelled_by, .. } => cancelled_by,
+        SessionEvent::ApprovalDelegated { from, .. } => from,
+        SessionEvent::ApprovalDisputed { disputed_by, .. } => disputed_by,
         SessionEvent::CrossSessionDelegationRequested { requested_by, .. } => requested_by,
-        SessionEvent::CrossSessionDelegationReceived  { .. }    => "system",
-        SessionEvent::CrossSessionDelegationResolved  { .. }    => "system",
+        SessionEvent::CrossSessionDelegationReceived { .. } => "system",
+        SessionEvent::CrossSessionDelegationResolved { .. } => "system",
         SessionEvent::CrossSessionArtifactImportReceived { imported_by, .. } => imported_by,
         SessionEvent::CrossSessionContextReceived { imported_by, .. } => imported_by,
         SessionEvent::CrossSessionAnnotationReceived { authored_by, .. } => authored_by,
-        SessionEvent::EffectProposed      { .. }              => "system",
-        SessionEvent::EffectScouted       { .. }              => "system",
-        SessionEvent::EffectAttested      { .. }              => "system",
-        SessionEvent::EffectCommitted     { .. }              => "system",
-        SessionEvent::EffectDiverged      { .. }              => "system",
-        SessionEvent::SnapshotCreated     { .. }              => "system",
-        SessionEvent::SnapshotInvalidated { .. }              => "system",
+        SessionEvent::EffectProposed { .. } => "system",
+        SessionEvent::EffectScouted { .. } => "system",
+        SessionEvent::EffectAttested { .. } => "system",
+        SessionEvent::EffectCommitted { .. } => "system",
+        SessionEvent::EffectDiverged { .. } => "system",
+        SessionEvent::SnapshotCreated { .. } => "system",
+        SessionEvent::SnapshotInvalidated { .. } => "system",
         // Saga events are emitted by the coordinator session machine itself.
-        SessionEvent::SagaBegun        { .. }                 => "system",
-        SessionEvent::SagaStepSent     { .. }                 => "system",
-        SessionEvent::SagaStepAcked    { .. }                 => "system",
-        SessionEvent::SagaCompensated  { .. }                 => "system",
-        SessionEvent::SagaTerminated   { .. }                 => "system",
+        SessionEvent::SagaBegun { .. } => "system",
+        SessionEvent::SagaStepSent { .. } => "system",
+        SessionEvent::SagaStepAcked { .. } => "system",
+        SessionEvent::SagaCompensated { .. } => "system",
+        SessionEvent::SagaTerminated { .. } => "system",
         // Policy events are emitted by the adapter intercept layer.
-        SessionEvent::BundleAnnotated     { .. }              => "system",
-        SessionEvent::BundleReshaped      { .. }              => "system",
-        SessionEvent::BundleDeferred      { .. }              => "system",
-        SessionEvent::BundleRejected      { .. }              => "system",
-        SessionEvent::BundleApprovalGated { .. }              => "system",
-        SessionEvent::PolicySet           { set_by_cap, .. }  => set_by_cap,
+        SessionEvent::BundleAnnotated { .. } => "system",
+        SessionEvent::BundleReshaped { .. } => "system",
+        SessionEvent::BundleDeferred { .. } => "system",
+        SessionEvent::BundleRejected { .. } => "system",
+        SessionEvent::BundleApprovalGated { .. } => "system",
+        SessionEvent::PolicySet { set_by_cap, .. } => set_by_cap,
     }
 }
 
@@ -1519,12 +1813,15 @@ fn actor_of(event: &SessionEvent) -> &str {
 /// Feed an actor connection event to the session task.
 #[autometrics]
 pub async fn task_actor_connected(
-    handle:        &SessionTaskHandle,
-    actor_id:      String,
+    handle: &SessionTaskHandle,
+    actor_id: String,
     connection_id: String,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ActorConnected { actor_id, connection_id }))
+        .send(InboundEvent::Live(LiveEvent::ActorConnected {
+            actor_id,
+            connection_id,
+        }))
         .await;
 }
 
@@ -1533,8 +1830,8 @@ pub async fn task_actor_connected(
 /// The machine uses this to interrupt pending approvals owned by the actor.
 #[autometrics]
 pub async fn task_actor_disconnected(
-    handle:        &SessionTaskHandle,
-    actor_id:      String,
+    handle: &SessionTaskHandle,
+    actor_id: String,
     connection_id: String,
 ) {
     let _ = handle
@@ -1552,14 +1849,22 @@ pub async fn task_actor_disconnected(
 /// evaluation and coverage bisimulation.
 #[autometrics]
 pub async fn task_vote_cast(
-    handle:      &SessionTaskHandle,
+    handle: &SessionTaskHandle,
     approval_id: String,
-    voter_id:    String,
-    approve:     bool,
+    voter_id: String,
+    approve: bool,
 ) {
-    let decision = if approve { VoteDecision::Approve } else { VoteDecision::Deny };
+    let decision = if approve {
+        VoteDecision::Approve
+    } else {
+        VoteDecision::Deny
+    };
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::VoteCast { approval_id, voter_id, decision }))
+        .send(InboundEvent::Live(LiveEvent::VoteCast {
+            approval_id,
+            voter_id,
+            decision,
+        }))
         .await;
 }
 
@@ -1569,12 +1874,12 @@ pub async fn task_vote_cast(
 /// `ApprovalRequested` event; machine shadow-persists it.
 #[autometrics]
 pub async fn task_approval_create(
-    handle:      &SessionTaskHandle,
+    handle: &SessionTaskHandle,
     approval_id: String,
-    actor_id:    String,
-    tool:        String,
-    args:        serde_json::Value,
-    expires_ms:  Option<u64>,
+    actor_id: String,
+    tool: String,
+    args: serde_json::Value,
+    expires_ms: Option<u64>,
 ) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::ApprovalCreate {
@@ -1596,7 +1901,10 @@ pub async fn task_approval_create(
 #[autometrics]
 pub async fn task_ownership_transfer(handle: &SessionTaskHandle, from: String, to: String) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::OwnershipTransfer { from, to }))
+        .send(InboundEvent::Live(LiveEvent::OwnershipTransfer {
+            from,
+            to,
+        }))
         .await;
 }
 
@@ -1628,39 +1936,66 @@ pub async fn task_admin_archive(handle: &SessionTaskHandle, by: String) {
 /// Feed an approval claim to the session task. Shadow-persisted — see
 /// `task_ownership_transfer`'s doc comment for why.
 #[autometrics]
-pub async fn task_approval_claim(handle: &SessionTaskHandle, approval_id: String, actor_id: String) {
+pub async fn task_approval_claim(
+    handle: &SessionTaskHandle,
+    approval_id: String,
+    actor_id: String,
+) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ApprovalClaim { approval_id, actor_id }))
+        .send(InboundEvent::Live(LiveEvent::ApprovalClaim {
+            approval_id,
+            actor_id,
+        }))
         .await;
 }
 
 /// Feed an approval cancellation to the session task. Shadow-persisted — see
 /// `task_ownership_transfer`'s doc comment for why.
 #[autometrics]
-pub async fn task_approval_cancel(handle: &SessionTaskHandle, approval_id: String, actor_id: String) {
+pub async fn task_approval_cancel(
+    handle: &SessionTaskHandle,
+    approval_id: String,
+    actor_id: String,
+) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ApprovalCancel { approval_id, actor_id }))
+        .send(InboundEvent::Live(LiveEvent::ApprovalCancel {
+            approval_id,
+            actor_id,
+        }))
         .await;
 }
 
 /// Feed an approval delegation to the session task. Shadow-persisted.
 #[autometrics]
-pub async fn task_approval_delegate(handle: &SessionTaskHandle, approval_id: String, from: String, to: String) {
+pub async fn task_approval_delegate(
+    handle: &SessionTaskHandle,
+    approval_id: String,
+    from: String,
+    to: String,
+) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ApprovalDelegate { approval_id, from, to }))
+        .send(InboundEvent::Live(LiveEvent::ApprovalDelegate {
+            approval_id,
+            from,
+            to,
+        }))
         .await;
 }
 
 /// Feed an approval dispute to the session task. Shadow-persisted.
 #[autometrics]
 pub async fn task_approval_dispute(
-    handle:      &SessionTaskHandle,
+    handle: &SessionTaskHandle,
     approval_id: String,
-    actor_id:    String,
-    reason:      String,
+    actor_id: String,
+    reason: String,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ApprovalDispute { approval_id, actor_id, reason }))
+        .send(InboundEvent::Live(LiveEvent::ApprovalDispute {
+            approval_id,
+            actor_id,
+            reason,
+        }))
         .await;
 }
 
@@ -1670,16 +2005,20 @@ pub async fn task_approval_dispute(
 /// caller (route handler) — `crates/session` has no ulid dependency by design.
 #[autometrics]
 pub async fn task_cross_session_delegate(
-    handle:            &SessionTaskHandle,
-    saga_id:           String,
-    approval_id:       String,
+    handle: &SessionTaskHandle,
+    saga_id: String,
+    approval_id: String,
     target_session_id: String,
-    requested_by:      String,
-    arguments:         serde_json::Value,
+    requested_by: String,
+    arguments: serde_json::Value,
 ) {
     let _ = handle
         .send(InboundEvent::Live(LiveEvent::CrossSessionDelegate {
-            saga_id, approval_id, target_session_id, requested_by, arguments,
+            saga_id,
+            approval_id,
+            target_session_id,
+            requested_by,
+            arguments,
         }))
         .await;
 }
@@ -1690,9 +2029,18 @@ pub async fn task_cross_session_delegate(
 /// decision back to A once B's own (completely normal) approval resolves;
 /// not specific to cross-session delegation, reusable for any saga.
 #[autometrics]
-pub async fn task_saga_ack(handle: &SessionTaskHandle, saga_id: String, step_idx: usize, outcome: SagaOutcome) {
+pub async fn task_saga_ack(
+    handle: &SessionTaskHandle,
+    saga_id: String,
+    step_idx: usize,
+    outcome: SagaOutcome,
+) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::SagaAck { saga_id, step_idx, outcome }))
+        .send(InboundEvent::Live(LiveEvent::SagaAck {
+            saga_id,
+            step_idx,
+            outcome,
+        }))
         .await;
 }
 
@@ -1701,7 +2049,10 @@ pub async fn task_saga_ack(handle: &SessionTaskHandle, saga_id: String, step_idx
 #[autometrics]
 pub async fn task_message_post(handle: &SessionTaskHandle, actor_id: String, content: String) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::MessagePost { actor_id, content }))
+        .send(InboundEvent::Live(LiveEvent::MessagePost {
+            actor_id,
+            content,
+        }))
         .await;
 }
 
@@ -1709,27 +2060,36 @@ pub async fn task_message_post(handle: &SessionTaskHandle, actor_id: String, con
 /// same ID the real writer already minted. Shadow-persisted.
 #[autometrics]
 pub async fn task_context_add(
-    handle:   &SessionTaskHandle,
+    handle: &SessionTaskHandle,
     entry_id: String,
     actor_id: String,
-    kind:     protocol::types::ContextEntryKind,
-    content:  String,
+    kind: protocol::types::ContextEntryKind,
+    content: String,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ContextAdd { entry_id, actor_id, kind, content }))
+        .send(InboundEvent::Live(LiveEvent::ContextAdd {
+            entry_id,
+            actor_id,
+            kind,
+            content,
+        }))
         .await;
 }
 
 /// Feed a context-entry resolution to the session task. Shadow-persisted.
 #[autometrics]
 pub async fn task_context_resolve(
-    handle:      &SessionTaskHandle,
-    entry_id:    String,
+    handle: &SessionTaskHandle,
+    entry_id: String,
     resolved_by: String,
-    note:        Option<String>,
+    note: Option<String>,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ContextResolve { entry_id, resolved_by, note }))
+        .send(InboundEvent::Live(LiveEvent::ContextResolve {
+            entry_id,
+            resolved_by,
+            note,
+        }))
         .await;
 }
 
@@ -1737,28 +2097,38 @@ pub async fn task_context_resolve(
 /// same ID the real writer's DB insert already assigned. Shadow-persisted.
 #[autometrics]
 pub async fn task_artifact_create(
-    handle:        &SessionTaskHandle,
-    artifact_id:   String,
-    actor_id:      String,
-    name:          String,
+    handle: &SessionTaskHandle,
+    artifact_id: String,
+    actor_id: String,
+    name: String,
     artifact_type: Option<String>,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ArtifactCreate { artifact_id, actor_id, name, artifact_type }))
+        .send(InboundEvent::Live(LiveEvent::ArtifactCreate {
+            artifact_id,
+            actor_id,
+            name,
+            artifact_type,
+        }))
         .await;
 }
 
 /// Feed an artifact update to the session task. Shadow-persisted.
 #[autometrics]
 pub async fn task_artifact_update(
-    handle:        &SessionTaskHandle,
-    artifact_id:   String,
-    actor_id:      String,
-    name:          String,
+    handle: &SessionTaskHandle,
+    artifact_id: String,
+    actor_id: String,
+    name: String,
     artifact_type: Option<String>,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ArtifactUpdate { artifact_id, actor_id, name, artifact_type }))
+        .send(InboundEvent::Live(LiveEvent::ArtifactUpdate {
+            artifact_id,
+            actor_id,
+            name,
+            artifact_type,
+        }))
         .await;
 }
 
@@ -1767,14 +2137,19 @@ pub async fn task_artifact_update(
 /// doc comment for why). Shadow-persisted.
 #[autometrics]
 pub async fn task_artifact_delete(
-    handle:        &SessionTaskHandle,
-    artifact_id:   String,
-    actor_id:      String,
-    name:          String,
+    handle: &SessionTaskHandle,
+    artifact_id: String,
+    actor_id: String,
+    name: String,
     artifact_type: Option<String>,
 ) {
     let _ = handle
-        .send(InboundEvent::Live(LiveEvent::ArtifactDelete { artifact_id, actor_id, name, artifact_type }))
+        .send(InboundEvent::Live(LiveEvent::ArtifactDelete {
+            artifact_id,
+            actor_id,
+            name,
+            artifact_type,
+        }))
         .await;
 }
 
@@ -1816,99 +2191,126 @@ mod tests {
             .await
             .expect("failed to seed system actor");
 
-        let human = db::actors::create_human(&pool, db::actors::CreateHuman {
-            name:  "phase0-replay-test-human".into(),
-            email: format!("phase0-replay-test-{}@example.invalid", ulid::Ulid::new()),
-        })
+        let human = db::actors::create_human(
+            &pool,
+            db::actors::CreateHuman {
+                name: "phase0-replay-test-human".into(),
+                email: format!("phase0-replay-test-{}@example.invalid", ulid::Ulid::new()),
+            },
+        )
         .await
         .expect("failed to create test human actor");
-        let agent = db::actors::create_agent(&pool, db::actors::CreateAgent {
-            name:     "phase0-replay-test-agent".into(),
-            provider: "custom".into(),
-            model:    "test".into(),
-            config:   None,
-        })
+        let agent = db::actors::create_agent(
+            &pool,
+            db::actors::CreateAgent {
+                name: "phase0-replay-test-agent".into(),
+                provider: "custom".into(),
+                model: "test".into(),
+                config: None,
+            },
+        )
         .await
         .expect("failed to create test agent actor");
 
-        let created = db::sessions::create(&pool, db::sessions::CreateSession {
-            name:            "phase0-replay-test".into(),
-            description:     None,
-            created_by:      human.id.clone(),
-            approval_policy: None,
-        })
+        let created = db::sessions::create(
+            &pool,
+            db::sessions::CreateSession {
+                name: "phase0-replay-test".into(),
+                description: None,
+                created_by: human.id.clone(),
+                approval_policy: None,
+            },
+        )
         .await
         .expect("failed to create test session");
         let session_id = created.session.id.clone();
 
         // seq 1: a real SessionEvent (PolicySet) — the shape `real_persist` writes.
         let policy_event = SessionEvent::PolicySet {
-            target:     PolicyTarget::All,
+            target: PolicyTarget::All,
             constraint: PolicyConstraint::Forward,
             set_by_cap: "cap-test".into(),
-            set_at:     chrono::Utc::now(),
+            set_at: chrono::Utc::now(),
         };
-        db::events::append(&pool, db::events::AppendEvent {
-            session_id:     session_id.clone(),
-            actor_id:       human.id.clone(),
-            event_type:     policy_event.type_name().into(),
-            payload:        serde_json::to_value(&policy_event).unwrap(),
-            parent_event_id: None,
-            seq:            1,
-        })
+        db::events::append(
+            &pool,
+            db::events::AppendEvent {
+                session_id: session_id.clone(),
+                actor_id: human.id.clone(),
+                event_type: policy_event.type_name().into(),
+                payload: serde_json::to_value(&policy_event).unwrap(),
+                parent_event_id: None,
+                seq: 1,
+            },
+        )
         .await
         .expect("failed to insert policy_event");
 
         // seq 2: NOT a SessionEvent shape — mimics a `ws.rs`-written row
         // (WsMessage envelope, dot-notation type tag). Must be skipped, not error.
-        db::events::append(&pool, db::events::AppendEvent {
-            session_id:      session_id.clone(),
-            actor_id:        human.id.clone(),
-            event_type:      "message.posted".into(),
-            payload:         serde_json::json!({
-                "protocol_version": 1, "id": "01TEST", "type": "message.posted",
-                "content": "hi",
-            }),
-            parent_event_id: None,
-            seq:             2,
-        })
+        db::events::append(
+            &pool,
+            db::events::AppendEvent {
+                session_id: session_id.clone(),
+                actor_id: human.id.clone(),
+                event_type: "message.posted".into(),
+                payload: serde_json::json!({
+                    "protocol_version": 1, "id": "01TEST", "type": "message.posted",
+                    "content": "hi",
+                }),
+                parent_event_id: None,
+                seq: 2,
+            },
+        )
         .await
         .expect("failed to insert legacy-shape row");
 
         // seq 3: a real SessionEvent (AgentAttached) — exercises apply_logged's
         // membership insert + its Broadcast effect through run_effects.
         let attach_event = SessionEvent::AgentAttached {
-            actor_id:    agent.id.clone(),
-            cap_id:      "cap-test".into(),
+            actor_id: agent.id.clone(),
+            cap_id: "cap-test".into(),
             attached_at: chrono::Utc::now(),
         };
-        db::events::append(&pool, db::events::AppendEvent {
-            session_id:      session_id.clone(),
-            actor_id:        agent.id.clone(),
-            event_type:      attach_event.type_name().into(),
-            payload:         serde_json::to_value(&attach_event).unwrap(),
-            parent_event_id: None,
-            seq:             3,
-        })
+        db::events::append(
+            &pool,
+            db::events::AppendEvent {
+                session_id: session_id.clone(),
+                actor_id: agent.id.clone(),
+                event_type: attach_event.type_name().into(),
+                payload: serde_json::to_value(&attach_event).unwrap(),
+                parent_event_id: None,
+                seq: 3,
+            },
+        )
         .await
         .expect("failed to insert attach_event");
 
-        let hub                       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
+        let hub = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
         let timers: Arc<DashMap<String, JoinHandle<()>>> = Arc::new(DashMap::new());
-        let (self_tx, _self_rx)       = mpsc::channel(8);
-        let sessions                  = Arc::new(DashMap::new());
-        let reflector                 = Arc::new(Reflector::new());
+        let (self_tx, _self_rx) = mpsc::channel(8);
+        let sessions = Arc::new(DashMap::new());
+        let reflector = Arc::new(Reflector::new());
 
         let (_state, memory) = replay_history(
             &session_id,
             SessionState::Active,
             SessionMemory::new(session_id.clone(), human.id.clone()),
-            &pool, &hub, &timers, &self_tx, &sessions, &reflector, 0,
+            &pool,
+            &hub,
+            &timers,
+            &self_tx,
+            &sessions,
+            &reflector,
+            0,
         )
         .await;
 
         assert!(
-            matches!(memory.policies.get(&PolicyTarget::All), Some(PolicyConstraint::Forward)),
+            matches!(
+                memory.policies.get(&PolicyTarget::All),
+                Some(PolicyConstraint::Forward)
+            ),
             "PolicySet row (seq 1) should have been replayed, got {:?}",
             memory.policies.get(&PolicyTarget::All),
         );
@@ -1945,14 +2347,16 @@ mod tests {
     /// *next* step to spuriously pick up. Draining everything each time and
     /// asserting on the whole batch avoids that drift entirely.
     async fn drain_broadcasts(
-        rx:     &mut tokio::sync::broadcast::Receiver<Utf8Bytes>,
+        rx: &mut tokio::sync::broadcast::Receiver<Utf8Bytes>,
         window: Duration,
     ) -> Vec<String> {
         let mut out = Vec::new();
         let deadline = tokio::time::Instant::now() + window;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() { break; }
+            if remaining.is_zero() {
+                break;
+            }
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(msg)) => out.push(msg.to_string()),
                 _ => break, // timed out or channel closed — done draining
@@ -1992,27 +2396,36 @@ mod tests {
             .await
             .expect("failed to seed system actor");
 
-        let human = db::actors::create_human(&pool, db::actors::CreateHuman {
-            name:  "phase1-test-human".into(),
-            email: format!("phase1-test-{}@example.invalid", ulid::Ulid::new()),
-        })
+        let human = db::actors::create_human(
+            &pool,
+            db::actors::CreateHuman {
+                name: "phase1-test-human".into(),
+                email: format!("phase1-test-{}@example.invalid", ulid::Ulid::new()),
+            },
+        )
         .await
         .expect("failed to create test human actor");
-        let agent = db::actors::create_agent(&pool, db::actors::CreateAgent {
-            name:     "phase1-test-agent".into(),
-            provider: "custom".into(),
-            model:    "test".into(),
-            config:   None,
-        })
+        let agent = db::actors::create_agent(
+            &pool,
+            db::actors::CreateAgent {
+                name: "phase1-test-agent".into(),
+                provider: "custom".into(),
+                model: "test".into(),
+                config: None,
+            },
+        )
         .await
         .expect("failed to create test agent actor");
 
-        let created = db::sessions::create(&pool, db::sessions::CreateSession {
-            name:            "phase1-test".into(),
-            description:     None,
-            created_by:      human.id.clone(),
-            approval_policy: None,
-        })
+        let created = db::sessions::create(
+            &pool,
+            db::sessions::CreateSession {
+                name: "phase1-test".into(),
+                description: None,
+                created_by: human.id.clone(),
+                approval_policy: None,
+            },
+        )
         .await
         .expect("failed to create test session");
         let session_id = created.session.id.clone();
@@ -2024,18 +2437,21 @@ mod tests {
         // task_approval_create below would otherwise be rejected by
         // live_approval_create's "actor must be a present member" gate.
         let attach_event = SessionEvent::AgentAttached {
-            actor_id:    agent.id.clone(),
-            cap_id:      "test-cap".into(),
+            actor_id: agent.id.clone(),
+            cap_id: "test-cap".into(),
             attached_at: chrono::Utc::now(),
         };
-        db::events::append(&pool, db::events::AppendEvent {
-            session_id:      session_id.clone(),
-            actor_id:        agent.id.clone(),
-            event_type:      attach_event.type_name().into(),
-            payload:         serde_json::to_value(&attach_event).unwrap(),
-            parent_event_id: None,
-            seq:             1,
-        })
+        db::events::append(
+            &pool,
+            db::events::AppendEvent {
+                session_id: session_id.clone(),
+                actor_id: agent.id.clone(),
+                event_type: attach_event.type_name().into(),
+                payload: serde_json::to_value(&attach_event).unwrap(),
+                parent_event_id: None,
+                seq: 1,
+            },
+        )
         .await
         .expect("failed to seed attach_event");
         // db::events::append takes an explicit seq and does not consult/advance
@@ -2048,12 +2464,17 @@ mod tests {
             .await
             .expect("failed to advance session_sequences past the seeded row");
 
-        let hub       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
-        let sessions  = Arc::new(DashMap::new());
+        let hub = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
+        let sessions = Arc::new(DashMap::new());
         let reflector = Arc::new(Reflector::new());
         let handle = spawn_session_task(
-            session_id.clone(), human.id.clone(), pool.clone(), Arc::clone(&hub),
-            Arc::clone(&sessions), Arc::clone(&reflector), 1,
+            session_id.clone(),
+            human.id.clone(),
+            pool.clone(),
+            Arc::clone(&hub),
+            Arc::clone(&sessions),
+            Arc::clone(&reflector),
+            1,
         );
 
         let mut rx = hub.broadcast_tx.subscribe();
@@ -2110,9 +2531,14 @@ mod tests {
         // AgentAttached row replayed at task startup (see setup above) — the
         // live_approval_create membership gate would otherwise reject this.
         task_approval_create(
-            &handle, "phase1-test-approval".into(), agent.id.clone(), "test_tool".into(),
-            serde_json::json!({}), Some(50), // 50ms expiry — fires almost immediately
-        ).await;
+            &handle,
+            "phase1-test-approval".into(),
+            agent.id.clone(),
+            "test_tool".into(),
+            serde_json::json!({}),
+            Some(50), // 50ms expiry — fires almost immediately
+        )
+        .await;
         // ApprovalRequested is shadow-persisted (ws.rs's REST handler is the
         // real writer/broadcaster) — the machine only emits its own generic
         // ping here, not a typed "approval.requested". Window is wide enough
@@ -2174,19 +2600,25 @@ mod tests {
             .await
             .expect("failed to seed system actor");
 
-        let human = db::actors::create_human(&pool, db::actors::CreateHuman {
-            name:  "phase2-test-human".into(),
-            email: format!("phase2-test-{}@example.invalid", ulid::Ulid::new()),
-        })
+        let human = db::actors::create_human(
+            &pool,
+            db::actors::CreateHuman {
+                name: "phase2-test-human".into(),
+                email: format!("phase2-test-{}@example.invalid", ulid::Ulid::new()),
+            },
+        )
         .await
         .expect("failed to create test human actor");
 
-        let created = db::sessions::create(&pool, db::sessions::CreateSession {
-            name:            "phase2-test".into(),
-            description:     None,
-            created_by:      human.id.clone(),
-            approval_policy: None,
-        })
+        let created = db::sessions::create(
+            &pool,
+            db::sessions::CreateSession {
+                name: "phase2-test".into(),
+                description: None,
+                created_by: human.id.clone(),
+                approval_policy: None,
+            },
+        )
         .await
         .expect("failed to create test session");
         let session_id = created.session.id.clone();
@@ -2194,81 +2626,136 @@ mod tests {
         // seq 1: MessagePosted — must not touch memory.artifacts/context (no-op,
         // matches ws.rs's own apply_event, which is EventLog-only for this kind).
         let msg_event = SessionEvent::MessagePosted {
-            actor_id: human.id.clone(), content: "hello".into(), posted_at: chrono::Utc::now(),
+            actor_id: human.id.clone(),
+            content: "hello".into(),
+            posted_at: chrono::Utc::now(),
         };
         // seq 2: ArtifactCreated — artifact "a1", type "document".
         let art_created = SessionEvent::ArtifactCreated {
-            artifact_id: "a1".into(), actor_id: human.id.clone(), name: "Draft".into(),
-            artifact_type: Some("document".into()), created_at: chrono::Utc::now(),
+            artifact_id: "a1".into(),
+            actor_id: human.id.clone(),
+            name: "Draft".into(),
+            artifact_type: Some("document".into()),
+            created_at: chrono::Utc::now(),
         };
         // seq 3: ArtifactUpdated — renames "a1" to "Draft v2".
         let art_updated = SessionEvent::ArtifactUpdated {
-            artifact_id: "a1".into(), actor_id: human.id.clone(), name: "Draft v2".into(),
-            artifact_type: Some("document".into()), updated_at: chrono::Utc::now(),
+            artifact_id: "a1".into(),
+            actor_id: human.id.clone(),
+            name: "Draft v2".into(),
+            artifact_type: Some("document".into()),
+            updated_at: chrono::Utc::now(),
         };
         // seq 4: a second artifact "a2", later deleted.
         let art2_created = SessionEvent::ArtifactCreated {
-            artifact_id: "a2".into(), actor_id: human.id.clone(), name: "Scratch".into(),
-            artifact_type: None, created_at: chrono::Utc::now(),
+            artifact_id: "a2".into(),
+            actor_id: human.id.clone(),
+            name: "Scratch".into(),
+            artifact_type: None,
+            created_at: chrono::Utc::now(),
         };
         // seq 5: ArtifactDeleted — removes "a2". memory.artifacts should end up
         // with exactly one entry ("a1"), confirming both the insert-if-absent
         // (ArtifactCreated) and remove (ArtifactDeleted) paths.
         let art2_deleted = SessionEvent::ArtifactDeleted {
-            artifact_id: "a2".into(), actor_id: human.id.clone(), name: "Scratch".into(),
-            artifact_type: None, deleted_at: chrono::Utc::now(),
+            artifact_id: "a2".into(),
+            actor_id: human.id.clone(),
+            name: "Scratch".into(),
+            artifact_type: None,
+            deleted_at: chrono::Utc::now(),
         };
         // seq 6: ContextEntryAdded.
         let ctx_added = SessionEvent::ContextEntryAdded {
-            entry_id: "c1".into(), actor_id: human.id.clone(),
-            kind: protocol::types::ContextEntryKind::Decision, content: "use postgres".into(),
+            entry_id: "c1".into(),
+            actor_id: human.id.clone(),
+            kind: protocol::types::ContextEntryKind::Decision,
+            content: "use postgres".into(),
             added_at: chrono::Utc::now(),
         };
         // seq 7: ContextEntryResolved.
         let ctx_resolved = SessionEvent::ContextEntryResolved {
-            entry_id: "c1".into(), resolved_by: human.id.clone(),
-            note: Some("confirmed in review".into()), resolved_at: chrono::Utc::now(),
+            entry_id: "c1".into(),
+            resolved_by: human.id.clone(),
+            note: Some("confirmed in review".into()),
+            resolved_at: chrono::Utc::now(),
         };
 
         for (i, event) in [
-            &msg_event as &SessionEvent, &art_created, &art_updated, &art2_created,
-            &art2_deleted, &ctx_added, &ctx_resolved,
-        ].into_iter().enumerate() {
-            db::events::append(&pool, db::events::AppendEvent {
-                session_id:      session_id.clone(),
-                actor_id:        human.id.clone(),
-                event_type:      event.type_name().into(),
-                payload:         serde_json::to_value(event).unwrap(),
-                parent_event_id: None,
-                seq:             (i + 1) as i64,
-            })
+            &msg_event as &SessionEvent,
+            &art_created,
+            &art_updated,
+            &art2_created,
+            &art2_deleted,
+            &ctx_added,
+            &ctx_resolved,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db::events::append(
+                &pool,
+                db::events::AppendEvent {
+                    session_id: session_id.clone(),
+                    actor_id: human.id.clone(),
+                    event_type: event.type_name().into(),
+                    payload: serde_json::to_value(event).unwrap(),
+                    parent_event_id: None,
+                    seq: (i + 1) as i64,
+                },
+            )
             .await
             .unwrap_or_else(|e| panic!("failed to insert event #{i}: {e}"));
         }
 
-        let hub                       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
+        let hub = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
         let timers: Arc<DashMap<String, JoinHandle<()>>> = Arc::new(DashMap::new());
-        let (self_tx, _self_rx)       = mpsc::channel(8);
-        let sessions                  = Arc::new(DashMap::new());
-        let reflector                 = Arc::new(Reflector::new());
+        let (self_tx, _self_rx) = mpsc::channel(8);
+        let sessions = Arc::new(DashMap::new());
+        let reflector = Arc::new(Reflector::new());
 
         let (state, memory) = replay_history(
             &session_id,
             SessionState::Active,
             SessionMemory::new(session_id.clone(), human.id.clone()),
-            &pool, &hub, &timers, &self_tx, &sessions, &reflector, 0,
+            &pool,
+            &hub,
+            &timers,
+            &self_tx,
+            &sessions,
+            &reflector,
+            0,
         )
         .await;
 
-        assert_eq!(memory.artifacts.len(), 1, "expected exactly one surviving artifact, got {:?}", memory.artifacts);
-        let a1 = memory.artifacts.get("a1").expect("artifact a1 should exist");
-        assert_eq!(a1.name, "Draft v2", "ArtifactUpdated should have renamed a1");
+        assert_eq!(
+            memory.artifacts.len(),
+            1,
+            "expected exactly one surviving artifact, got {:?}",
+            memory.artifacts
+        );
+        let a1 = memory
+            .artifacts
+            .get("a1")
+            .expect("artifact a1 should exist");
+        assert_eq!(
+            a1.name, "Draft v2",
+            "ArtifactUpdated should have renamed a1"
+        );
         assert_eq!(a1.artifact_type, "document");
-        assert!(!memory.artifacts.contains_key("a2"), "a2 should have been removed by ArtifactDeleted");
+        assert!(
+            !memory.artifacts.contains_key("a2"),
+            "a2 should have been removed by ArtifactDeleted"
+        );
 
         assert_eq!(memory.context.len(), 1);
-        let c1 = memory.context.get("c1").expect("context entry c1 should exist");
-        assert!(c1.resolved, "ContextEntryResolved should have set resolved=true");
+        let c1 = memory
+            .context
+            .get("c1")
+            .expect("context entry c1 should exist");
+        assert!(
+            c1.resolved,
+            "ContextEntryResolved should have set resolved=true"
+        );
         assert_eq!(c1.resolved_by.as_deref(), Some(human.id.as_str()));
         assert_eq!(c1.resolution_note.as_deref(), Some("confirmed in review"));
         assert_eq!(c1.content, "use postgres");
@@ -2280,7 +2767,10 @@ mod tests {
         assert_eq!(snap.context.len(), 1);
         assert!(snap.context[0].resolved);
 
-        assert_eq!(memory.cursor, 7, "cursor should have advanced through all 7 seeded rows");
+        assert_eq!(
+            memory.cursor, 7,
+            "cursor should have advanced through all 7 seeded rows"
+        );
 
         // Best-effort cleanup.
         let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
@@ -2326,21 +2816,36 @@ mod tests {
             .await
             .expect("failed to seed system actor");
 
-        let human = db::actors::create_human(&pool, db::actors::CreateHuman {
-            name:  "phase3-test-human".into(),
-            email: format!("phase3-test-{}@example.invalid", ulid::Ulid::new()),
-        })
+        let human = db::actors::create_human(
+            &pool,
+            db::actors::CreateHuman {
+                name: "phase3-test-human".into(),
+                email: format!("phase3-test-{}@example.invalid", ulid::Ulid::new()),
+            },
+        )
         .await
         .expect("failed to create test human actor");
-        let agent = db::actors::create_agent(&pool, db::actors::CreateAgent {
-            name: "phase3-test-agent".into(), provider: "custom".into(), model: "test".into(), config: None,
-        })
+        let agent = db::actors::create_agent(
+            &pool,
+            db::actors::CreateAgent {
+                name: "phase3-test-agent".into(),
+                provider: "custom".into(),
+                model: "test".into(),
+                config: None,
+            },
+        )
         .await
         .expect("failed to create test agent actor");
 
-        let created = db::sessions::create(&pool, db::sessions::CreateSession {
-            name: "phase3-test".into(), description: None, created_by: human.id.clone(), approval_policy: None,
-        })
+        let created = db::sessions::create(
+            &pool,
+            db::sessions::CreateSession {
+                name: "phase3-test".into(),
+                description: None,
+                created_by: human.id.clone(),
+                approval_policy: None,
+            },
+        )
         .await
         .expect("failed to create test session");
         let session_id = created.session.id.clone();
@@ -2349,23 +2854,37 @@ mod tests {
         // present member — required for the approval-creation bridge, same
         // reasoning as the Phase 1 test's setup.
         let attach_event = SessionEvent::AgentAttached {
-            actor_id: agent.id.clone(), cap_id: "test-cap".into(), attached_at: chrono::Utc::now(),
+            actor_id: agent.id.clone(),
+            cap_id: "test-cap".into(),
+            attached_at: chrono::Utc::now(),
         };
-        db::events::append(&pool, db::events::AppendEvent {
-            session_id: session_id.clone(), actor_id: agent.id.clone(),
-            event_type: attach_event.type_name().into(),
-            payload: serde_json::to_value(&attach_event).unwrap(),
-            parent_event_id: None, seq: 1,
-        }).await.expect("failed to seed attach_event");
+        db::events::append(
+            &pool,
+            db::events::AppendEvent {
+                session_id: session_id.clone(),
+                actor_id: agent.id.clone(),
+                event_type: attach_event.type_name().into(),
+                payload: serde_json::to_value(&attach_event).unwrap(),
+                parent_event_id: None,
+                seq: 1,
+            },
+        )
+        .await
+        .expect("failed to seed attach_event");
         sqlx::query("UPDATE session_sequences SET next_seq = 2 WHERE session_id = $1")
-            .bind(&session_id).execute(&pool).await
+            .bind(&session_id)
+            .execute(&pool)
+            .await
             .expect("failed to advance session_sequences past the seeded row");
 
         let prometheus_handle = crate::metrics_route::install_or_reuse_recorder();
         let state = Arc::new(crate::state::AppState::new(
-            pool.clone(), None, prometheus_handle, ulid::Ulid::new().to_string(),
+            pool.clone(),
+            None,
+            prometheus_handle,
+            ulid::Ulid::new().to_string(),
         ));
-        let hub   = state.get_or_create_hub(&session_id);
+        let hub = state.get_or_create_hub(&session_id);
         // Register the task under AppState's own `sessions` map — unlike the
         // earlier tests' manually-constructed map, `create_approval_for_session`
         // looks the task up via `state.sessions.get(...)` internally, so it
@@ -2378,12 +2897,29 @@ mod tests {
         // Two approval rows for "the same" gated tool call — matching the ORB
         // orb_approval_id + sidecar_aid shape.
         let (approval_a, _) = crate::ws::create_approval_for_session(
-            &state, &session_id, &agent.id, "test_tool", &serde_json::json!({"n": 1}), 300,
-        ).await.expect("create_approval_for_session (A) should succeed");
+            &state,
+            &session_id,
+            &agent.id,
+            "test_tool",
+            &serde_json::json!({"n": 1}),
+            300,
+        )
+        .await
+        .expect("create_approval_for_session (A) should succeed");
         let (approval_b, _) = crate::ws::create_approval_for_session(
-            &state, &session_id, &agent.id, "test_tool", &serde_json::json!({"n": 1}), 300,
-        ).await.expect("create_approval_for_session (B) should succeed");
-        assert_ne!(approval_a, approval_b, "the two ORB-style rows must be genuinely distinct approvals");
+            &state,
+            &session_id,
+            &agent.id,
+            "test_tool",
+            &serde_json::json!({"n": 1}),
+            300,
+        )
+        .await
+        .expect("create_approval_for_session (B) should succeed");
+        assert_ne!(
+            approval_a, approval_b,
+            "the two ORB-style rows must be genuinely distinct approvals"
+        );
         // Generous window: two create_approval_for_session calls back-to-back
         // (matching the real ORB dual-row shape) put enough simultaneous load
         // on the pool that establishing the next new connection has been
@@ -2394,31 +2930,46 @@ mod tests {
         // long-running query during the delay). Not a bug to fix here.
         drain_broadcasts(&mut rx, Duration::from_secs(25)).await;
 
-        let task = state.sessions.get(&session_id).map(|e| e.value().clone())
+        let task = state
+            .sessions
+            .get(&session_id)
+            .map(|e| e.value().clone())
             .expect("session task should be registered after create_approval_for_session");
 
         // Claim A — should broadcast (A: Pending -> Claimed).
         task_approval_claim(&task, approval_a.clone(), human.id.clone()).await;
         let batch = drain_broadcasts(&mut rx, Duration::from_secs(2)).await;
-        assert!(batch.iter().any(|m| m.contains("session_updated")), "claiming A should broadcast, got {batch:?}");
+        assert!(
+            batch.iter().any(|m| m.contains("session_updated")),
+            "claiming A should broadcast, got {batch:?}"
+        );
 
         // Claim B independently — should ALSO broadcast, proving A's claim
         // didn't somehow already resolve B too.
         task_approval_claim(&task, approval_b.clone(), human.id.clone()).await;
         let batch = drain_broadcasts(&mut rx, Duration::from_secs(2)).await;
-        assert!(batch.iter().any(|m| m.contains("session_updated")), "claiming B should independently broadcast, got {batch:?}");
+        assert!(
+            batch.iter().any(|m| m.contains("session_updated")),
+            "claiming B should independently broadcast, got {batch:?}"
+        );
 
         // Re-claiming A must now be a no-op (CAS: A is Claimed, not Pending) —
         // confirms A's own state stuck and wasn't reset by claiming B.
         task_approval_claim(&task, approval_a.clone(), human.id.clone()).await;
         let batch = drain_broadcasts(&mut rx, Duration::from_millis(500)).await;
-        assert!(batch.is_empty(), "re-claiming an already-claimed A must not broadcast, got {batch:?}");
+        assert!(
+            batch.is_empty(),
+            "re-claiming an already-claimed A must not broadcast, got {batch:?}"
+        );
 
         // Cancel B — cancel has no CAS guard (matches ws.rs's own unconditional
         // set_state_in_tx), so this always broadcasts regardless of B's state.
         task_approval_cancel(&task, approval_b.clone(), human.id.clone()).await;
         let batch = drain_broadcasts(&mut rx, Duration::from_secs(2)).await;
-        assert!(batch.iter().any(|m| m.contains("session_updated")), "cancelling B should broadcast, got {batch:?}");
+        assert!(
+            batch.iter().any(|m| m.contains("session_updated")),
+            "cancelling B should broadcast, got {batch:?}"
+        );
 
         // The cross-contamination check: re-claiming A must STILL be a no-op —
         // if cancelling B had leaked into A's state (e.g. both approval_ids
@@ -2434,20 +2985,43 @@ mod tests {
         // Also verify delegate/dispute reach the machine without panicking
         // (both are unconditional EventLog-only no-ops memory-wise, so a
         // broadcast is the only observable signal either way).
-        task_approval_delegate(&task, approval_a.clone(), human.id.clone(), agent.id.clone()).await;
+        task_approval_delegate(
+            &task,
+            approval_a.clone(),
+            human.id.clone(),
+            agent.id.clone(),
+        )
+        .await;
         let batch = drain_broadcasts(&mut rx, Duration::from_secs(2)).await;
-        assert!(batch.iter().any(|m| m.contains("session_updated")), "delegating A should broadcast, got {batch:?}");
+        assert!(
+            batch.iter().any(|m| m.contains("session_updated")),
+            "delegating A should broadcast, got {batch:?}"
+        );
 
-        task_approval_dispute(&task, approval_a.clone(), human.id.clone(), "disagree".into()).await;
+        task_approval_dispute(
+            &task,
+            approval_a.clone(),
+            human.id.clone(),
+            "disagree".into(),
+        )
+        .await;
         let batch = drain_broadcasts(&mut rx, Duration::from_secs(2)).await;
-        assert!(batch.iter().any(|m| m.contains("session_updated")), "disputing A should broadcast, got {batch:?}");
+        assert!(
+            batch.iter().any(|m| m.contains("session_updated")),
+            "disputing A should broadcast, got {batch:?}"
+        );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Best-effort cleanup.
-        let _ = sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session_id).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .execute(&pool)
+            .await;
         let _ = sqlx::query("DELETE FROM actors WHERE id = ANY($1)")
-            .bind(&[human.id, agent.id][..]).execute(&pool).await;
+            .bind(&[human.id, agent.id][..])
+            .execute(&pool)
+            .await;
     }
 
     /// Live-DB test for Phase 4: confirms `Effect::Bundle` (now produced by
@@ -2477,26 +3051,40 @@ mod tests {
             .await
             .expect("failed to seed system actor");
 
-        let human = db::actors::create_human(&pool, db::actors::CreateHuman {
-            name:  "phase4-test-human".into(),
-            email: format!("phase4-test-{}@example.invalid", ulid::Ulid::new()),
-        })
+        let human = db::actors::create_human(
+            &pool,
+            db::actors::CreateHuman {
+                name: "phase4-test-human".into(),
+                email: format!("phase4-test-{}@example.invalid", ulid::Ulid::new()),
+            },
+        )
         .await
         .expect("failed to create test human actor");
 
-        let created = db::sessions::create(&pool, db::sessions::CreateSession {
-            name: "phase4-test".into(), description: None, created_by: human.id.clone(), approval_policy: None,
-        })
+        let created = db::sessions::create(
+            &pool,
+            db::sessions::CreateSession {
+                name: "phase4-test".into(),
+                description: None,
+                created_by: human.id.clone(),
+                approval_policy: None,
+            },
+        )
         .await
         .expect("failed to create test session");
         let session_id = created.session.id.clone();
 
-        let hub       = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
-        let sessions  = Arc::new(DashMap::new());
+        let hub = Arc::new(SessionHub::new(session_id.clone(), pool.clone()));
+        let sessions = Arc::new(DashMap::new());
         let reflector = Arc::new(Reflector::new());
         let handle = spawn_session_task(
-            session_id.clone(), human.id.clone(), pool.clone(), Arc::clone(&hub),
-            Arc::clone(&sessions), Arc::clone(&reflector), 1,
+            session_id.clone(),
+            human.id.clone(),
+            pool.clone(),
+            Arc::clone(&hub),
+            Arc::clone(&sessions),
+            Arc::clone(&reflector),
+            1,
         );
 
         let mut rx = hub.broadcast_tx.subscribe();
@@ -2504,18 +3092,21 @@ mod tests {
 
         let saga_id = "phase4-saga";
         let steps = vec![session::SagaStepSpec {
-            step_idx:     0,
-            participant:  "some-other-session".into(),
-            message:      serde_json::json!({"action": "commit"}),
+            step_idx: 0,
+            participant: "some-other-session".into(),
+            message: serde_json::json!({"action": "commit"}),
             compensation: serde_json::json!({"action": "rollback"}),
-            timeout_ms:   30_000,
+            timeout_ms: 30_000,
         }];
-        handle.send(InboundEvent::Live(LiveEvent::SagaBegin {
-            saga_id:   saga_id.into(),
-            saga_type: "custom".into(),
-            steps,
-            metadata:  serde_json::Value::Null,
-        })).await.expect("session task should still be accepting messages");
+        handle
+            .send(InboundEvent::Live(LiveEvent::SagaBegin {
+                saga_id: saga_id.into(),
+                saga_type: "custom".into(),
+                steps,
+                metadata: serde_json::Value::Null,
+            }))
+            .await
+            .expect("session task should still be accepting messages");
 
         // SagaBegun/SagaStepSent are real_persist (autonomous) — allow for
         // the same kind of connection-establishment latency observed in the
@@ -2525,8 +3116,10 @@ mod tests {
 
         let entries = reflector.replay(session::ReflectorCursor::zero());
         assert_eq!(
-            entries.len(), 1,
-            "expected exactly one bundle appended to the reflector, got {}", entries.len(),
+            entries.len(),
+            1,
+            "expected exactly one bundle appended to the reflector, got {}",
+            entries.len(),
         );
         let (_, bundle) = &entries[0];
         assert_eq!(bundle.saga_id, saga_id);
@@ -2536,13 +3129,20 @@ mod tests {
         assert!(
             matches!(&bundle.kind, session::BundleKind::Step { message, .. }
                 if message == &serde_json::json!({"action": "commit"})),
-            "unexpected bundle kind: {:?}", bundle.kind,
+            "unexpected bundle kind: {:?}",
+            bundle.kind,
         );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Best-effort cleanup.
-        let _ = sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session_id).execute(&pool).await;
-        let _ = sqlx::query("DELETE FROM actors WHERE id = $1").bind(&human.id).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM actors WHERE id = $1")
+            .bind(&human.id)
+            .execute(&pool)
+            .await;
     }
 }

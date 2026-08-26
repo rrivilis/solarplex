@@ -43,7 +43,7 @@ const INTENT_DEBOUNCE: Duration = Duration::from_millis(300);
 /// the sleep-then-fetch task -- a stale request for text the user has since
 /// changed or deleted must never land after a newer one.
 struct SuggestionTask {
-    rx:   mpsc::UnboundedReceiver<Option<String>>,
+    rx: mpsc::UnboundedReceiver<Option<String>>,
     task: JoinHandle<()>,
 }
 
@@ -99,13 +99,13 @@ enum Screen {
 }
 
 pub struct Model {
-    pub app:      Application<Id, Msg, NoUserEvent>,
-    pub quit:     bool,
-    pub redraw:   bool,
+    pub app: Application<Id, Msg, NoUserEvent>,
+    pub quit: bool,
+    pub redraw: bool,
     pub terminal: CrosstermTerminalAdapter,
-    ctx:          Ctx,
-    client:       Client,
-    screen:       Screen,
+    ctx: Ctx,
+    client: Client,
+    screen: Screen,
     /// Which session `SessionDetail` is currently showing, if any -- needed
     /// so a live WS push (which arrives outside any component's `on()`, see
     /// `poll_live`) knows what to refetch.
@@ -150,8 +150,12 @@ impl Model {
         let mut app: Application<Id, Msg, NoUserEvent> = Application::init(
             EventListenerCfg::default().crossterm_input_listener(Duration::from_millis(20), 3),
         );
-        app.mount(Id::SessionList, Box::new(SessionList::new(rows)), Vec::default())
-            .map_err(|e| anyhow::anyhow!("spsh: failed to mount session list: {e}"))?;
+        app.mount(
+            Id::SessionList,
+            Box::new(SessionList::new(rows)),
+            Vec::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("spsh: failed to mount session list: {e}"))?;
         app.active(&Id::SessionList)
             .map_err(|e| anyhow::anyhow!("spsh: failed to focus session list: {e}"))?;
 
@@ -168,17 +172,25 @@ impl Model {
             .map_err(|e| anyhow::anyhow!("spsh: failed to enable mouse capture: {e}"))?;
 
         Ok(Self {
-            app, quit: false, redraw: true, terminal,
-            ctx: ctx.clone(), client, screen: Screen::List,
-            current_session_id: None, ws: None, command_line_open: false,
-            intent_task: None, command_line_suggestion: None,
+            app,
+            quit: false,
+            redraw: true,
+            terminal,
+            ctx: ctx.clone(),
+            client,
+            screen: Screen::List,
+            current_session_id: None,
+            ws: None,
+            command_line_open: false,
+            intent_task: None,
+            command_line_suggestion: None,
         })
     }
 
     pub fn view(&mut self) {
         let _ = self.terminal.draw(|f| {
             let id = match self.screen {
-                Screen::List   => &Id::SessionList,
+                Screen::List => &Id::SessionList,
                 Screen::Detail => &Id::SessionDetail,
             };
             self.app.view(id, f, f.area());
@@ -188,12 +200,16 @@ impl Model {
                 // showing -- `CommandLine::view` mirrors this exact split
                 // (unchanged input box size, one extra row below it), so the
                 // two must stay in agreement about when that extra row exists.
-                let height: u16 = if self.command_line_suggestion.is_some() { 4 } else { 3 };
+                let height: u16 = if self.command_line_suggestion.is_some() {
+                    4
+                } else {
+                    3
+                };
                 let area = f.area();
                 let overlay = Rect {
-                    x:      area.x,
-                    y:      area.y + area.height.saturating_sub(height),
-                    width:  area.width,
+                    x: area.x,
+                    y: area.y + area.height.saturating_sub(height),
+                    width: area.width,
                     height: height.min(area.height),
                 };
                 self.app.view(&Id::CommandLine, f, overlay);
@@ -231,8 +247,12 @@ impl Model {
     /// same reason: the result arrives from a plain background task, not
     /// through any component's `on()`.
     pub async fn poll_intent_suggestion(&mut self) {
-        let Some(t) = self.intent_task.as_mut() else { return };
-        let Ok(suggestion) = t.rx.try_recv() else { return };
+        let Some(t) = self.intent_task.as_mut() else {
+            return;
+        };
+        let Ok(suggestion) = t.rx.try_recv() else {
+            return;
+        };
         self.command_line_suggestion = suggestion.clone();
         let _ = self.app.attr(
             &Id::CommandLine,
@@ -269,12 +289,18 @@ impl Model {
         };
 
         let detail = SessionDetail::new(
-            &session, artifacts.ok().as_ref(), approvals.ok().as_ref(), events.ok().as_ref(), connected,
+            &session,
+            artifacts.ok().as_ref(),
+            approvals.ok().as_ref(),
+            events.ok().as_ref(),
+            connected,
         );
         let mount_result = if self.app.mounted(&Id::SessionDetail) {
-            self.app.remount(Id::SessionDetail, Box::new(detail), Vec::default())
+            self.app
+                .remount(Id::SessionDetail, Box::new(detail), Vec::default())
         } else {
-            self.app.mount(Id::SessionDetail, Box::new(detail), Vec::default())
+            self.app
+                .mount(Id::SessionDetail, Box::new(detail), Vec::default())
         };
         if let Err(e) = mount_result {
             tracing::warn!("spsh: failed to mount session detail: {e}");
@@ -288,7 +314,7 @@ impl Model {
         self.redraw = true;
         match msg {
             Msg::AppClose => self.quit = true,
-            Msg::Redraw   => {}
+            Msg::Redraw => {}
 
             Msg::Back => {
                 // Restores focus to whatever `active()` pushed onto tuirealm's
@@ -318,7 +344,9 @@ impl Model {
 
             Msg::VoteApproval(approval_id, decision) => {
                 let Some(actor_id) = self.ctx.actor_id.clone() else {
-                    tracing::warn!("spsh: no actor set (--actor / SOLARPLEX_ACTOR_ID) -- can't vote");
+                    tracing::warn!(
+                        "spsh: no actor set (--actor / SOLARPLEX_ACTOR_ID) -- can't vote"
+                    );
                     return;
                 };
                 if let Err(e) = self.client.vote(&approval_id, &actor_id, decision).await {
@@ -335,9 +363,19 @@ impl Model {
             }
 
             Msg::SendMessage(text) => {
-                let Some(session_id) = self.current_session_id.clone() else { return };
-                let actor_id = self.ctx.actor_id.clone().unwrap_or_else(|| "anon".to_string());
-                if let Err(e) = self.client.post_message(&session_id, &actor_id, &text).await {
+                let Some(session_id) = self.current_session_id.clone() else {
+                    return;
+                };
+                let actor_id = self
+                    .ctx
+                    .actor_id
+                    .clone()
+                    .unwrap_or_else(|| "anon".to_string());
+                if let Err(e) = self
+                    .client
+                    .post_message(&session_id, &actor_id, &text)
+                    .await
+                {
                     tracing::warn!("spsh: post_message failed: {e}");
                     return;
                 }
@@ -346,9 +384,17 @@ impl Model {
 
             Msg::OpenCommandLine => {
                 let mount_result = if self.app.mounted(&Id::CommandLine) {
-                    self.app.remount(Id::CommandLine, Box::new(CommandLine::new()), Vec::default())
+                    self.app.remount(
+                        Id::CommandLine,
+                        Box::new(CommandLine::new()),
+                        Vec::default(),
+                    )
                 } else {
-                    self.app.mount(Id::CommandLine, Box::new(CommandLine::new()), Vec::default())
+                    self.app.mount(
+                        Id::CommandLine,
+                        Box::new(CommandLine::new()),
+                        Vec::default(),
+                    )
                 };
                 if let Err(e) = mount_result {
                     tracing::warn!("spsh: failed to mount command line: {e}");
@@ -385,7 +431,11 @@ impl Model {
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
                     self.command_line_suggestion = None;
-                    let _ = self.app.attr(&Id::CommandLine, Attribute::Text, AttrValue::String(String::new()));
+                    let _ = self.app.attr(
+                        &Id::CommandLine,
+                        Attribute::Text,
+                        AttrValue::String(String::new()),
+                    );
                     return;
                 }
 
@@ -424,7 +474,9 @@ impl Model {
     /// silent no-op -- adding one later is one match arm, not a redesign.
     async fn run_command(&mut self, text: &str) {
         let text = text.trim();
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
 
         let mut tokens: Vec<String> = text.split_whitespace().map(String::from).collect();
         // In Detail context the open session is implicit -- typed commands
@@ -439,7 +491,10 @@ impl Model {
         argv.extend(tokens);
 
         let cmd = ActArgs::augment_args(Command::new("spsh"));
-        let args = match cmd.try_get_matches_from(&argv).and_then(|m| ActArgs::from_arg_matches(&m)) {
+        let args = match cmd
+            .try_get_matches_from(&argv)
+            .and_then(|m| ActArgs::from_arg_matches(&m))
+        {
             Ok(a) => a,
             Err(e) => {
                 tracing::warn!("spsh: command parse error: {e}");
@@ -460,15 +515,23 @@ impl Model {
                     (Some(id), Some(to), Some(from)) => {
                         self.client.transfer_ownership(id, from, to).await
                     }
-                    (_, _, None) => Err(anyhow::anyhow!("no actor set (--actor / SOLARPLEX_ACTOR_ID)")),
-                    _ => Err(anyhow::anyhow!("OwnershipTransfer needs an entity id and --to <actor_id>")),
+                    (_, _, None) => Err(anyhow::anyhow!(
+                        "no actor set (--actor / SOLARPLEX_ACTOR_ID)"
+                    )),
+                    _ => Err(anyhow::anyhow!(
+                        "OwnershipTransfer needs an entity id and --to <actor_id>"
+                    )),
                 }
             }
             ("session", "Rename") => match (id_opt, args.name.as_deref()) {
-                (Some(id), Some(name)) => {
-                    self.client.rename_session(id, name, actor_id.as_deref()).await.map(|_| ())
-                }
-                _ => Err(anyhow::anyhow!("Rename needs an entity id and --name <new-name>")),
+                (Some(id), Some(name)) => self
+                    .client
+                    .rename_session(id, name, actor_id.as_deref())
+                    .await
+                    .map(|_| ()),
+                _ => Err(anyhow::anyhow!(
+                    "Rename needs an entity id and --name <new-name>"
+                )),
             },
             ("session", "Pause") => self.set_status(id_opt, "suspended").await,
             ("session", "Resume") => self.set_status(id_opt, "active").await,
@@ -476,15 +539,22 @@ impl Model {
             ("session", "AddContext") => match (id_opt, actor_id.as_deref()) {
                 (Some(id), Some(actor)) if !args.words.is_empty() => {
                     let content = args.words.join(" ");
-                    self.client.add_context(id, actor, &args.kind, &content).await
+                    self.client
+                        .add_context(id, actor, &args.kind, &content)
+                        .await
                 }
-                (_, None) => Err(anyhow::anyhow!("no actor set (--actor / SOLARPLEX_ACTOR_ID)")),
-                _ => Err(anyhow::anyhow!("AddContext needs an entity id and content words")),
+                (_, None) => Err(anyhow::anyhow!(
+                    "no actor set (--actor / SOLARPLEX_ACTOR_ID)"
+                )),
+                _ => Err(anyhow::anyhow!(
+                    "AddContext needs an entity id and content words"
+                )),
             },
             _ => Err(anyhow::anyhow!(
                 "`{transition}` isn't wired into spsh's command line yet -- run \
                  `sp act {}/{} {transition} ...` directly",
-                kind, id_opt.unwrap_or("<id>"),
+                kind,
+                id_opt.unwrap_or("<id>"),
             )),
         };
 
@@ -499,6 +569,9 @@ impl Model {
 
     async fn set_status(&self, id_opt: Option<&str>, status: &str) -> anyhow::Result<()> {
         let id = id_opt.ok_or_else(|| anyhow::anyhow!("`{status}` needs an entity id"))?;
-        self.client.update_session_status(id, status).await.map(|_| ())
+        self.client
+            .update_session_status(id, status)
+            .await
+            .map(|_| ())
     }
 }

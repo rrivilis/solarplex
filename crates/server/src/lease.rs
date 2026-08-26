@@ -50,19 +50,19 @@ impl ConflictClass {
     /// you can't take back cheaply once it's in a scraped history.
     fn metric_label(&self) -> &'static str {
         match self {
-            ConflictClass::Session(_)          => "session",
-            ConflictClass::Saga(_)             => "saga",
-            ConflictClass::SagaStep(_, _)       => "saga_step",
+            ConflictClass::Session(_) => "session",
+            ConflictClass::Saga(_) => "saga",
+            ConflictClass::SagaStep(_, _) => "saga_step",
             ConflictClass::ReflectorSegment(_) => "reflector_segment",
-            ConflictClass::ReflectorEpoch       => "reflector_epoch",
+            ConflictClass::ReflectorEpoch => "reflector_epoch",
         }
     }
 }
 
 struct LeaseRecord {
-    holder:        String,
-    acquired_at:   Instant,
-    ttl:           Duration,
+    holder: String,
+    acquired_at: Instant,
+    ttl: Duration,
     /// Monotonically increasing across every real acquisition of *any*
     /// class in this `LeaseManager` (a shared counter, not per-class) — see
     /// `LeaseManager::next_fencing_token`. Lets a durable writer reject a
@@ -74,7 +74,12 @@ struct LeaseRecord {
 
 impl LeaseRecord {
     fn new(holder: &str, ttl: Duration, fencing_token: u64) -> Self {
-        Self { holder: holder.to_string(), acquired_at: Instant::now(), ttl, fencing_token }
+        Self {
+            holder: holder.to_string(),
+            acquired_at: Instant::now(),
+            ttl,
+            fencing_token,
+        }
     }
 
     fn expired(&self) -> bool {
@@ -99,7 +104,10 @@ pub struct LeaseManager {
 
 impl LeaseManager {
     pub fn new() -> Self {
-        Self { leases: DashMap::new(), next_fencing_token: AtomicU64::new(0) }
+        Self {
+            leases: DashMap::new(),
+            next_fencing_token: AtomicU64::new(0),
+        }
     }
 
     /// Attempt to acquire `class` for `holder`. Returns a guard that
@@ -133,7 +141,8 @@ impl LeaseManager {
             "lease_acquire_total",
             "class"  => class.metric_label(),
             "result" => if acquired { "acquired" } else { "contended" },
-        ).increment(1);
+        )
+        .increment(1);
 
         // `then_some` (eager) would construct the LeaseGuard unconditionally
         // -- including on a failed/contended attempt -- and immediately drop
@@ -145,20 +154,28 @@ impl LeaseManager {
         // they only ever assert the loser's own return value, never that the
         // winner's lease survived a subsequent failed attempt. `then` (lazy)
         // only builds the guard when `acquired` is actually true.
-        acquired.then(|| LeaseGuard { manager: self, class, fencing_token: candidate_token })
+        acquired.then(|| LeaseGuard {
+            manager: self,
+            class,
+            fencing_token: candidate_token,
+        })
     }
 
     /// Current holder of `class`, if any (and not expired). For logging /
     /// picking a migration target once there's somewhere to migrate to.
     pub fn holder_of(&self, class: &ConflictClass) -> Option<String> {
-        self.leases.get(class).and_then(|r| (!r.expired()).then(|| r.holder.clone()))
+        self.leases
+            .get(class)
+            .and_then(|r| (!r.expired()).then(|| r.holder.clone()))
     }
 
     /// Current fencing token for `class`, if any (and not expired) —
     /// `holder_of`'s counterpart for the fencing value instead of the
     /// holder's name.
     pub fn fencing_token_of(&self, class: &ConflictClass) -> Option<u64> {
-        self.leases.get(class).and_then(|r| (!r.expired()).then_some(r.fencing_token))
+        self.leases
+            .get(class)
+            .and_then(|r| (!r.expired()).then_some(r.fencing_token))
     }
 
     /// Decide what a transaction needing `claims` should do, without
@@ -207,8 +224,8 @@ impl Default for LeaseManager {
 
 /// RAII lease handle — releases the lease when dropped.
 pub struct LeaseGuard<'a> {
-    manager:       &'a LeaseManager,
-    class:         ConflictClass,
+    manager: &'a LeaseManager,
+    class: ConflictClass,
     fencing_token: u64,
 }
 
@@ -244,7 +261,9 @@ mod tests {
     #[test]
     fn second_holder_is_blocked_while_first_holds_it() {
         let lm = LeaseManager::new();
-        let _first = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
+        let _first = lm
+            .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+            .unwrap();
         let second = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-b");
         assert!(second.is_none());
     }
@@ -253,7 +272,9 @@ mod tests {
     fn releasing_the_guard_frees_the_lease() {
         let lm = LeaseManager::new();
         {
-            let _first = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
+            let _first = lm
+                .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+                .unwrap();
         } // dropped here
         let second = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-b");
         assert!(second.is_some());
@@ -262,23 +283,33 @@ mod tests {
     #[test]
     fn fencing_token_is_assigned_on_acquire() {
         let lm = LeaseManager::new();
-        let guard = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
+        let guard = lm
+            .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+            .unwrap();
         assert!(guard.fencing_token() > 0);
-        assert_eq!(lm.fencing_token_of(&ConflictClass::ReflectorEpoch), Some(guard.fencing_token()));
+        assert_eq!(
+            lm.fencing_token_of(&ConflictClass::ReflectorEpoch),
+            Some(guard.fencing_token())
+        );
     }
 
     #[test]
     fn fencing_token_increases_after_release_and_reacquire() {
         let lm = LeaseManager::new();
         let first_token = {
-            let first = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
+            let first = lm
+                .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+                .unwrap();
             first.fencing_token()
         }; // dropped here, releasing the class
-        let second = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-b").unwrap();
+        let second = lm
+            .try_acquire(ConflictClass::ReflectorEpoch, "replica-b")
+            .unwrap();
         assert!(
             second.fencing_token() > first_token,
             "reacquiring after release must issue a strictly greater fencing token \
-             (first={first_token}, second={})", second.fencing_token(),
+             (first={first_token}, second={})",
+            second.fencing_token(),
         );
     }
 
@@ -287,8 +318,12 @@ mod tests {
         // The counter is deliberately global, not per-class -- acquiring
         // two different classes still yields two distinct, ordered tokens.
         let lm = LeaseManager::new();
-        let a = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
-        let b = lm.try_acquire(ConflictClass::ReflectorSegment(0), "replica-a").unwrap();
+        let a = lm
+            .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+            .unwrap();
+        let b = lm
+            .try_acquire(ConflictClass::ReflectorSegment(0), "replica-a")
+            .unwrap();
         assert_ne!(a.fencing_token(), b.fencing_token());
         assert!(b.fencing_token() > a.fencing_token());
     }
@@ -302,7 +337,9 @@ mod tests {
     #[test]
     fn independent_classes_never_conflict() {
         let lm = LeaseManager::new();
-        let _epoch = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
+        let _epoch = lm
+            .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+            .unwrap();
         // Flat and independent: a different class is unaffected even though
         // it conceptually overlaps (see module doc on hierarchy being
         // deliberately unhandled).
@@ -314,8 +351,13 @@ mod tests {
     fn holder_of_reports_current_holder() {
         let lm = LeaseManager::new();
         assert_eq!(lm.holder_of(&ConflictClass::ReflectorEpoch), None);
-        let _guard = lm.try_acquire(ConflictClass::ReflectorEpoch, "replica-a").unwrap();
-        assert_eq!(lm.holder_of(&ConflictClass::ReflectorEpoch), Some("replica-a".to_string()));
+        let _guard = lm
+            .try_acquire(ConflictClass::ReflectorEpoch, "replica-a")
+            .unwrap();
+        assert_eq!(
+            lm.holder_of(&ConflictClass::ReflectorEpoch),
+            Some("replica-a".to_string())
+        );
     }
 
     #[test]
@@ -387,32 +429,41 @@ mod tests {
 
         let handle = crate::metrics_route::install_or_reuse_recorder();
         let before = handle.render();
-        let before_acquired  = read_counter_value(&before, "lease_acquire_total{class=\"saga\",result=\"acquired\"} ");
-        let before_contended = read_counter_value(&before, "lease_acquire_total{class=\"saga\",result=\"contended\"} ");
+        let before_acquired = read_counter_value(
+            &before,
+            "lease_acquire_total{class=\"saga\",result=\"acquired\"} ",
+        );
+        let before_contended = read_counter_value(
+            &before,
+            "lease_acquire_total{class=\"saga\",result=\"contended\"} ",
+        );
 
-        let lm      = Arc::new(LeaseManager::new());
+        let lm = Arc::new(LeaseManager::new());
         let barrier = Arc::new(Barrier::new(N));
 
-        let workers: Vec<_> = (0..N).map(|i| {
-            let lm      = Arc::clone(&lm);
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                barrier.wait(); // line every thread up so the burst actually overlaps
-                let class  = ConflictClass::Saga("stress-test".into());
-                let holder = format!("thread-{i}");
-                let guard  = lm.try_acquire(class, &holder);
-                let acquired = guard.is_some();
-                // Deliberately leaked, never dropped: if the winner's guard
-                // released mid-burst, a later contender could re-acquire
-                // and this test would see more than one "winner" even
-                // though the lease itself was never actually double-held
-                // at once — leaking pins the outcome for the whole burst.
-                std::mem::forget(guard);
-                acquired
+        let workers: Vec<_> = (0..N)
+            .map(|i| {
+                let lm = Arc::clone(&lm);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait(); // line every thread up so the burst actually overlaps
+                    let class = ConflictClass::Saga("stress-test".into());
+                    let holder = format!("thread-{i}");
+                    let guard = lm.try_acquire(class, &holder);
+                    let acquired = guard.is_some();
+                    // Deliberately leaked, never dropped: if the winner's guard
+                    // released mid-burst, a later contender could re-acquire
+                    // and this test would see more than one "winner" even
+                    // though the lease itself was never actually double-held
+                    // at once — leaking pins the outcome for the whole burst.
+                    std::mem::forget(guard);
+                    acquired
+                })
             })
-        }).collect();
+            .collect();
 
-        let acquired_count = workers.into_iter()
+        let acquired_count = workers
+            .into_iter()
             .map(|w| w.join().expect("worker thread panicked"))
             .filter(|&acquired| acquired)
             .count();
@@ -420,21 +471,41 @@ mod tests {
         // LeaseManager-level invariant, independent of the metrics system
         // entirely: with every guard pinned for the test's duration, exactly
         // one of N real concurrent contenders on the same class can win.
-        assert_eq!(acquired_count, 1, "expected exactly one winner across {N} concurrent contenders");
+        assert_eq!(
+            acquired_count, 1,
+            "expected exactly one winner across {N} concurrent contenders"
+        );
 
         let after = handle.render();
-        let after_acquired  = read_counter_value(&after, "lease_acquire_total{class=\"saga\",result=\"acquired\"} ");
-        let after_contended = read_counter_value(&after, "lease_acquire_total{class=\"saga\",result=\"contended\"} ");
+        let after_acquired = read_counter_value(
+            &after,
+            "lease_acquire_total{class=\"saga\",result=\"acquired\"} ",
+        );
+        let after_contended = read_counter_value(
+            &after,
+            "lease_acquire_total{class=\"saga\",result=\"contended\"} ",
+        );
 
-        let delta_acquired  = (after_acquired  - before_acquired) as usize;
+        let delta_acquired = (after_acquired - before_acquired) as usize;
         let delta_contended = (after_contended - before_contended) as usize;
 
         // The actual metrics-correctness claim: every one of the N calls to
         // try_acquire landed exactly one counter increment -- none lost to a
         // race in the underlying registry under genuine concurrent access
         // from N distinct OS threads.
-        assert_eq!(delta_acquired, 1, "acquired-result counter under-/over-counted");
-        assert_eq!(delta_contended, N - 1, "contended-result counter under-/over-counted");
-        assert_eq!(delta_acquired + delta_contended, N, "lost or duplicated an increment somewhere");
+        assert_eq!(
+            delta_acquired, 1,
+            "acquired-result counter under-/over-counted"
+        );
+        assert_eq!(
+            delta_contended,
+            N - 1,
+            "contended-result counter under-/over-counted"
+        );
+        assert_eq!(
+            delta_acquired + delta_contended,
+            N,
+            "lost or duplicated an increment somewhere"
+        );
     }
 }

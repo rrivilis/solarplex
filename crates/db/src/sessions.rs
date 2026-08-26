@@ -21,8 +21,13 @@ pub fn token_hash(raw: &str) -> String {
 pub fn verify_join_token(raw_provided: &str, stored_hash: &str) -> bool {
     let h = token_hash(raw_provided);
     // Constant-time comparison to prevent timing oracle on hash prefix.
-    if h.len() != stored_hash.len() { return false; }
-    h.bytes().zip(stored_hash.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    if h.len() != stored_hash.len() {
+        return false;
+    }
+    h.bytes()
+        .zip(stored_hash.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// TTL granted to the new owner's root cap on cooperative transfer.
@@ -50,7 +55,7 @@ pub struct SessionRow {
 /// row so the API layer can present it to the caller once. After this call the
 /// raw token is gone; only the hash lives in the database.
 pub struct CreateSessionResult {
-    pub session:        SessionRow,
+    pub session: SessionRow,
     pub raw_join_token: String,
 }
 
@@ -74,9 +79,11 @@ pub struct CreateSession {
 }
 
 pub async fn create(pool: &PgPool, input: CreateSession) -> DbResult<CreateSessionResult> {
-    let session_id    = Ulid::new().to_string();
+    let session_id = Ulid::new().to_string();
     let membership_id = Ulid::new().to_string();
-    let policy        = input.approval_policy.unwrap_or_else(|| "single_vote".into());
+    let policy = input
+        .approval_policy
+        .unwrap_or_else(|| "single_vote".into());
     let raw_join_token = Uuid::new_v4().to_string();
     let join_token_hash = token_hash(&raw_join_token);
 
@@ -105,12 +112,10 @@ pub async fn create(pool: &PgPool, input: CreateSession) -> DbResult<CreateSessi
     .execute(&mut *tx)
     .await?;
 
-    sqlx::query(
-        "INSERT INTO session_sequences (session_id, next_seq) VALUES ($1, 1)",
-    )
-    .bind(&session_id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO session_sequences (session_id, next_seq) VALUES ($1, 1)")
+        .bind(&session_id)
+        .execute(&mut *tx)
+        .await?;
 
     // Seed an empty snapshot row (versioned INSERT-only schema from migration 010).
     let snapshot_id = Ulid::new().to_string();
@@ -123,15 +128,16 @@ pub async fn create(pool: &PgPool, input: CreateSession) -> DbResult<CreateSessi
     .await?;
 
     // Seed epoch row (migration 011) — new sessions start at epoch 0.
-    sqlx::query(
-        "INSERT INTO session_epochs (session_id) VALUES ($1) ON CONFLICT DO NOTHING",
-    )
-    .bind(&session_id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO session_epochs (session_id) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(&session_id)
+        .execute(&mut *tx)
+        .await?;
 
     tx.commit().await?;
-    Ok(CreateSessionResult { session, raw_join_token })
+    Ok(CreateSessionResult {
+        session,
+        raw_join_token,
+    })
 }
 
 pub async fn get(pool: &PgPool, id: &str) -> DbResult<SessionRow> {
@@ -147,7 +153,10 @@ pub async fn get(pool: &PgPool, id: &str) -> DbResult<SessionRow> {
 
 /// Computed fresh on every call — see `protocol::types::SessionDigest`'s doc
 /// comment for why this is deliberately not a stored/materialized value.
-pub async fn compute_digest(pool: &PgPool, session_id: &str) -> DbResult<protocol::types::SessionDigest> {
+pub async fn compute_digest(
+    pool: &PgPool,
+    session_id: &str,
+) -> DbResult<protocol::types::SessionDigest> {
     let session = get(pool, session_id).await?;
 
     let recent_event_count: i64 = sqlx::query_scalar(
@@ -164,19 +173,17 @@ pub async fn compute_digest(pool: &PgPool, session_id: &str) -> DbResult<protoco
     .fetch_one(pool)
     .await?;
 
-    let artifacts_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM artifacts WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await?;
+    let artifacts_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM artifacts WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
 
-    let last_activity_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT max(timestamp) FROM events WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await?;
+    let last_activity_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT max(timestamp) FROM events WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
 
     Ok(protocol::types::SessionDigest {
         session_id: session_id.to_string(),
@@ -212,11 +219,12 @@ pub async fn list(pool: &PgPool) -> DbResult<Vec<SessionRow>> {
 pub async fn regenerate_join_token(pool: &PgPool, session_id: &str) -> DbResult<String> {
     let raw_token = Uuid::new_v4().to_string();
     let hash = token_hash(&raw_token);
-    let updated = sqlx::query("UPDATE sessions SET join_token = $1, updated_at = now() WHERE id = $2")
-        .bind(&hash)
-        .bind(session_id)
-        .execute(pool)
-        .await?;
+    let updated =
+        sqlx::query("UPDATE sessions SET join_token = $1, updated_at = now() WHERE id = $2")
+            .bind(&hash)
+            .bind(session_id)
+            .execute(pool)
+            .await?;
     if updated.rows_affected() == 0 {
         return Err(DbError::NotFound);
     }
@@ -268,7 +276,11 @@ pub async fn rename(pool: &PgPool, id: &str, new_name: &str) -> DbResult<Session
     .ok_or(DbError::NotFound)
 }
 
-pub async fn get_membership(pool: &PgPool, session_id: &str, actor_id: &str) -> DbResult<MembershipRow> {
+pub async fn get_membership(
+    pool: &PgPool,
+    session_id: &str,
+    actor_id: &str,
+) -> DbResult<MembershipRow> {
     sqlx::query_as::<_, MembershipRow>(
         "SELECT id, session_id, actor_id, role, escalation_order, escalation_timeout, joined_at, detached_at
          FROM session_memberships WHERE session_id = $1 AND actor_id = $2",
@@ -336,7 +348,9 @@ pub async fn require_membership_or_linked_access(
         return Err(DbError::NotFound);
     }
     match crate::session_links::actor_has_linked_access(pool, actor_id, session_id).await? {
-        Some(_peer_session_id) => add_member(pool, session_id, actor_id, "observer", None, None).await,
+        Some(_peer_session_id) => {
+            add_member(pool, session_id, actor_id, "observer", None, None).await
+        }
         None => Err(DbError::NotFound),
     }
 }
@@ -427,7 +441,12 @@ pub async fn add_member(
     Ok(row)
 }
 
-pub async fn transfer_ownership(pool: &PgPool, session_id: &str, from: &str, to: &str) -> DbResult<()> {
+pub async fn transfer_ownership(
+    pool: &PgPool,
+    session_id: &str,
+    from: &str,
+    to: &str,
+) -> DbResult<()> {
     let mut tx = pool.begin().await?;
     transfer_ownership_in_tx(&mut tx, session_id, from, to).await?;
     tx.commit().await?;
@@ -449,10 +468,10 @@ pub async fn transfer_ownership(pool: &PgPool, session_id: &str, from: &str, to:
 /// (migration 011) may have no root cap for `from`, in which case only the
 /// display label update fires.
 pub async fn transfer_ownership_in_tx(
-    tx:         &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     session_id: &str,
-    from:       &str,
-    to:         &str,
+    from: &str,
+    to: &str,
 ) -> DbResult<()> {
     // ── 1. Display label update ───────────────────────────────────────────────
     sqlx::query(

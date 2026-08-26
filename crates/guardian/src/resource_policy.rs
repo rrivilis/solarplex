@@ -65,21 +65,39 @@ fn apply_toml_file(limits: &mut ResourceLimits) {
         }
     };
     let r = cfg.resource_limits;
-    if let Some(p) = r.cpu           { let _ = sandbox_entry::set_named(limits, "cpu", p); }
-    if let Some(p) = r.address_space { let _ = sandbox_entry::set_named(limits, "as", p); }
-    if let Some(p) = r.fsize         { let _ = sandbox_entry::set_named(limits, "fsize", p); }
-    if let Some(p) = r.nofile        { let _ = sandbox_entry::set_named(limits, "nofile", p); }
-    if let Some(p) = r.stack         { let _ = sandbox_entry::set_named(limits, "stack", p); }
-    if let Some(p) = r.core          { let _ = sandbox_entry::set_named(limits, "core", p); }
-    if let Some(p) = r.nproc         { let _ = sandbox_entry::set_named(limits, "nproc", p); }
+    if let Some(p) = r.cpu {
+        let _ = sandbox_entry::set_named(limits, "cpu", p);
+    }
+    if let Some(p) = r.address_space {
+        let _ = sandbox_entry::set_named(limits, "as", p);
+    }
+    if let Some(p) = r.fsize {
+        let _ = sandbox_entry::set_named(limits, "fsize", p);
+    }
+    if let Some(p) = r.nofile {
+        let _ = sandbox_entry::set_named(limits, "nofile", p);
+    }
+    if let Some(p) = r.stack {
+        let _ = sandbox_entry::set_named(limits, "stack", p);
+    }
+    if let Some(p) = r.core {
+        let _ = sandbox_entry::set_named(limits, "core", p);
+    }
+    if let Some(p) = r.nproc {
+        let _ = sandbox_entry::set_named(limits, "nproc", p);
+    }
 }
 
 fn apply_env(limits: &mut ResourceLimits) {
     for &name in sandbox_entry::RLIMIT_NAMES {
         let key = format!("SOLARPLEX_RLIMIT_{}", name.to_uppercase());
-        let Ok(val) = std::env::var(&key) else { continue };
+        let Ok(val) = std::env::var(&key) else {
+            continue;
+        };
         match sandbox_entry::parse_pair(&val) {
-            Ok(pair) => { let _ = sandbox_entry::set_named(limits, name, pair); }
+            Ok(pair) => {
+                let _ = sandbox_entry::set_named(limits, name, pair);
+            }
             Err(e) => tracing::warn!("resource_policy: {key}={val:?}: {e} — skipping"),
         }
     }
@@ -115,9 +133,9 @@ struct TomlResourceLimits {
     cpu: Option<RlimitPair>,
     #[serde(rename = "as")]
     address_space: Option<RlimitPair>,
-    fsize:  Option<RlimitPair>,
+    fsize: Option<RlimitPair>,
     nofile: Option<RlimitPair>,
-    stack:  Option<RlimitPair>,
-    core:   Option<RlimitPair>,
-    nproc:  Option<RlimitPair>,
+    stack: Option<RlimitPair>,
+    core: Option<RlimitPair>,
+    nproc: Option<RlimitPair>,
 }

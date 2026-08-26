@@ -69,7 +69,8 @@ impl MemberRole {
     }
 
     pub fn can_delete_artifact(&self, is_creator: bool) -> bool {
-        matches!(self, MemberRole::Owner) || (matches!(self, MemberRole::Collaborator) && is_creator)
+        matches!(self, MemberRole::Owner)
+            || (matches!(self, MemberRole::Collaborator) && is_creator)
     }
 
     /// Authority ranking for role-ceiling checks (e.g. "does this member
@@ -80,10 +81,10 @@ impl MemberRole {
     /// `satisfies`/`can_invite_as` rather than comparing ranks directly.
     fn rank(&self) -> u8 {
         match self {
-            MemberRole::Owner        => 3,
+            MemberRole::Owner => 3,
             MemberRole::Collaborator => 2,
-            MemberRole::Observer     => 1,
-            MemberRole::Agent        => 0,
+            MemberRole::Observer => 1,
+            MemberRole::Agent => 0,
         }
     }
 
@@ -105,11 +106,11 @@ impl std::str::FromStr for MemberRole {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "owner"        => Ok(MemberRole::Owner),
+            "owner" => Ok(MemberRole::Owner),
             "collaborator" => Ok(MemberRole::Collaborator),
-            "observer"     => Ok(MemberRole::Observer),
-            "agent"        => Ok(MemberRole::Agent),
-            _              => Err(()),
+            "observer" => Ok(MemberRole::Observer),
+            "agent" => Ok(MemberRole::Agent),
+            _ => Err(()),
         }
     }
 }
@@ -140,11 +141,7 @@ pub enum ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
-    pub fn evaluate(
-        &self,
-        votes: &HashMap<String, Vote>,
-        eligible_count: usize,
-    ) -> ApprovalState {
+    pub fn evaluate(&self, votes: &HashMap<String, Vote>, eligible_count: usize) -> ApprovalState {
         let approve = votes.values().filter(|v| **v == Vote::Approve).count();
         let deny = votes.values().filter(|v| **v == Vote::Deny).count();
 
@@ -317,16 +314,18 @@ impl EntityHandle {
     /// ```
     pub fn from_uri(uri: &str) -> Option<Self> {
         let (kind, id) = uri.split_once('/')?;
-        if id.is_empty() { return None; }
+        if id.is_empty() {
+            return None;
+        }
         let id = id.to_string();
         match kind {
-            "session"  => Some(Self::Session(id)),
+            "session" => Some(Self::Session(id)),
             "artifact" => Some(Self::Artifact(id)),
-            "actor"    => Some(Self::Actor(id)),
-            "context"  => Some(Self::Context(id)),
-            "cap"      => Some(Self::Cap(id)),
+            "actor" => Some(Self::Actor(id)),
+            "context" => Some(Self::Context(id)),
+            "cap" => Some(Self::Cap(id)),
             "approval" => Some(Self::Approval(id)),
-            "invite"   => Some(Self::Invite(id)),
+            "invite" => Some(Self::Invite(id)),
             _ => None,
         }
     }
@@ -334,21 +333,25 @@ impl EntityHandle {
     /// The canonical entity type string ("session", "artifact", …).
     pub fn entity_type(&self) -> &'static str {
         match self {
-            Self::Session(_)  => "session",
+            Self::Session(_) => "session",
             Self::Artifact(_) => "artifact",
-            Self::Actor(_)    => "actor",
-            Self::Context(_)  => "context",
-            Self::Cap(_)      => "cap",
+            Self::Actor(_) => "actor",
+            Self::Context(_) => "context",
+            Self::Cap(_) => "cap",
             Self::Approval(_) => "approval",
-            Self::Invite(_)   => "invite",
+            Self::Invite(_) => "invite",
         }
     }
 
     /// The opaque ID (ULID or actor identifier string).
     pub fn id(&self) -> &str {
         match self {
-            Self::Session(id) | Self::Artifact(id) | Self::Actor(id)
-            | Self::Context(id) | Self::Cap(id) | Self::Approval(id)
+            Self::Session(id)
+            | Self::Artifact(id)
+            | Self::Actor(id)
+            | Self::Context(id)
+            | Self::Cap(id)
+            | Self::Approval(id)
             | Self::Invite(id) => id,
         }
     }
@@ -381,7 +384,6 @@ impl EntityHandle {
                 | Self::Invite(_)
         )
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -29,9 +29,9 @@
 //!
 //! When `num_nodes == 1` (the default), every session is assigned to node 0,
 //! every forward is `Local`, and the fast-path remains unchanged.
-//! 
+//!
 //! As of now, multi-node brokering is designed for but remains future work.
-//! Tokio's scheduler does not yet consult with env var on pinning threads to sockets 
+//! Tokio's scheduler does not yet consult with env var on pinning threads to sockets
 //! or to control the DRAM bank memory allocation.
 
 // ── Routing discriminant ──────────────────────────────────────────────────────
@@ -84,7 +84,7 @@ pub fn session_numa_node(session_id: &str, num_nodes: u8) -> u8 {
         return 0;
     }
     const OFFSET: u64 = 14_695_981_039_346_656_037;
-    const PRIME:  u64 = 1_099_511_628_211;
+    const PRIME: u64 = 1_099_511_628_211;
     let hash = session_id
         .bytes()
         .fold(OFFSET, |h, b| h.wrapping_mul(PRIME) ^ b as u64);
@@ -101,8 +101,8 @@ mod tests {
 
     #[test]
     fn single_node_always_zero() {
-        assert_eq!(session_numa_node("",         1), 0);
-        assert_eq!(session_numa_node("sess_01",  1), 0);
+        assert_eq!(session_numa_node("", 1), 0);
+        assert_eq!(session_numa_node("sess_01", 1), 0);
         assert_eq!(session_numa_node("01JABCDE", 1), 0);
     }
 

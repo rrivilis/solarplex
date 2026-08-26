@@ -13,10 +13,10 @@ use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
-use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Direction as LayoutDirection, Layout, Rect};
 use tuirealm::ratatui::style::{Color, Style};
 use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 
 use super::model::Msg;
@@ -41,7 +41,11 @@ impl CommandLine {
             "OwnershipTransfer --to bob   (Esc cancel -- session/<id> auto-filled when a session is open)",
         );
         input.set_focused(true);
-        Self { props: Props::default(), input, suggestion: None }
+        Self {
+            props: Props::default(),
+            input,
+            suggestion: None,
+        }
     }
 }
 
@@ -63,11 +67,15 @@ impl Component for CommandLine {
         // never has to squeeze the input box itself to make room.
         let [input_area, suggestion_area] = Layout::default()
             .direction(LayoutDirection::Vertical)
-            .constraints([Constraint::Length(area.height.saturating_sub(1)), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(area.height.saturating_sub(1)),
+                Constraint::Length(1),
+            ])
             .areas(area);
         self.input.render(frame, input_area);
         frame.render_widget(
-            Paragraph::new(format!(" \u{2192} {suggestion}")).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(format!(" \u{2192} {suggestion}"))
+                .style(Style::default().fg(Color::DarkGray)),
             suggestion_area,
         );
     }
@@ -82,7 +90,10 @@ impl Component for CommandLine {
         // (its actual content is `TextInput`'s own buffer, driven directly
         // through `handle_key`, not through this trait method at all).
         if attr == Attribute::Text {
-            self.suggestion = value.as_string().filter(|s| !s.is_empty()).map(String::from);
+            self.suggestion = value
+                .as_string()
+                .filter(|s| !s.is_empty())
+                .map(String::from);
         }
         self.props.set(attr, value);
     }
@@ -99,7 +110,13 @@ impl Component for CommandLine {
 impl AppComponent<Msg, NoUserEvent> for CommandLine {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         let key = ev.as_keyboard()?;
-        if matches!(key, KeyEvent { code: Key::Esc, modifiers: KeyModifiers::NONE }) {
+        if matches!(
+            key,
+            KeyEvent {
+                code: Key::Esc,
+                modifiers: KeyModifiers::NONE
+            }
+        ) {
             return Some(Msg::CloseCommandLine);
         }
         match self.input.handle_key(key) {

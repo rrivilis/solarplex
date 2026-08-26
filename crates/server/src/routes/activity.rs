@@ -42,12 +42,12 @@ struct ActivityQuery {
 
 #[autometrics]
 async fn list_mine(
-    headers:      HeaderMap,
-    Query(q):     Query<ActivityQuery>,
+    headers: HeaderMap,
+    Query(q): Query<ActivityQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
 
@@ -56,7 +56,7 @@ async fn list_mine(
     // membership check needed below: this list is already scoped to
     // sessions the actor belongs to.
     let member_sessions = match sessions::list_by_actor(&state.db, &actor_id).await {
-        Ok(s)  => s,
+        Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     if member_sessions.is_empty() {
@@ -64,19 +64,26 @@ async fn list_mine(
     }
 
     let session_ids: Vec<String> = member_sessions.iter().map(|s| s.id.clone()).collect();
-    let session_names: HashMap<String, String> = member_sessions.into_iter()
+    let session_names: HashMap<String, String> = member_sessions
+        .into_iter()
         .map(|s| (s.id, s.name))
         .collect();
 
     let events = match db::events::list_recent_across_sessions(
-        &state.db, &session_ids, q.limit.unwrap_or(100),
-    ).await {
-        Ok(e)  => e,
+        &state.db,
+        &session_ids,
+        q.limit.unwrap_or(100),
+    )
+    .await
+    {
+        Ok(e) => e,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
     let actor_ids: Vec<String> = events.iter().map(|e| e.actor_id.clone()).collect();
-    let names = actors::get_many(&state.db, &actor_ids).await.unwrap_or_default();
+    let names = actors::get_many(&state.db, &actor_ids)
+        .await
+        .unwrap_or_default();
 
     let out: Vec<serde_json::Value> = events.iter().map(|e| {
         let actor_name = names.get(&e.actor_id).map(|a| a.name.clone()).unwrap_or_else(|| e.actor_id.clone());

@@ -10,7 +10,10 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
 pub fn send_fd(sock_fd: RawFd, fd: RawFd) -> io::Result<()> {
     let payload = [0u8; 1];
-    let iov = libc::iovec { iov_base: payload.as_ptr() as *mut _, iov_len: 1 };
+    let iov = libc::iovec {
+        iov_base: payload.as_ptr() as *mut _,
+        iov_len: 1,
+    };
 
     let mut cbuf = [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as usize }];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -24,17 +27,26 @@ pub fn send_fd(sock_fd: RawFd, fd: RawFd) -> io::Result<()> {
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
         (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
-        std::ptr::copy_nonoverlapping(&fd as *const RawFd as *const u8, libc::CMSG_DATA(cmsg), std::mem::size_of::<RawFd>());
+        std::ptr::copy_nonoverlapping(
+            &fd as *const RawFd as *const u8,
+            libc::CMSG_DATA(cmsg),
+            std::mem::size_of::<RawFd>(),
+        );
     }
 
     let rc = unsafe { libc::sendmsg(sock_fd, &msg, 0) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 
 pub fn recv_fd(sock_fd: RawFd) -> io::Result<OwnedFd> {
     let mut payload = [0u8; 1];
-    let iov = libc::iovec { iov_base: payload.as_mut_ptr() as *mut _, iov_len: 1 };
+    let iov = libc::iovec {
+        iov_base: payload.as_mut_ptr() as *mut _,
+        iov_len: 1,
+    };
 
     let mut cbuf = [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as usize }];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -44,7 +56,9 @@ pub fn recv_fd(sock_fd: RawFd) -> io::Result<OwnedFd> {
     msg.msg_controllen = cbuf.len();
 
     let rc = unsafe { libc::recvmsg(sock_fd, &mut msg, 0) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     if rc == 0 {
         // A clean EOF (peer closed without ever sending) is not a syscall
         // error -- errno is not meaningfully set on a 0 return, so
@@ -59,14 +73,24 @@ pub fn recv_fd(sock_fd: RawFd) -> io::Result<OwnedFd> {
 
     let cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg) };
     if cmsg.is_null() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "recv_fd: no control message received"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recv_fd: no control message received",
+        ));
     }
     let mut fd: RawFd = -1;
     unsafe {
-        std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg), &mut fd as *mut RawFd as *mut u8, std::mem::size_of::<RawFd>());
+        std::ptr::copy_nonoverlapping(
+            libc::CMSG_DATA(cmsg),
+            &mut fd as *mut RawFd as *mut u8,
+            std::mem::size_of::<RawFd>(),
+        );
     }
     if fd < 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "recv_fd: no fd in control message"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recv_fd: no fd in control message",
+        ));
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }

@@ -18,8 +18,15 @@ pub enum Intent {
     Approve,
     Deny,
     Claim,
-    Invite { role: MemberRole, invitee: Option<String>, #[serde(skip_serializing_if = "Option::is_none")] ttl_secs: Option<i64> },
-    TransferOwnership { to: String },
+    Invite {
+        role: MemberRole,
+        invitee: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ttl_secs: Option<i64>,
+    },
+    TransferOwnership {
+        to: String,
+    },
     /// Plain "take me to session X" — no CLI analog (this is the one verb
     /// that exists only because a command bar needs it, not because `sp`
     /// has an equivalent), and unlike every other variant here its

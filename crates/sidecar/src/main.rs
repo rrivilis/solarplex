@@ -11,31 +11,34 @@ const ADAPTER_IPC_FD: i32 = 3;
 
 #[derive(Clone)]
 pub struct Config {
-    pub server_ws:        String,
-    pub session_id:       String,
-    pub actor_id:         String,
-    pub listen_port:      u16,
-    pub upstream_mcp:     String,
+    pub server_ws: String,
+    pub session_id: String,
+    pub actor_id: String,
+    pub listen_port: u16,
+    pub upstream_mcp: String,
     pub upstream_mcp_cmd: Option<String>,
     // shim_ipc_path and channel_secret removed — authority is the inherited fd.
-    pub cap_id:           Option<String>,
-    pub tool_categories:  HashMap<String, String>,
+    pub cap_id: Option<String>,
+    pub tool_categories: HashMap<String, String>,
 }
 
 impl Config {
     fn from_env() -> anyhow::Result<Self> {
         let tool_categories: HashMap<String, String> = std::env::var("SOLARPLEX_TOOL_CATEGORIES")
-            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         Ok(Self {
-            server_ws:      std::env::var("SOLARPLEX_WS")
+            server_ws: std::env::var("SOLARPLEX_WS")
                 .unwrap_or_else(|_| "ws://localhost:8080".into()),
-            session_id:     std::env::var("SOLARPLEX_SESSION_ID")?,
-            actor_id:       std::env::var("SOLARPLEX_ACTOR_ID")?,
-            listen_port:    std::env::var("SIDECAR_PORT")
-                .unwrap_or_else(|_| "7777".into()).parse()?,
-            upstream_mcp:   std::env::var("UPSTREAM_MCP_URL").unwrap_or_default(),
+            session_id: std::env::var("SOLARPLEX_SESSION_ID")?,
+            actor_id: std::env::var("SOLARPLEX_ACTOR_ID")?,
+            listen_port: std::env::var("SIDECAR_PORT")
+                .unwrap_or_else(|_| "7777".into())
+                .parse()?,
+            upstream_mcp: std::env::var("UPSTREAM_MCP_URL").unwrap_or_default(),
             upstream_mcp_cmd: std::env::var("UPSTREAM_MCP_CMD").ok(),
-            cap_id:         std::env::var("SOLARPLEX_CAP_ID").ok(),
+            cap_id: std::env::var("SOLARPLEX_CAP_ID").ok(),
             tool_categories,
         })
     }

@@ -5,9 +5,9 @@ use crate::config::Ctx;
 
 /// Thin async HTTP wrapper around the Solarplex REST API.
 pub struct Client {
-    http:       reqwest::Client,
+    http: reqwest::Client,
     pub server: String,
-    token:      Option<String>,
+    token: Option<String>,
 }
 
 impl Client {
@@ -16,7 +16,11 @@ impl Client {
             .timeout(std::time::Duration::from_secs(35))
             .build()
             .context("build HTTP client")?;
-        Ok(Self { http, server: ctx.server.clone(), token: ctx.token.clone() })
+        Ok(Self {
+            http,
+            server: ctx.server.clone(),
+            token: ctx.token.clone(),
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -29,7 +33,7 @@ impl Client {
     fn authed(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.token {
             Some(t) => rb.bearer_auth(t),
-            None    => rb,
+            None => rb,
         }
     }
 
@@ -44,7 +48,11 @@ impl Client {
     /// to surface as a bare "HTTP error" with no indication of which check
     /// actually failed (e.g. a 403 from `require_active_membership` saying
     /// "not a member of this session" was previously invisible to the user).
-    async fn check_status(resp: reqwest::Response, method: &str, url: &str) -> Result<reqwest::Response> {
+    async fn check_status(
+        resp: reqwest::Response,
+        method: &str,
+        url: &str,
+    ) -> Result<reqwest::Response> {
         let status = resp.status();
         if status.is_success() {
             return Ok(resp);
@@ -87,7 +95,8 @@ impl Client {
     }
 
     pub async fn get_session(&self, session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}")))
+            .await
     }
 
     // ── Digest ────────────────────────────────────────────────────────────────
@@ -95,34 +104,48 @@ impl Client {
     /// `GET /api/sessions/:id/digest` — computed-on-read summary (recent
     /// activity, open approvals, artifacts), never a stored value.
     pub async fn get_digest(&self, session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/digest"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/digest")))
+            .await
     }
 
     // ── Remotes ───────────────────────────────────────────────────────────────
 
-    pub async fn add_remote(&self, local_session_id: &str, remote_session_id: &str) -> Result<Value> {
+    pub async fn add_remote(
+        &self,
+        local_session_id: &str,
+        remote_session_id: &str,
+    ) -> Result<Value> {
         self.post(
             &self.url(&format!("/sessions/{local_session_id}/remotes")),
             &serde_json::json!({ "remote_session_id": remote_session_id }),
-        ).await
+        )
+        .await
     }
 
     pub async fn list_remotes(&self, local_session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{local_session_id}/remotes"))).await
+        self.get(&self.url(&format!("/sessions/{local_session_id}/remotes")))
+            .await
     }
 
     /// Pulls events since the last watermark and advances it — never writes
     /// into the local session's own event log.
     pub async fn fetch_remote(&self, local_session_id: &str, remote_id: &str) -> Result<Value> {
         self.post(
-            &self.url(&format!("/sessions/{local_session_id}/remotes/{remote_id}/fetch")),
+            &self.url(&format!(
+                "/sessions/{local_session_id}/remotes/{remote_id}/fetch"
+            )),
             &serde_json::json!({}),
-        ).await
+        )
+        .await
     }
 
     pub async fn remove_remote(&self, local_session_id: &str, remote_id: &str) -> Result<()> {
-        let url  = self.url(&format!("/sessions/{local_session_id}/remotes/{remote_id}"));
-        let resp = self.authed(self.http.delete(&url)).send().await.context("remove_remote")?;
+        let url = self.url(&format!("/sessions/{local_session_id}/remotes/{remote_id}"));
+        let resp = self
+            .authed(self.http.delete(&url))
+            .send()
+            .await
+            .context("remove_remote")?;
         Self::check_status(resp, "DELETE", &url).await?;
         Ok(())
     }
@@ -155,7 +178,8 @@ impl Client {
             "name":     new_name,
             "actor_id": actor_id,
         });
-        self.patch(&self.url(&format!("/sessions/{session_id}")), &body).await
+        self.patch(&self.url(&format!("/sessions/{session_id}")), &body)
+            .await
     }
 
     /// `PATCH /api/sessions/:id` `{status}` — Pause (`suspended`) / Resume
@@ -164,18 +188,15 @@ impl Client {
     /// since both go through that one handler.
     pub async fn update_session_status(&self, session_id: &str, status: &str) -> Result<Value> {
         let body = serde_json::json!({ "status": status });
-        self.patch(&self.url(&format!("/sessions/{session_id}")), &body).await
+        self.patch(&self.url(&format!("/sessions/{session_id}")), &body)
+            .await
     }
 
-    pub async fn transfer_ownership(
-        &self,
-        session_id: &str,
-        from: &str,
-        to: &str,
-    ) -> Result<()> {
+    pub async fn transfer_ownership(&self, session_id: &str, from: &str, to: &str) -> Result<()> {
         let body = serde_json::json!({ "from": from, "to": to });
-        let url  = self.url(&format!("/sessions/{session_id}/transfer"));
-        let resp = self.authed(self.http.post(&url))
+        let url = self.url(&format!("/sessions/{session_id}/transfer"));
+        let resp = self
+            .authed(self.http.post(&url))
             .json(&body)
             .send()
             .await
@@ -192,8 +213,12 @@ impl Client {
     }
 
     pub async fn mailbox_mark_seen(&self, route_id: &str) -> Result<()> {
-        let url  = self.url(&format!("/mailbox/{route_id}/seen"));
-        let resp = self.authed(self.http.post(&url)).send().await.context("mailbox_mark_seen")?;
+        let url = self.url(&format!("/mailbox/{route_id}/seen"));
+        let resp = self
+            .authed(self.http.post(&url))
+            .send()
+            .await
+            .context("mailbox_mark_seen")?;
         Self::check_status(resp, "POST", &url).await?;
         Ok(())
     }
@@ -215,10 +240,13 @@ impl Client {
     /// authenticates identity the same way the WS human-session path does,
     /// separately from the REST bearer-auth convention used everywhere else).
     pub async fn redeem_invite(&self, invite_id: &str) -> Result<Value> {
-        let token = self.token.clone()
+        let token = self
+            .token
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("Not signed in. Run `sp login`."))?;
         let body = serde_json::json!({ "sp_token": token });
-        self.post(&self.url(&format!("/invites/{invite_id}/redeem")), &body).await
+        self.post(&self.url(&format!("/invites/{invite_id}/redeem")), &body)
+            .await
     }
 
     /// `POST /api/sessions/:id/invites` — same body-carried-token pattern as
@@ -227,11 +255,13 @@ impl Client {
     pub async fn create_invite(
         &self,
         session_id: &str,
-        role:       &str,
-        email:      Option<&str>,
-        ttl_secs:   i64,
+        role: &str,
+        email: Option<&str>,
+        ttl_secs: i64,
     ) -> Result<Value> {
-        let token = self.token.clone()
+        let token = self
+            .token
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("Not signed in. Run `sp login`."))?;
         let body = serde_json::json!({
             "sp_token":      token,
@@ -239,14 +269,21 @@ impl Client {
             "invitee_email": email,
             "ttl_secs":      ttl_secs,
         });
-        self.post(&self.url(&format!("/sessions/{session_id}/invites")), &body).await
+        self.post(&self.url(&format!("/sessions/{session_id}/invites")), &body)
+            .await
     }
 
     pub async fn revoke_invite(&self, invite_id: &str) -> Result<Value> {
-        let url  = self.url(&format!("/invites/{invite_id}/revoke"));
-        let resp = self.authed(self.http.post(&url)).send().await.context("revoke_invite")?;
-        Self::check_status(resp, "POST", &url).await?
-            .json::<Value>().await
+        let url = self.url(&format!("/invites/{invite_id}/revoke"));
+        let resp = self
+            .authed(self.http.post(&url))
+            .send()
+            .await
+            .context("revoke_invite")?;
+        Self::check_status(resp, "POST", &url)
+            .await?
+            .json::<Value>()
+            .await
             .with_context(|| format!("POST {url} decode"))
     }
 
@@ -280,39 +317,46 @@ impl Client {
             "mcp_path":    mcp_path,
             "parent_cap":  parent_cap,
         });
-        self.post(&self.url(&format!("/sessions/{session_id}/attach-token")), &body).await
+        self.post(
+            &self.url(&format!("/sessions/{session_id}/attach-token")),
+            &body,
+        )
+        .await
     }
 
     pub async fn list_caps(&self, session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/caps"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/caps")))
+            .await
     }
 
     // ── Approvals ─────────────────────────────────────────────────────────────
 
     pub async fn list_approvals(&self, session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/approvals"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/approvals")))
+            .await
     }
 
     #[allow(dead_code)]
     pub async fn list_approvals_for_actor(&self, actor_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/approvals/pending?actor_id={actor_id}"))).await
+        self.get(&self.url(&format!("/approvals/pending?actor_id={actor_id}")))
+            .await
     }
 
     /// Long-poll `GET /api/approvals/:id/resolution?timeout=N`.
     /// Returns the decision string: "granted" | "denied" | "timed_out".
-    pub async fn poll_resolution(
-        &self,
-        approval_id: &str,
-        timeout_secs: u64,
-    ) -> Result<String> {
-        let url = self.url(&format!("/approvals/{approval_id}/resolution?timeout={timeout_secs}"));
+    pub async fn poll_resolution(&self, approval_id: &str, timeout_secs: u64) -> Result<String> {
+        let url = self.url(&format!(
+            "/approvals/{approval_id}/resolution?timeout={timeout_secs}"
+        ));
         // Use a longer client timeout than the server-side polling window
-        let resp = self.authed(self.http.get(&url))
+        let resp = self
+            .authed(self.http.get(&url))
             .timeout(std::time::Duration::from_secs(timeout_secs + 10))
             .send()
             .await
             .context("poll_resolution")?;
-        let resp = Self::check_status(resp, "GET", &url).await?
+        let resp = Self::check_status(resp, "GET", &url)
+            .await?
             .json::<Value>()
             .await
             .context("poll_resolution decode")?;
@@ -327,8 +371,9 @@ impl Client {
         decision: &str, // "grant" | "deny"
     ) -> Result<()> {
         let body = serde_json::json!({ "actor_id": actor_id, "decision": decision });
-        let url  = self.url(&format!("/approvals/{approval_id}/vote"));
-        let resp = self.authed(self.http.post(&url))
+        let url = self.url(&format!("/approvals/{approval_id}/vote"));
+        let resp = self
+            .authed(self.http.post(&url))
             .json(&body)
             .send()
             .await
@@ -342,11 +387,16 @@ impl Client {
     /// target session must already be linked (see `add_remote`'s sibling
     /// authorization note: linking is the "these sessions know each other"
     /// precondition, not itself a grant of decision authority).
-    pub async fn delegate_approval(&self, approval_id: &str, target_session_id: &str) -> Result<Value> {
+    pub async fn delegate_approval(
+        &self,
+        approval_id: &str,
+        target_session_id: &str,
+    ) -> Result<Value> {
         self.post(
             &self.url(&format!("/approvals/{approval_id}/delegate")),
             &serde_json::json!({ "target_session_id": target_session_id }),
-        ).await
+        )
+        .await
     }
 
     pub async fn create_approval(
@@ -363,17 +413,23 @@ impl Client {
             "arguments":   arguments,
             "timeout_secs": timeout_secs,
         });
-        self.post(&self.url(&format!("/sessions/{session_id}/approvals")), &body).await
+        self.post(
+            &self.url(&format!("/sessions/{session_id}/approvals")),
+            &body,
+        )
+        .await
     }
 
     // ── Artifacts ─────────────────────────────────────────────────────────────
 
     pub async fn list_artifacts(&self, session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/artifacts"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/artifacts")))
+            .await
     }
 
     pub async fn get_artifact(&self, session_id: &str, artifact_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/artifacts/{artifact_id}"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/artifacts/{artifact_id}")))
+            .await
     }
 
     pub async fn create_artifact(
@@ -390,18 +446,31 @@ impl Client {
             "artifact_type": artifact_type,
             "content":       content,
         });
-        self.post(&self.url(&format!("/sessions/{session_id}/artifacts")), &body).await
+        self.post(
+            &self.url(&format!("/sessions/{session_id}/artifacts")),
+            &body,
+        )
+        .await
     }
 
     /// `POST /api/sessions/:target_id/artifacts/import` — a real independent
     /// copy (publish/import, not a live reference), with an auto-fired
     /// context entry recording provenance.
-    pub async fn import_artifact(&self, target_session_id: &str, source_session_id: &str, source_artifact_id: &str) -> Result<Value> {
+    pub async fn import_artifact(
+        &self,
+        target_session_id: &str,
+        source_session_id: &str,
+        source_artifact_id: &str,
+    ) -> Result<Value> {
         let body = serde_json::json!({
             "source_session_id":  source_session_id,
             "source_artifact_id": source_artifact_id,
         });
-        self.post(&self.url(&format!("/sessions/{target_session_id}/artifacts/import")), &body).await
+        self.post(
+            &self.url(&format!("/sessions/{target_session_id}/artifacts/import")),
+            &body,
+        )
+        .await
     }
 
     // ── Context ───────────────────────────────────────────────────────────────
@@ -418,8 +487,9 @@ impl Client {
             "kind":     kind,
             "content":  content,
         });
-        let url  = self.url(&format!("/sessions/{session_id}/context"));
-        let resp = self.authed(self.http.post(&url))
+        let url = self.url(&format!("/sessions/{session_id}/context"));
+        let resp = self
+            .authed(self.http.post(&url))
             .json(&body)
             .send()
             .await
@@ -432,10 +502,16 @@ impl Client {
 
     /// POST /api/sessions/:id/messages  { actor_id, content }
     /// Server returns 204 No Content — do not try to decode a body.
-    pub async fn post_message(&self, session_id: &str, actor_id: &str, content: &str) -> Result<()> {
+    pub async fn post_message(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        content: &str,
+    ) -> Result<()> {
         let body = serde_json::json!({ "actor_id": actor_id, "content": content });
-        let url  = self.url(&format!("/sessions/{session_id}/messages"));
-        let resp = self.authed(self.http.post(&url))
+        let url = self.url(&format!("/sessions/{session_id}/messages"));
+        let resp = self
+            .authed(self.http.post(&url))
             .json(&body)
             .send()
             .await
@@ -448,13 +524,20 @@ impl Client {
 
     /// List events, optionally starting after a given sequence number.
     pub async fn list_events(&self, session_id: &str, limit: i64) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/events?limit={limit}"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/events?limit={limit}")))
+            .await
     }
 
-    pub async fn list_events_after(&self, session_id: &str, after_seq: i64, limit: i64) -> Result<Value> {
+    pub async fn list_events_after(
+        &self,
+        session_id: &str,
+        after_seq: i64,
+        limit: i64,
+    ) -> Result<Value> {
         self.get(&self.url(&format!(
             "/sessions/{session_id}/events?after_seq={after_seq}&limit={limit}"
-        ))).await
+        )))
+        .await
     }
 
     // ── Shell adapter ─────────────────────────────────────────────────────────
@@ -484,7 +567,12 @@ impl Client {
         if let Some(cmd) = command {
             body["command"] = serde_json::Value::String(cmd.to_string());
         }
-        let resp = self.post(&self.url(&format!("/sessions/{session_id}/shell/start")), &body).await?;
+        let resp = self
+            .post(
+                &self.url(&format!("/sessions/{session_id}/shell/start")),
+                &body,
+            )
+            .await?;
         Ok(resp["command_id"].as_str().unwrap_or("").to_string())
     }
 
@@ -517,13 +605,13 @@ impl Client {
     /// `POST /api/sessions/:id/epoch/revoke` — revoke caps by strategy.
     pub async fn revoke_caps(
         &self,
-        session_id:     &str,
-        revoked_by:     &str,
-        strategy:       &str,
-        target_cap_id:  Option<&str>,
+        session_id: &str,
+        revoked_by: &str,
+        strategy: &str,
+        target_cap_id: Option<&str>,
         target_stratum: Option<i64>,
-        drain_window:   u64,
-        reroot:         bool,
+        drain_window: u64,
+        reroot: bool,
     ) -> Result<Value> {
         let mut body = serde_json::json!({
             "revoked_by":       revoked_by,
@@ -531,14 +619,23 @@ impl Client {
             "drain_window_secs": drain_window,
             "reroot":           reroot,
         });
-        if let Some(cap) = target_cap_id   { body["target_cap_id"]  = cap.into(); }
-        if let Some(s)   = target_stratum  { body["target_stratum"]  = s.into(); }
-        self.post(&self.url(&format!("/sessions/{session_id}/epoch/revoke")), &body).await
+        if let Some(cap) = target_cap_id {
+            body["target_cap_id"] = cap.into();
+        }
+        if let Some(s) = target_stratum {
+            body["target_stratum"] = s.into();
+        }
+        self.post(
+            &self.url(&format!("/sessions/{session_id}/epoch/revoke")),
+            &body,
+        )
+        .await
     }
 
     /// `GET /api/sessions/:id/epoch` — current epoch + recent revocations.
     pub async fn session_epoch(&self, session_id: &str) -> Result<Value> {
-        self.get(&self.url(&format!("/sessions/{session_id}/epoch"))).await
+        self.get(&self.url(&format!("/sessions/{session_id}/epoch")))
+            .await
     }
 
     // ── Auth query (tuple-space explanatory layer) ────────────────────────────
@@ -546,26 +643,30 @@ impl Client {
     pub async fn auth_why(
         &self,
         session_id: &str,
-        actor_id:   &str,
-        entity:     Option<&str>,
+        actor_id: &str,
+        entity: Option<&str>,
     ) -> Result<Value> {
-        let mut url = format!("{}/api/auth/why?session_id={session_id}&actor_id={actor_id}", self.server);
-        if let Some(e) = entity { url.push_str(&format!("&entity={e}")); }
+        let mut url = format!(
+            "{}/api/auth/why?session_id={session_id}&actor_id={actor_id}",
+            self.server
+        );
+        if let Some(e) = entity {
+            url.push_str(&format!("&entity={e}"));
+        }
         self.get(&url).await
     }
 
-    pub async fn auth_who_can(
-        &self,
-        session_id: &str,
-        entity:     Option<&str>,
-    ) -> Result<Value> {
+    pub async fn auth_who_can(&self, session_id: &str, entity: Option<&str>) -> Result<Value> {
         let mut url = format!("{}/api/auth/who-can?session_id={session_id}", self.server);
-        if let Some(e) = entity { url.push_str(&format!("&entity={e}")); }
+        if let Some(e) = entity {
+            url.push_str(&format!("&entity={e}"));
+        }
         self.get(&url).await
     }
 
     pub async fn auth_lineage(&self, cap_id: &str) -> Result<Value> {
-        self.get(&format!("{}/api/auth/lineage?cap_id={cap_id}", self.server)).await
+        self.get(&format!("{}/api/auth/lineage?cap_id={cap_id}", self.server))
+            .await
     }
 
     // ── Identity ──────────────────────────────────────────────────────────────
@@ -581,7 +682,7 @@ impl Client {
     /// copy regardless of whether this call succeeds.
     pub async fn oidc_logout(&self, sp_token: &str) -> Result<()> {
         let body = serde_json::json!({ "sp_token": sp_token });
-        let url  = format!("{}/auth/oidc/logout", self.server);
+        let url = format!("{}/auth/oidc/logout", self.server);
         self.authed(self.http.post(&url))
             .json(&body)
             .send()
@@ -593,23 +694,27 @@ impl Client {
     // ── Low-level helpers ─────────────────────────────────────────────────────
 
     async fn get(&self, url: &str) -> Result<Value> {
-        let resp = self.authed(self.http.get(url))
+        let resp = self
+            .authed(self.http.get(url))
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        Self::check_status(resp, "GET", url).await?
+        Self::check_status(resp, "GET", url)
+            .await?
             .json::<Value>()
             .await
             .with_context(|| format!("GET {url} decode"))
     }
 
     async fn post(&self, url: &str, body: &Value) -> Result<Value> {
-        let resp = self.authed(self.http.post(url))
+        let resp = self
+            .authed(self.http.post(url))
             .json(body)
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        Self::check_status(resp, "POST", url).await?
+        Self::check_status(resp, "POST", url)
+            .await?
             .json::<Value>()
             .await
             .with_context(|| format!("POST {url} decode"))
@@ -625,25 +730,29 @@ impl Client {
     /// `.query()` percent-encodes it correctly where `get()`'s plain
     /// `format!()`-a-URL-string callers don't.
     pub async fn parse_intent(&self, text: &str) -> Result<Value> {
-        let url  = self.url("/intent/parse");
-        let resp = self.authed(self.http.get(&url))
+        let url = self.url("/intent/parse");
+        let resp = self
+            .authed(self.http.get(&url))
             .query(&[("text", text)])
             .send()
             .await
             .context("parse_intent")?;
-        Self::check_status(resp, "GET", &url).await?
+        Self::check_status(resp, "GET", &url)
+            .await?
             .json::<Value>()
             .await
             .context("parse_intent decode")
     }
 
     async fn patch(&self, url: &str, body: &Value) -> Result<Value> {
-        let resp = self.authed(self.http.patch(url))
+        let resp = self
+            .authed(self.http.patch(url))
             .json(body)
             .send()
             .await
             .with_context(|| format!("PATCH {url}"))?;
-        Self::check_status(resp, "PATCH", url).await?
+        Self::check_status(resp, "PATCH", url)
+            .await?
             .json::<Value>()
             .await
             .with_context(|| format!("PATCH {url} decode"))

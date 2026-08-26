@@ -37,7 +37,10 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
     let mut model = Model::new(ctx).await?;
 
     while !model.quit {
-        match model.app.tick(PollStrategy::Once(std::time::Duration::from_millis(20))) {
+        match model
+            .app
+            .tick(PollStrategy::Once(std::time::Duration::from_millis(20)))
+        {
             Err(e) => {
                 tracing::warn!("spsh: tick error: {e}");
             }

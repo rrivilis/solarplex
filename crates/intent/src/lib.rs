@@ -102,7 +102,8 @@ impl Grammars {
 
 fn grammars() -> &'static Grammars {
     static GRAMMARS: OnceLock<Grammars> = OnceLock::new();
-    GRAMMARS.get_or_init(|| Grammars::build().expect("bundled grammar/*.xre files failed to compile"))
+    GRAMMARS
+        .get_or_init(|| Grammars::build().expect("bundled grammar/*.xre files failed to compile"))
 }
 
 /// Lowercase, split on whitespace, strip a small set of trailing
@@ -110,7 +111,10 @@ fn grammars() -> &'static Grammars {
 /// not a real tokenizer.
 fn tokenize(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':')).to_lowercase())
+        .map(|w| {
+            w.trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'))
+                .to_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .collect()
 }
@@ -129,7 +133,10 @@ pub fn parse_intent(text: &str) -> Option<ParsedIntent> {
     // correctly halting the walk the moment an unknown word is reached —
     // whatever prefix was already final by that point is still returned.
     const UNKNOWN: vocab::Label = vocab::Label::MAX;
-    let labels: Vec<vocab::Label> = tokens.iter().map(|t| g.vocab.lookup(t).unwrap_or(UNKNOWN)).collect();
+    let labels: Vec<vocab::Label> = tokens
+        .iter()
+        .map(|t| g.vocab.lookup(t).unwrap_or(UNKNOWN))
+        .collect();
 
     let mut best: Option<(&'static str, usize)> = None;
     for (name, fst) in g.candidates() {
@@ -147,15 +154,37 @@ pub fn parse_intent(text: &str) -> Option<ParsedIntent> {
     let (name, consumed) = best?;
     let remainder = tokens[consumed..].join(" ");
     let (intent, target_session) = match name {
-        "pause"   => (Intent::Pause,   slots::extract_target_session_only(&remainder)),
-        "resume"  => (Intent::Resume,  slots::extract_target_session_only(&remainder)),
-        "archive" => (Intent::Archive, slots::extract_target_session_only(&remainder)),
-        "approve" => (Intent::Approve, slots::extract_target_session_only(&remainder)),
-        "deny"    => (Intent::Deny,    slots::extract_target_session_only(&remainder)),
-        "claim"   => (Intent::Claim,   slots::extract_target_session_only(&remainder)),
+        "pause" => (
+            Intent::Pause,
+            slots::extract_target_session_only(&remainder),
+        ),
+        "resume" => (
+            Intent::Resume,
+            slots::extract_target_session_only(&remainder),
+        ),
+        "archive" => (
+            Intent::Archive,
+            slots::extract_target_session_only(&remainder),
+        ),
+        "approve" => (
+            Intent::Approve,
+            slots::extract_target_session_only(&remainder),
+        ),
+        "deny" => (Intent::Deny, slots::extract_target_session_only(&remainder)),
+        "claim" => (
+            Intent::Claim,
+            slots::extract_target_session_only(&remainder),
+        ),
         "invite" => {
             let (role, invitee, target_session, ttl_secs) = slots::extract_invite(&remainder);
-            (Intent::Invite { role, invitee, ttl_secs }, target_session)
+            (
+                Intent::Invite {
+                    role,
+                    invitee,
+                    ttl_secs,
+                },
+                target_session,
+            )
         }
         "transfer" => {
             let (recipient, target_session) = slots::extract_transfer(&remainder);
@@ -168,7 +197,9 @@ pub fn parse_intent(text: &str) -> Option<ParsedIntent> {
         // fabricate a Navigate with no destination).
         "goto" => {
             let target = remainder.trim();
-            if target.is_empty() { return None; }
+            if target.is_empty() {
+                return None;
+            }
             (Intent::Navigate, Some(target.to_string()))
         }
         "attach" => {
@@ -177,5 +208,8 @@ pub fn parse_intent(text: &str) -> Option<ParsedIntent> {
         }
         _ => unreachable!("candidates() is a fixed, exhaustive list"),
     };
-    Some(ParsedIntent { intent, target_session })
+    Some(ParsedIntent {
+        intent,
+        target_session,
+    })
 }

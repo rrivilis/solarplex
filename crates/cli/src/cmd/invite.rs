@@ -44,7 +44,7 @@ pub enum InviteCmd {
 pub async fn run(args: InviteArgs, ctx: &Ctx) -> Result<()> {
     let client = Client::new(ctx)?;
     match args.cmd {
-        InviteCmd::Show { id }   => show(&client, ctx, &id).await,
+        InviteCmd::Show { id } => show(&client, ctx, &id).await,
         InviteCmd::Redeem { id } => redeem(&client, ctx, &id).await,
         InviteCmd::Create { role, email, ttl } => {
             let session_id = ctx.require_session()?.to_string();
@@ -57,23 +57,37 @@ pub async fn run(args: InviteArgs, ctx: &Ctx) -> Result<()> {
 async fn show(client: &Client, ctx: &Ctx, id: &str) -> Result<()> {
     let inv = client.preview_invite(id).await?;
 
-    let session_id   = inv["session_id"].as_str().unwrap_or("?");
+    let session_id = inv["session_id"].as_str().unwrap_or("?");
     let session_name = sanitize_terminal(inv["session_name"].as_str().unwrap_or("?"));
-    let role         = sanitize_terminal(inv["role"].as_str().unwrap_or("?"));
-    let expires_at   = inv["expires_at"].as_str().unwrap_or("?");
-    let redeemed     = inv["redeemed_at"].is_string();
-    let revoked      = inv["revoked_at"].is_string();
-    let email        = inv["invitee_email"].as_str();
+    let role = sanitize_terminal(inv["role"].as_str().unwrap_or("?"));
+    let expires_at = inv["expires_at"].as_str().unwrap_or("?");
+    let redeemed = inv["redeemed_at"].is_string();
+    let revoked = inv["revoked_at"].is_string();
+    let email = inv["invitee_email"].as_str();
 
-    println!("{} {}", bold("invite"), entity_link("invite", id, "", &ctx.ui));
+    println!(
+        "{} {}",
+        bold("invite"),
+        entity_link("invite", id, "", &ctx.ui)
+    );
     println!("{}", dim(&"─".repeat(42)));
-    println!("  session:  {}  {}", bold(&session_name), entity_link("session", session_id, session_id, &ctx.ui));
+    println!(
+        "  session:  {}  {}",
+        bold(&session_name),
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     println!("  role:     {role}");
     match email {
         Some(e) => println!("  for:      {}", sanitize_terminal(e)),
-        None    => println!("  for:      {}", dim("anyone with the link")),
+        None => println!("  for:      {}", dim("anyone with the link")),
     }
-    let status = if revoked { red("revoked") } else if redeemed { dim("redeemed") } else { green("pending") };
+    let status = if revoked {
+        red("revoked")
+    } else if redeemed {
+        dim("redeemed")
+    } else {
+        green("pending")
+    };
     println!("  status:   {status}");
     println!("  expires:  {}", dim(expires_at));
 
@@ -87,7 +101,11 @@ async fn show(client: &Client, ctx: &Ctx, id: &str) -> Result<()> {
 async fn redeem(client: &Client, ctx: &Ctx, id: &str) -> Result<()> {
     let result = client.redeem_invite(id).await?;
     let session_id = result["session_id"].as_str().unwrap_or("?");
-    println!("{} joined {}", green("✓"), entity_link("session", session_id, session_id, &ctx.ui));
+    println!(
+        "{} joined {}",
+        green("✓"),
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     if let Some(cap) = result.get("cap").filter(|c| !c.is_null()) {
         let token = cap["token"].as_str().unwrap_or("?");
         println!("  {} cap issued: {}", dim("·"), dim(token));
@@ -98,17 +116,24 @@ async fn redeem(client: &Client, ctx: &Ctx, id: &str) -> Result<()> {
 }
 
 async fn create(
-    client:  &Client,
-    ctx:     &Ctx,
+    client: &Client,
+    ctx: &Ctx,
     session_id: &str,
-    role:    &str,
-    email:   Option<&str>,
-    ttl:     i64,
+    role: &str,
+    email: Option<&str>,
+    ttl: i64,
 ) -> Result<()> {
     let inv = client.create_invite(session_id, role, email, ttl).await?;
-    let id  = inv["id"].as_str().unwrap_or("?");
-    println!("{} Created invite {}", green("✓"), entity_link("invite", id, "", &ctx.ui));
-    println!("  session: {}", entity_link("session", session_id, session_id, &ctx.ui));
+    let id = inv["id"].as_str().unwrap_or("?");
+    println!(
+        "{} Created invite {}",
+        green("✓"),
+        entity_link("invite", id, "", &ctx.ui)
+    );
+    println!(
+        "  session: {}",
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     println!("  role:    {role}");
     if let Some(e) = email {
         println!("  for:     {}", sanitize_terminal(e));

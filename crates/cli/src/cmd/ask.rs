@@ -19,8 +19,8 @@
 use anyhow::{anyhow, Result};
 use clap::Args;
 
-use crate::{client::Client, config::Ctx, output::*};
 use super::{actor, approval, artifact, auth, context, session};
+use crate::{client::Client, config::Ctx, output::*};
 
 // ── Clap types ────────────────────────────────────────────────────────────────
 //
@@ -63,7 +63,10 @@ fn parse_ref(s: &str) -> Ref {
         if id.is_empty() {
             return Ref::Collection(kind.to_lowercase());
         }
-        return Ref::Entity { kind: kind.to_lowercase(), id: id.to_string() };
+        return Ref::Entity {
+            kind: kind.to_lowercase(),
+            id: id.to_string(),
+        };
     }
     // No slash — check known collection names first
     match s.to_lowercase().as_str() {
@@ -71,7 +74,10 @@ fn parse_ref(s: &str) -> Ref {
             Ref::Collection(s.to_lowercase())
         }
         // Bare word: try as session name (most common bare lookup)
-        other => Ref::Entity { kind: "session".to_string(), id: other.to_string() },
+        other => Ref::Entity {
+            kind: "session".to_string(),
+            id: other.to_string(),
+        },
     }
 }
 
@@ -79,8 +85,8 @@ fn parse_ref(s: &str) -> Ref {
 
 pub async fn run(args: AskArgs, ctx: &Ctx) -> Result<()> {
     let entity_str = args.entity.as_deref().unwrap_or("ls");
-    let fn_name    = args.function.as_deref().unwrap_or("");
-    let rest       = &args.rest;
+    let fn_name = args.function.as_deref().unwrap_or("");
+    let rest = &args.rest;
 
     let client = Client::new(ctx)?;
 
@@ -191,23 +197,36 @@ async fn root(client: &Client, ctx: &Ctx) -> Result<()> {
         );
 
         if let Ok(s) = sess {
-            let name   = sanitize_terminal(s["name"].as_str().unwrap_or(session_id));
+            let name = sanitize_terminal(s["name"].as_str().unwrap_or(session_id));
             let status = s["status"].as_str().unwrap_or("active");
             let policy = s["approval_policy"].as_str().unwrap_or("single_vote");
-            let link   = entity_link("session", session_id, "", "");
-            println!("{}", dim(&format!("─── {name} {}  {status}  {policy} ", link)));
+            let link = entity_link("session", session_id, "", "");
+            println!(
+                "{}",
+                dim(&format!("─── {name} {}  {status}  {policy} ", link))
+            );
             println!();
 
-            let art_count  = artifacts.ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-            let pend_count = approvals.as_ref().ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-            let cap_count  = caps.ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-            let mem_count  = s["members"].as_array().map(|a| a.len()).unwrap_or(0);
+            let art_count = artifacts
+                .ok()
+                .and_then(|v| v.as_array().map(|a| a.len()))
+                .unwrap_or(0);
+            let pend_count = approvals
+                .as_ref()
+                .ok()
+                .and_then(|v| v.as_array().map(|a| a.len()))
+                .unwrap_or(0);
+            let cap_count = caps
+                .ok()
+                .and_then(|v| v.as_array().map(|a| a.len()))
+                .unwrap_or(0);
+            let mem_count = s["members"].as_array().map(|a| a.len()).unwrap_or(0);
 
             let appr_link = link_action("session", session_id, "approvals", "approvals/");
-            let art_link  = link_action("session", session_id, "artifacts", "artifacts/");
-            let mem_link  = link_action("session", session_id, "members",   "members/");
-            let cap_link  = link_action("session", session_id, "caps",      "caps/");
-            let ctx_link  = link_action("session", session_id, "context",   "context/");
+            let art_link = link_action("session", session_id, "artifacts", "artifacts/");
+            let mem_link = link_action("session", session_id, "members", "members/");
+            let cap_link = link_action("session", session_id, "caps", "caps/");
+            let ctx_link = link_action("session", session_id, "context", "context/");
 
             let appr_col = if pend_count > 0 {
                 yellow(&format!("{pend_count} pending"))
@@ -235,23 +254,36 @@ async fn root(client: &Client, ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", dim("─── sessions ────────────────────────────────────────────────────────────────────"));
+    println!(
+        "{}",
+        dim("─── sessions ────────────────────────────────────────────────────────────────────")
+    );
     println!();
 
     for s in &arr {
-        let id      = s["id"].as_str().unwrap_or("?");
-        let name    = sanitize_terminal(s["name"].as_str().unwrap_or("?"));
-        let status  = s["status"].as_str().unwrap_or("active");
+        let id = s["id"].as_str().unwrap_or("?");
+        let name = sanitize_terminal(s["name"].as_str().unwrap_or("?"));
+        let status = s["status"].as_str().unwrap_or("active");
         let current = ctx.session_id.as_deref() == Some(id);
-        let prefix  = if current { cyan("▶") } else { " ".to_string() };
-        let link    = entity_link("session", id, "", "");
-        let status_col = match status {
-            "active"    => green(status),
-            "archived"  => dim(status),
-            "suspended" => yellow(status),
-            _           => status.to_string(),
+        let prefix = if current {
+            cyan("▶")
+        } else {
+            " ".to_string()
         };
-        println!("{} {}  {}  {}", prefix, pad(&link, 12), pad(&name, 28), status_col);
+        let link = entity_link("session", id, "", "");
+        let status_col = match status {
+            "active" => green(status),
+            "archived" => dim(status),
+            "suspended" => yellow(status),
+            _ => status.to_string(),
+        };
+        println!(
+            "{} {}  {}  {}",
+            prefix,
+            pad(&link, 12),
+            pad(&name, 28),
+            status_col
+        );
     }
     println!();
     println!("  {}  sp ask session/<id>", dim("→"));
@@ -313,8 +345,8 @@ async fn entity_session(client: &Client, ctx: &Ctx, session_id: &str) -> Result<
         client.list_events(session_id, 8),
     );
 
-    let s      = s?;
-    let name   = sanitize_terminal(s["name"].as_str().unwrap_or("?"));
+    let s = s?;
+    let name = sanitize_terminal(s["name"].as_str().unwrap_or("?"));
     let status = s["status"].as_str().unwrap_or("active");
     let policy = s["approval_policy"].as_str().unwrap_or("single_vote");
 
@@ -325,9 +357,10 @@ async fn entity_session(client: &Client, ctx: &Ctx, session_id: &str) -> Result<
     // Header — name is editable state (Plan 9 / Acme style): ULID stays stable.
     // The [rename] link fires `sp act session/<id> Rename --name <...>` so the
     // user can rename directly from the entity view.
-    let rename_uri  = format!("solarplex://act/session/{session_id}/Rename");
+    let rename_uri = format!("solarplex://act/session/{session_id}/Rename");
     let rename_link = link(&rename_uri, "✎ rename");
-    println!("{} {}  {} {}  {}",
+    println!(
+        "{} {}  {} {}  {}",
         bold(&name),
         entity_link("session", session_id, "", ""),
         status_icon(status),
@@ -340,26 +373,45 @@ async fn entity_session(client: &Client, ctx: &Ctx, session_id: &str) -> Result<
     // Forward edges — members inline, everything else as clickable sub-paths.
     if let Some(members) = s["members"].as_array() {
         print!("  {}  ", pad("members/", 14));
-        let labels: Vec<String> = members.iter().map(|m| {
-            let actor    = sanitize_terminal(m["actor_id"].as_str().unwrap_or("?"));
-            let name     = sanitize_terminal(m["name"].as_str().unwrap_or(""));
-            let role     = m["role"].as_str().unwrap_or("?");
-            let is_me    = ctx.actor_id.as_deref() == Some(&actor);
-            let a_link   = actor_link_named(&actor, &name);
-            if is_me { format!("{}{}", cyan("▶ "), a_link) } else { format!("{}:{}", a_link, dim(role)) }
-        }).collect();
+        let labels: Vec<String> = members
+            .iter()
+            .map(|m| {
+                let actor = sanitize_terminal(m["actor_id"].as_str().unwrap_or("?"));
+                let name = sanitize_terminal(m["name"].as_str().unwrap_or(""));
+                let role = m["role"].as_str().unwrap_or("?");
+                let is_me = ctx.actor_id.as_deref() == Some(&actor);
+                let a_link = actor_link_named(&actor, &name);
+                if is_me {
+                    format!("{}{}", cyan("▶ "), a_link)
+                } else {
+                    format!("{}:{}", a_link, dim(role))
+                }
+            })
+            .collect();
         println!("{}", labels.join("  "));
     }
 
-    let art_count  = artifacts.as_ref().ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-    let pend_count = approvals.as_ref().ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-    let cap_count  = caps.as_ref().ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let art_count = artifacts
+        .as_ref()
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
+    let pend_count = approvals
+        .as_ref()
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
+    let cap_count = caps
+        .as_ref()
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
 
     let appr_link = link_action("session", session_id, "approvals", "approvals/");
-    let art_link  = link_action("session", session_id, "artifacts", "artifacts/");
-    let cap_link  = link_action("session", session_id, "caps",      "caps/");
-    let ctx_link  = link_action("session", session_id, "context",   "context/");
-    let ep_link   = link_action("session", session_id, "epoch",     "epoch");
+    let art_link = link_action("session", session_id, "artifacts", "artifacts/");
+    let cap_link = link_action("session", session_id, "caps", "caps/");
+    let ctx_link = link_action("session", session_id, "context", "context/");
+    let ep_link = link_action("session", session_id, "epoch", "epoch");
 
     let appr_col = if pend_count > 0 {
         yellow(&format!("{pend_count} pending"))
@@ -382,38 +434,46 @@ async fn entity_session(client: &Client, ctx: &Ctx, session_id: &str) -> Result<
     // for update_session/issue_attach_token, Owner-only for
     // transfer_ownership, any active/non-Observer member for
     // create_artifact/add_context) rather than inventing a separate policy.
-    let my_role = s["members"].as_array()
-        .and_then(|ms| ms.iter().find(|m| m["actor_id"].as_str() == ctx.actor_id.as_deref()))
+    let my_role = s["members"]
+        .as_array()
+        .and_then(|ms| {
+            ms.iter()
+                .find(|m| m["actor_id"].as_str() == ctx.actor_id.as_deref())
+        })
         .and_then(|m| m["role"].as_str())
         .unwrap_or("");
-    let owner_only        = my_role == "owner";
+    let owner_only = my_role == "owner";
     let collaborator_plus = my_role == "owner" || my_role == "collaborator";
-    let active_member     = !my_role.is_empty() && my_role != "observer";
+    let active_member = !my_role.is_empty() && my_role != "observer";
 
     let candidates: &[(&str, &str, bool)] = match status {
         "active" => &[
-            ("Rename",            "--name <new-name>",     collaborator_plus),
-            ("OwnershipTransfer", "--to <actor>",           owner_only),
-            ("Delegate",          "--to <actor> --ttl 900", collaborator_plus),
-            ("CreateArtifact",    "--name <name>",          active_member),
-            ("AddContext",        "[kind] <text...>",       active_member),
-            ("Pause",             "",                       collaborator_plus),
-            ("Archive",           "",                       collaborator_plus),
+            ("Rename", "--name <new-name>", collaborator_plus),
+            ("OwnershipTransfer", "--to <actor>", owner_only),
+            ("Delegate", "--to <actor> --ttl 900", collaborator_plus),
+            ("CreateArtifact", "--name <name>", active_member),
+            ("AddContext", "[kind] <text...>", active_member),
+            ("Pause", "", collaborator_plus),
+            ("Archive", "", collaborator_plus),
         ],
         "suspended" => &[
-            ("Resume",  "", collaborator_plus),
+            ("Resume", "", collaborator_plus),
             ("Archive", "", collaborator_plus),
         ],
         _ => &[],
     };
-    let transitions: Vec<(&str, &str)> = candidates.iter()
+    let transitions: Vec<(&str, &str)> = candidates
+        .iter()
         .filter(|(_, _, allowed)| *allowed)
         .map(|&(t, hint, _)| (t, hint))
         .collect();
     if !transitions.is_empty() {
-        println!("  {}", dim("─ transitions ──────────────────────────────────"));
+        println!(
+            "  {}",
+            dim("─ transitions ──────────────────────────────────")
+        );
         for (t, hint) in transitions {
-            let uri   = format!("solarplex://act/session/{session_id}/{t}");
+            let uri = format!("solarplex://act/session/{session_id}/{t}");
             let tlink = link(&uri, t);
             println!("  {}  {}", pad(&tlink, 22), dim(hint));
         }
@@ -424,7 +484,10 @@ async fn entity_session(client: &Client, ctx: &Ctx, session_id: &str) -> Result<
     if let Ok(evts) = events {
         if let Some(arr) = evts.as_array() {
             if !arr.is_empty() {
-                println!("  {}", dim("─ recent activity ──────────────────────────────"));
+                println!(
+                    "  {}",
+                    dim("─ recent activity ──────────────────────────────")
+                );
                 for e in arr.iter().rev().take(6) {
                     let actor = sanitize_terminal(e["actor_id"].as_str().unwrap_or("?"));
                     let etype = e["type"].as_str().unwrap_or("?");
@@ -440,25 +503,47 @@ async fn entity_session(client: &Client, ctx: &Ctx, session_id: &str) -> Result<
 
 /// Members sub-view: `sp ask session/42 members`
 async fn entity_session_members(client: &Client, ctx: &Ctx, session_id: &str) -> Result<()> {
-    let s    = client.get_session(session_id).await?;
+    let s = client.get_session(session_id).await?;
     let name = sanitize_terminal(s["name"].as_str().unwrap_or(session_id));
 
-    println!("{}", backtrace_links(&[("sessions", "", ""), ("session", session_id, &name)]));
+    println!(
+        "{}",
+        backtrace_links(&[("sessions", "", ""), ("session", session_id, &name)])
+    );
     println!();
     println!("{} {}", bold(&name), dim("members"));
     println!("{}", dim(&"─".repeat(42)));
 
     if let Some(members) = s["members"].as_array() {
         let current_actor = ctx.actor_id.as_deref().unwrap_or("");
-        println!("  {}  {}  {}", bold(&pad("ACTOR", 26)), bold(&pad("ROLE", 16)), bold("STATUS"));
+        println!(
+            "  {}  {}  {}",
+            bold(&pad("ACTOR", 26)),
+            bold(&pad("ROLE", 16)),
+            bold("STATUS")
+        );
         for m in members {
-            let actor    = sanitize_terminal(m["actor_id"].as_str().unwrap_or("?"));
-            let name     = sanitize_terminal(m["name"].as_str().unwrap_or(""));
-            let role     = sanitize_terminal(m["role"].as_str().unwrap_or("?"));
+            let actor = sanitize_terminal(m["actor_id"].as_str().unwrap_or("?"));
+            let name = sanitize_terminal(m["name"].as_str().unwrap_or(""));
+            let role = sanitize_terminal(m["role"].as_str().unwrap_or("?"));
             let detached = m["detached"].as_bool().unwrap_or(false);
-            let marker   = if actor == current_actor { cyan("▶") } else { " ".to_string() };
-            let status   = if detached { dim("detached") } else { green("active") };
-            println!("{} {}  {}  {}", marker, pad(&actor_link_named(&actor, &name), 26), pad(&role, 16), status);
+            let marker = if actor == current_actor {
+                cyan("▶")
+            } else {
+                " ".to_string()
+            };
+            let status = if detached {
+                dim("detached")
+            } else {
+                green("active")
+            };
+            println!(
+                "{} {}  {}  {}",
+                marker,
+                pad(&actor_link_named(&actor, &name), 26),
+                pad(&role, 16),
+                status
+            );
         }
     } else {
         println!("{}", dim("(no members)"));
@@ -468,16 +553,21 @@ async fn entity_session_members(client: &Client, ctx: &Ctx, session_id: &str) ->
 
 /// Caps sub-view: `sp ask session/42 caps`
 async fn entity_session_caps(client: &Client, _ctx: &Ctx, session_id: &str) -> Result<()> {
-    let s_name = client.get_session(session_id).await
+    let s_name = client
+        .get_session(session_id)
+        .await
         .ok()
         .and_then(|s| s["name"].as_str().map(|n| n.to_string()))
         .unwrap_or_else(|| short_id(session_id).to_string());
 
-    println!("{}", backtrace_links(&[("sessions", "", ""), ("session", session_id, &s_name)]));
+    println!(
+        "{}",
+        backtrace_links(&[("sessions", "", ""), ("session", session_id, &s_name)])
+    );
     println!();
 
     let caps = client.list_caps(session_id).await?;
-    let arr  = caps.as_array().cloned().unwrap_or_default();
+    let arr = caps.as_array().cloned().unwrap_or_default();
 
     if arr.is_empty() {
         println!("{}", dim("No active caps in this session."));
@@ -485,17 +575,28 @@ async fn entity_session_caps(client: &Client, _ctx: &Ctx, session_id: &str) -> R
     }
 
     println!("{} ({})", bold("CAPS"), arr.len());
-    println!("  {}  {}  {}", bold(&pad("CAP", 12)), bold(&pad("ACTOR", 24)), bold("SCOPE"));
+    println!(
+        "  {}  {}  {}",
+        bold(&pad("CAP", 12)),
+        bold(&pad("ACTOR", 24)),
+        bold("SCOPE")
+    );
     for c in &arr {
         let cap_id = c["id"].as_str().unwrap_or("?");
-        let actor  = sanitize_terminal(
-            c["grantee"].as_str()
+        let actor = sanitize_terminal(
+            c["grantee"]
+                .as_str()
                 .or_else(|| c["actor_id"].as_str())
                 .unwrap_or("?"),
         );
-        let scope  = sanitize_terminal(c["scope"].as_str().unwrap_or("*"));
-        let link   = entity_link("cap", cap_id, session_id, "");
-        println!("  {}  {}  {}", pad(&link, 12), pad(&actor_link(&actor), 24), dim(&scope));
+        let scope = sanitize_terminal(c["scope"].as_str().unwrap_or("*"));
+        let link = entity_link("cap", cap_id, session_id, "");
+        println!(
+            "  {}  {}  {}",
+            pad(&link, 12),
+            pad(&actor_link(&actor), 24),
+            dim(&scope)
+        );
     }
     Ok(())
 }
@@ -521,30 +622,39 @@ async fn entity_approval(client: &Client, ctx: &Ctx, approval_id: &str) -> Resul
     }
 
     let approvals = client.list_approvals(session_id).await?;
-    let a = approvals.as_array()
+    let a = approvals
+        .as_array()
         .and_then(|arr| arr.iter().find(|a| a["id"].as_str() == Some(approval_id)));
 
     match a {
         None => {
-            println!("{} approval {} not found in session {}",
-                red("✗"), approval_id, short_id(session_id));
-            println!("{}", dim("hint: attach to the session containing this approval"));
+            println!(
+                "{} approval {} not found in session {}",
+                red("✗"),
+                approval_id,
+                short_id(session_id)
+            );
+            println!(
+                "{}",
+                dim("hint: attach to the session containing this approval")
+            );
         }
         Some(a) => {
-            let actor  = sanitize_terminal(a["actor_id"].as_str().unwrap_or("?"));
-            let tool   = sanitize_terminal(a["tool_name"].as_str().unwrap_or("?"));
+            let actor = sanitize_terminal(a["actor_id"].as_str().unwrap_or("?"));
+            let tool = sanitize_terminal(a["tool_name"].as_str().unwrap_or("?"));
             let status = a["status"].as_str().unwrap_or("pending");
-            let sid    = a["session_id"].as_str().unwrap_or(session_id);
+            let sid = a["session_id"].as_str().unwrap_or(session_id);
 
             // Backtrace: the approval knows its session and requesting actor.
-            println!("{}", backtrace_links(&[
-                ("session", sid, ""),
-                ("actor",   &actor, &actor),
-            ]));
+            println!(
+                "{}",
+                backtrace_links(&[("session", sid, ""), ("actor", &actor, &actor),])
+            );
             println!();
 
             // Header
-            println!("{} {}  {}",
+            println!(
+                "{} {}  {}",
                 bold(&tool),
                 entity_link("approval", approval_id, sid, ""),
                 status_icon(status),
@@ -552,12 +662,15 @@ async fn entity_approval(client: &Client, ctx: &Ctx, approval_id: &str) -> Resul
             println!("{}", dim(&"─".repeat(42)));
             println!("  tool:    {}", bold(&tool));
             println!("  actor:   {}", actor_link(&actor));
-            println!("  status:  {}", match status {
-                "granted" => green(status),
-                "denied"  => red(status),
-                "expired" => dim(status),
-                _         => yellow(status),
-            });
+            println!(
+                "  status:  {}",
+                match status {
+                    "granted" => green(status),
+                    "denied" => red(status),
+                    "expired" => dim(status),
+                    _ => yellow(status),
+                }
+            );
 
             if let Some(args) = a.get("arguments") {
                 if let Ok(pretty) = serde_json::to_string_pretty(args) {
@@ -570,14 +683,21 @@ async fn entity_approval(client: &Client, ctx: &Ctx, approval_id: &str) -> Resul
             // Transitions (only for pending)
             if status == "pending" {
                 println!();
-                println!("  {}", dim("─ transitions ─────────────────────────────────"));
+                println!(
+                    "  {}",
+                    dim("─ transitions ─────────────────────────────────")
+                );
                 let grant_uri = format!("solarplex://act/approval/{approval_id}/Grant");
-                let deny_uri  = format!("solarplex://act/approval/{approval_id}/Deny");
-                println!("  {}   {}",
+                let deny_uri = format!("solarplex://act/approval/{approval_id}/Deny");
+                println!(
+                    "  {}   {}",
                     link(&grant_uri, "Grant"),
                     link(&deny_uri, "Deny"),
                 );
-                println!("  {}", dim(&format!("sp act approval/{} Grant", &approval_id[..8])));
+                println!(
+                    "  {}",
+                    dim(&format!("sp act approval/{} Grant", &approval_id[..8]))
+                );
             }
         }
     }

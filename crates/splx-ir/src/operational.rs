@@ -25,13 +25,20 @@ impl Effect {
         let list = TaggedList::parse(v)?;
         list.expect_tag("effect")?;
         let kind = as_kw(list.require("kind")?)
-            .ok_or_else(|| IrError::BadValue { key: "kind", detail: "expected keyword".into() })?
+            .ok_or_else(|| IrError::BadValue {
+                key: "kind",
+                detail: "expected keyword".into(),
+            })?
             .to_string();
         let payload = match list.get("payload") {
             Some(p) if !is_lisp_nil(p) => Some(p.clone()),
             _ => None,
         };
-        Ok(Effect { kind, resource_spec: list.require("resource-spec")?.clone(), payload })
+        Ok(Effect {
+            kind,
+            resource_spec: list.require("resource-spec")?.clone(),
+            payload,
+        })
     }
 }
 

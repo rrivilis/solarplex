@@ -41,11 +41,17 @@ use age::{Identity, Recipient};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use secrets_ratchet::RatchetState;
-use secrets_store::{decrypt_bundle, decrypt_bytes, encrypt_bundle, encrypt_bytes, parse_identity, parse_recipient, CredentialBundle};
+use secrets_store::{
+    decrypt_bundle, decrypt_bytes, encrypt_bundle, encrypt_bytes, parse_identity, parse_recipient,
+    CredentialBundle,
+};
 use zeroize::Zeroize;
 
 #[derive(Parser)]
-#[command(name = "secrets-cli", about = "Solarplex secrets: age encryption + ratchet rotation glue")]
+#[command(
+    name = "secrets-cli",
+    about = "Solarplex secrets: age encryption + ratchet rotation glue"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -136,11 +142,28 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Init { state_out, recipients } => cmd_init(&state_out, &recipients),
-        Command::Encrypt { database_url, oidc_client_id, oidc_client_secret, recipients, out } => {
-            cmd_encrypt(database_url, oidc_client_id, oidc_client_secret, &recipients, &out)
-        }
-        Command::Decrypt { input, identity, out } => cmd_decrypt(&input, &identity, &out),
+        Command::Init {
+            state_out,
+            recipients,
+        } => cmd_init(&state_out, &recipients),
+        Command::Encrypt {
+            database_url,
+            oidc_client_id,
+            oidc_client_secret,
+            recipients,
+            out,
+        } => cmd_encrypt(
+            database_url,
+            oidc_client_id,
+            oidc_client_secret,
+            &recipients,
+            &out,
+        ),
+        Command::Decrypt {
+            input,
+            identity,
+            out,
+        } => cmd_decrypt(&input, &identity, &out),
         Command::Rotate {
             state_in,
             state_out,
@@ -158,8 +181,16 @@ fn main() -> Result<()> {
             &database_url_template,
             oidc_client_id,
         ),
-        Command::EncryptBytes { input, recipients, out } => cmd_encrypt_bytes(&input, &recipients, &out),
-        Command::DecryptBytes { input, identity, out } => cmd_decrypt_bytes(&input, &identity, &out),
+        Command::EncryptBytes {
+            input,
+            recipients,
+            out,
+        } => cmd_encrypt_bytes(&input, &recipients, &out),
+        Command::DecryptBytes {
+            input,
+            identity,
+            out,
+        } => cmd_decrypt_bytes(&input, &identity, &out),
     }
 }
 
@@ -183,7 +214,11 @@ fn cmd_encrypt(
     recipients: &[String],
     out: &Path,
 ) -> Result<()> {
-    let bundle = CredentialBundle { database_url, oidc_client_id, oidc_client_secret };
+    let bundle = CredentialBundle {
+        database_url,
+        oidc_client_id,
+        oidc_client_secret,
+    };
     let parsed = parse_recipients(recipients)?;
     let refs = recipient_refs(&parsed);
 
@@ -194,7 +229,8 @@ fn cmd_encrypt(
 }
 
 fn cmd_decrypt(input: &Path, identity: &str, out: &Path) -> Result<()> {
-    let armored = fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
+    let armored =
+        fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
     let id = parse_identity(identity)?;
     let bundle = decrypt_bundle(&armored, &id as &dyn Identity)?;
 
@@ -227,7 +263,10 @@ fn cmd_rotate(
     let mut current_bytes = decrypt_bytes(&armored_state, &id as &dyn Identity)?;
     if current_bytes.len() != 32 {
         current_bytes.zeroize();
-        bail!("stored ratchet state is {} bytes, expected 32 — refusing to proceed", current_bytes.len());
+        bail!(
+            "stored ratchet state is {} bytes, expected 32 — refusing to proceed",
+            current_bytes.len()
+        );
     }
     let mut state_arr = [0u8; 32];
     state_arr.copy_from_slice(&current_bytes);
@@ -261,7 +300,11 @@ fn cmd_rotate(
     write_new_file(state_out, state_armored.as_bytes())?;
     write_new_file(secrets_out, secrets_armored.as_bytes())?;
 
-    println!("rotated: {} , {}", state_out.display(), secrets_out.display());
+    println!(
+        "rotated: {} , {}",
+        state_out.display(),
+        secrets_out.display()
+    );
     Ok(())
 }
 
@@ -279,7 +322,8 @@ fn cmd_encrypt_bytes(input: &Path, recipients: &[String], out: &Path) -> Result<
 }
 
 fn cmd_decrypt_bytes(input: &Path, identity: &str, out: &Path) -> Result<()> {
-    let armored = fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
+    let armored =
+        fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
     let id = parse_identity(identity)?;
 
     let mut plaintext = decrypt_bytes(&armored, &id as &dyn Identity)?;
@@ -317,7 +361,8 @@ fn write_new_file(path: &Path, contents: &[u8]) -> Result<()> {
         .mode(0o600)
         .open(path)
         .with_context(|| format!("opening {}", path.display()))?;
-    file.write_all(contents).with_context(|| format!("writing {}", path.display()))?;
+    file.write_all(contents)
+        .with_context(|| format!("writing {}", path.display()))?;
     file.set_permissions(fs::Permissions::from_mode(0o600))
         .with_context(|| format!("setting permissions on {}", path.display()))?;
     Ok(())

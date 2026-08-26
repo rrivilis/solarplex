@@ -44,10 +44,7 @@ pub enum ShellCmd {
     },
     /// Set a WezTerm user var (OSC-1337 SetUserVar), base64-encoded.
     #[command(name = "setvar")]
-    SetVar {
-        key: String,
-        value: String,
-    },
+    SetVar { key: String, value: String },
 }
 
 pub async fn run(args: ShellArgs, ctx: &Ctx) -> Result<()> {
@@ -56,7 +53,11 @@ pub async fn run(args: ShellArgs, ctx: &Ctx) -> Result<()> {
             let client = Client::new(ctx)?;
             start(&client, ctx, &command.join(" "), tracked).await
         }
-        ShellCmd::Complete { command_id, exit, ms } => {
+        ShellCmd::Complete {
+            command_id,
+            exit,
+            ms,
+        } => {
             let client = Client::new(ctx)?;
             complete(&client, ctx, &command_id, exit, ms).await
         }
@@ -202,11 +203,7 @@ pub(crate) fn first_credential_match(command: &str) -> Option<&'static str> {
         // (`*` not `+`) so bare `:password@` forms (e.g. redis://:pass@host)
         // are also caught.  The password segment must be ≥2 chars so bare
         // `user@host` SSH URLs (no password at all) don't trigger.
-        (
-            "url-credential",
-            r"://[^@\s/]*:[^@\s/@]{2,}@",
-        ),
-
+        ("url-credential", r"://[^@\s/]*:[^@\s/@]{2,}@"),
         // ── Glued -p<password> (mysql, legacy psql short form) ────────────────
         // Requires ≥8 chars immediately after -p to avoid false-positives on:
         //   -path (find flag, 4 chars)   -prune (5)   -print (5)
@@ -215,11 +212,7 @@ pub(crate) fn first_credential_match(command: &str) -> Option<&'static str> {
         //   -p8080:8080 (colon not in char class; match breaks at ':' → 4 chars)
         // The `(?:^|\s)` prefix prevents `--password=x` from matching via the
         // `-p` substring embedded inside `--password`.
-        (
-            "dash-p-password",
-            r"(?:^|\s)-p[A-Za-z0-9!@#$%^&*_+\-=]{8,}",
-        ),
-
+        ("dash-p-password", r"(?:^|\s)-p[A-Za-z0-9!@#$%^&*_+\-=]{8,}"),
         // ── Explicit credential flags (--password, --token, --secret, …) ──────
         // Covers `--flag=value` and `--flag value` forms.
         // ≥4-char value minimum to skip trivially short args like `--token no`.
@@ -227,7 +220,6 @@ pub(crate) fn first_credential_match(command: &str) -> Option<&'static str> {
             "password-flag",
             r"(?i)--(?:password|passwd|secret|token|api[-_]key|private[-_]key)(?:=|\s)\S{4,}",
         ),
-
         // ── Authorization header in curl-style -H args ────────────────────────
         // Matches: -H 'Authorization: Bearer <token>'
         //          --header "Authorization: token <value>"
@@ -235,11 +227,7 @@ pub(crate) fn first_credential_match(command: &str) -> Option<&'static str> {
         // Uses `.{8,}` (any chars including spaces) rather than `\S{8,}` because
         // the auth value is typically "TYPE TOKEN" — two whitespace-separated
         // tokens.  Minimum 8 total chars excludes trivial placeholder values.
-        (
-            "auth-header",
-            r"(?i)Authorization:\s*.{8,}",
-        ),
-
+        ("auth-header", r"(?i)Authorization:\s*.{8,}"),
         // ── Inline env-var assignments where the var name contains a secret key ─
         // Matches: AWS_SECRET_ACCESS_KEY=xxx  GITHUB_TOKEN=xxx  MY_API_KEY=yyy
         // Uppercase-only var name (intentional): standard credential env vars are
@@ -249,17 +237,16 @@ pub(crate) fn first_credential_match(command: &str) -> Option<&'static str> {
             "env-credential",
             r"\b(?:[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)[A-Z0-9_]*)=\S{4,}",
         ),
-
         // ── Known literal token prefixes ──────────────────────────────────────
         // Caught regardless of context — a raw token pasted anywhere in argv.
         //
         // GitHub personal (ghp_), server-to-server (ghs_), OAuth (gho_), refresh (ghr_)
-        ("github-token",   r"gh[psor]_[A-Za-z0-9]{10,}"),
+        ("github-token", r"gh[psor]_[A-Za-z0-9]{10,}"),
         // Anthropic API key
-        ("anthropic-key",  r"sk-ant-[A-Za-z0-9\-_]{20,}"),
+        ("anthropic-key", r"sk-ant-[A-Za-z0-9\-_]{20,}"),
         // OpenAI / generic sk- key — pure alphanumeric ≥24 chars after sk-.
         // Hyphens excluded so sk-ant-* (checked above) doesn't also trigger here.
-        ("openai-key",     r"sk-[A-Za-z0-9]{24,}"),
+        ("openai-key", r"sk-[A-Za-z0-9]{24,}"),
         // AWS Access Key ID — always AKIA + exactly 16 uppercase alphanumeric chars.
         ("aws-access-key", r"AKIA[A-Z0-9]{16}"),
     ];
@@ -542,7 +529,7 @@ mod tests {
         // openai-key requires 24+ chars after sk-; short tokens don't match.
         // Real OpenAI keys are always ≥48 chars, so this only matters for
         // adversarially crafted short strings.
-        let cmd = "curl --key sk-shortXXXXXXX";  // 11 chars after sk-, < 24
+        let cmd = "curl --key sk-shortXXXXXXX"; // 11 chars after sk-, < 24
         assert!(first_credential_match(cmd).is_none());
     }
 

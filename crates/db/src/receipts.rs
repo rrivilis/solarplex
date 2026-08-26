@@ -19,16 +19,16 @@ use crate::{DbError, DbResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ReceiptRow {
-    pub id:          String,
-    pub cap_id:      String,
-    pub session_id:  String,
+    pub id: String,
+    pub cap_id: String,
+    pub session_id: String,
     /// Full method address: `"mcp.{slug}.{method}"`.
-    pub method:      String,
+    pub method: String,
     /// Server-canonical args — what the sidecar MUST execute.
-    pub args:        serde_json::Value,
-    pub issued_at:   DateTime<Utc>,
-    pub expires_at:  DateTime<Utc>,
-    pub used_at:     Option<DateTime<Utc>>,
+    pub args: serde_json::Value,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
     pub approval_id: Option<String>,
 }
 
@@ -40,15 +40,15 @@ pub struct ReceiptRow {
 /// present it; default in the invoke handler is 120 s (enough for approval wait
 /// plus execution).  Receipts that expire unused are cleaned up by `gc.rs`.
 pub async fn issue(
-    pool:        &PgPool,
-    cap_id:      &str,
-    session_id:  &str,
-    method:      &str,
-    args:        &serde_json::Value,
-    ttl_secs:    i64,
+    pool: &PgPool,
+    cap_id: &str,
+    session_id: &str,
+    method: &str,
+    args: &serde_json::Value,
+    ttl_secs: i64,
     approval_id: Option<&str>,
 ) -> DbResult<ReceiptRow> {
-    let id         = Ulid::new().to_string();
+    let id = Ulid::new().to_string();
     let expires_at = Utc::now() + chrono::Duration::seconds(ttl_secs);
     sqlx::query_as::<_, ReceiptRow>(
         "INSERT INTO execution_receipts

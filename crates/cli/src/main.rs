@@ -29,7 +29,12 @@ struct Cli {
     server: Option<String>,
 
     /// Session ID (overrides SOLARPLEX_SESSION_ID)
-    #[arg(long = "session", env = "SOLARPLEX_SESSION_ID", global = true, hide_env = true)]
+    #[arg(
+        long = "session",
+        env = "SOLARPLEX_SESSION_ID",
+        global = true,
+        hide_env = true
+    )]
     session_id: Option<String>,
 
     /// Actor ID (overrides SOLARPLEX_ACTOR_ID)
@@ -140,9 +145,7 @@ enum Commands {
     /// Route a URI/text/ULID through plumbing rules
     Plumb(cmd::plumb::PlumbArgs),
     /// Resolve a bare ULID to its entity type and display it
-    Resolve {
-        id: String,
-    },
+    Resolve { id: String },
     /// Internal: shell adapter (used by the fish plugin)
     #[command(name = "_shell", hide = true)]
     Shell(cmd::shell::ShellArgs),
@@ -189,34 +192,35 @@ async fn main() -> Result<()> {
     let ctx = Ctx::load(cli.server, cli.session_id, cli.actor_id);
 
     match cli.command {
-        Commands::Ask(a)      => cmd::ask::run(a, &ctx).await?,
-        Commands::Act(a)      => cmd::act::run(a, &ctx).await?,
-        Commands::Login(a)    => cmd::login::run_login(a, &ctx).await?,
-        Commands::Logout(a)   => cmd::login::run_logout(a, &ctx).await?,
-        Commands::Session(a)  => cmd::session::run(a, &ctx).await?,
-        Commands::Actor(a)    => cmd::actor::run(a, &ctx).await?,
-        Commands::Cap(a)      => cmd::cap::run(a, &ctx).await?,
+        Commands::Ask(a) => cmd::ask::run(a, &ctx).await?,
+        Commands::Act(a) => cmd::act::run(a, &ctx).await?,
+        Commands::Login(a) => cmd::login::run_login(a, &ctx).await?,
+        Commands::Logout(a) => cmd::login::run_logout(a, &ctx).await?,
+        Commands::Session(a) => cmd::session::run(a, &ctx).await?,
+        Commands::Actor(a) => cmd::actor::run(a, &ctx).await?,
+        Commands::Cap(a) => cmd::cap::run(a, &ctx).await?,
         Commands::Approval(a) => cmd::approval::run(a, &ctx).await?,
         Commands::Artifact(a) => cmd::artifact::run(a, &ctx).await?,
-        Commands::Context(a)  => cmd::context::run(a, &ctx).await?,
-        Commands::Mailbox(a)  => cmd::mailbox::run(a, &ctx).await?,
-        Commands::Invite(a)   => cmd::invite::run(a, &ctx).await?,
-        Commands::Auth(a)     => cmd::auth::run(a, &ctx).await?,
-        Commands::Watch(a)    => cmd::watch::run(a, &ctx).await?,
-        Commands::Why(a)      => cmd::why::run(a, &ctx).await?,
-        Commands::Tui         => tui::run(&ctx).await?,
-        Commands::Plumb(a)    => cmd::plumb::run(a, &ctx).await?,
+        Commands::Context(a) => cmd::context::run(a, &ctx).await?,
+        Commands::Mailbox(a) => cmd::mailbox::run(a, &ctx).await?,
+        Commands::Invite(a) => cmd::invite::run(a, &ctx).await?,
+        Commands::Auth(a) => cmd::auth::run(a, &ctx).await?,
+        Commands::Watch(a) => cmd::watch::run(a, &ctx).await?,
+        Commands::Why(a) => cmd::why::run(a, &ctx).await?,
+        Commands::Tui => tui::run(&ctx).await?,
+        Commands::Plumb(a) => cmd::plumb::run(a, &ctx).await?,
         Commands::Resolve { id } => {
             cmd::plumb::run(
                 cmd::plumb::PlumbArgs {
                     cmd: cmd::plumb::PlumbCmd::Resolve { id },
                 },
                 &ctx,
-            ).await?
+            )
+            .await?
         }
-        Commands::Shell(a)    => cmd::shell::run(a, &ctx).await?,
+        Commands::Shell(a) => cmd::shell::run(a, &ctx).await?,
         Commands::InstallUriHandler => cmd::plumb::install_uri_handler()?,
-        Commands::InitPlumb         => cmd::plumb::write_default_plumb_config()?,
+        Commands::InitPlumb => cmd::plumb::write_default_plumb_config()?,
     }
 
     Ok(())
@@ -260,25 +264,30 @@ fn rewrite_bare_ref(mut argv: Vec<String>) -> Vec<String> {
     if first.contains('/') {
         // word/id or word/ form — route known entity types through `sp ask`.
         if let Some((kind, id)) = first.split_once('/') {
-            if id.is_empty() { return argv; }
-            let known = matches!(kind,
+            if id.is_empty() {
+                return argv;
+            }
+            let known = matches!(
+                kind,
                 "session" | "actor" | "cap" | "approval" | "artifact" | "context"
             );
             if known {
                 // `sp session/42` → `sp ask session/42`
-                argv.splice(i..i+1, ["ask".to_string(), first]);
+                argv.splice(i..i + 1, ["ask".to_string(), first]);
             } else {
                 // Unknown type/id → plumb (handles solarplex: URIs, custom schemes, etc.)
                 let bare = argv[i].clone();
-                argv.splice(i..i+1, ["plumb".to_string(), "run".to_string(), bare]);
+                argv.splice(i..i + 1, ["plumb".to_string(), "run".to_string(), bare]);
             }
         }
     } else {
         // Bare 26-char ULID (no slash) → `sp ask <id>` (ask resolves the type)
         let is_ulid = first.len() == 26
-            && first.chars().all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c));
+            && first
+                .chars()
+                .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c));
         if is_ulid {
-            argv.splice(i..i+1, ["ask".to_string(), first]);
+            argv.splice(i..i + 1, ["ask".to_string(), first]);
         }
     }
     argv

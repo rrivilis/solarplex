@@ -48,10 +48,7 @@ pub fn spawn_event_notifier(state: Arc<AppState>) {
 }
 
 /// Inner loop — returns on any error so the outer loop can reconnect.
-async fn run_listener(
-    pool:  &sqlx::PgPool,
-    state: &Arc<AppState>,
-) -> anyhow::Result<()> {
+async fn run_listener(pool: &sqlx::PgPool, state: &Arc<AppState>) -> anyhow::Result<()> {
     let mut listener = sqlx::postgres::PgListener::connect_with(pool).await?;
     listener.listen("session_events").await?;
     tracing::info!("event notifier: listening on session_events");
@@ -69,8 +66,11 @@ async fn run_listener(
             continue;
         };
         let seq: i64 = match seq_str.parse() {
-            Ok(n)  => n,
-            Err(_) => { tracing::warn!("event notifier: bad seq in payload: {payload}"); continue; }
+            Ok(n) => n,
+            Err(_) => {
+                tracing::warn!("event notifier: bad seq in payload: {payload}");
+                continue;
+            }
         };
 
         // Postgres delivers a NOTIFY to the issuing session too. The
@@ -102,21 +102,29 @@ async fn run_listener(
 /// this replica's clients miss one live update (same fallback posture the
 /// old wakeup-only path already had, and their next full sync catches up).
 async fn deliver(
-    state:      &Arc<AppState>,
-    hub:        &Arc<crate::state::SessionHub>,
+    state: &Arc<AppState>,
+    hub: &Arc<crate::state::SessionHub>,
     session_id: &str,
-    seq:        i64,
-    pool:       &sqlx::PgPool,
+    seq: i64,
+    pool: &sqlx::PgPool,
 ) {
     let rows = match db::events::list(pool, session_id, Some(seq - 1), 1).await {
         Ok(rows) => rows,
         Err(e) => {
-            tracing::warn!(session_id, seq, "event notifier: failed to fetch event row: {e}");
+            tracing::warn!(
+                session_id,
+                seq,
+                "event notifier: failed to fetch event row: {e}"
+            );
             return;
         }
     };
     let Some(row) = rows.into_iter().next() else {
-        tracing::warn!(session_id, seq, "event notifier: no event row found at notified seq");
+        tracing::warn!(
+            session_id,
+            seq,
+            "event notifier: no event row found at notified seq"
+        );
         return;
     };
 
@@ -128,13 +136,21 @@ async fn deliver(
     let msg: WsMessage = match serde_json::from_value(row.payload) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(session_id, seq, "event notifier: failed to deserialize event payload: {e}");
+            tracing::warn!(
+                session_id,
+                seq,
+                "event notifier: failed to deserialize event payload: {e}"
+            );
             return;
         }
     };
 
     let Some(current) = warm_snap(state, hub, session_id).await else {
-        tracing::warn!(session_id, seq, "event notifier: no snapshot to apply onto, dropping");
+        tracing::warn!(
+            session_id,
+            seq,
+            "event notifier: no snapshot to apply onto, dropping"
+        );
         return;
     };
     let new_snap = apply_event(&current, &msg);

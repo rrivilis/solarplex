@@ -22,30 +22,49 @@ pub fn format_suggestion(parsed: &Value) -> Option<String> {
     let resolved_session = describe_resolution(parsed.pointer("/resolution/target_session"));
 
     let action = match kind {
-        "pause"   => "Pause the session".to_string(),
-        "resume"  => "Resume the session".to_string(),
+        "pause" => "Pause the session".to_string(),
+        "resume" => "Resume the session".to_string(),
         "archive" => "Archive the session".to_string(),
         "approve" => "Approve".to_string(),
-        "deny"    => "Deny".to_string(),
-        "claim"   => "Claim".to_string(),
+        "deny" => "Deny".to_string(),
+        "claim" => "Claim".to_string(),
         "navigate" => "Go to a session".to_string(),
         "transfer_ownership" => {
             let to = intent.get("to").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("Transfer ownership to {}", resolved_actor.clone().unwrap_or_else(|| to.to_string()))
+            format!(
+                "Transfer ownership to {}",
+                resolved_actor.clone().unwrap_or_else(|| to.to_string())
+            )
         }
         "invite" => {
-            let invitee = intent.get("invitee").and_then(|v| v.as_str()).unwrap_or("someone");
-            let role = intent.get("role").and_then(|v| v.as_str()).unwrap_or("collaborator");
-            format!("Invite {} as {role}", resolved_actor.clone().unwrap_or_else(|| invitee.to_string()))
+            let invitee = intent
+                .get("invitee")
+                .and_then(|v| v.as_str())
+                .unwrap_or("someone");
+            let role = intent
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("collaborator");
+            format!(
+                "Invite {} as {role}",
+                resolved_actor
+                    .clone()
+                    .unwrap_or_else(|| invitee.to_string())
+            )
         }
         "attach_agent" => {
-            let name = intent.get("name").and_then(|v| v.as_str()).unwrap_or("a new agent");
+            let name = intent
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("a new agent");
             format!("Attach agent \"{name}\"")
         }
         _ => return None,
     };
 
-    let target = resolved_session.map(|s| format!(" in {s}")).unwrap_or_default();
+    let target = resolved_session
+        .map(|s| format!(" in {s}"))
+        .unwrap_or_default();
     Some(format!("understood as: {action}{target}"))
 }
 
@@ -58,9 +77,9 @@ pub fn format_suggestion(parsed: &Value) -> Option<String> {
 fn describe_resolution(res: Option<&Value>) -> Option<String> {
     let res = res?;
     match res.get("status")?.as_str()? {
-        "matched"   => res.get("name").and_then(|v| v.as_str()).map(String::from),
+        "matched" => res.get("name").and_then(|v| v.as_str()).map(String::from),
         "ambiguous" => Some("(ambiguous)".to_string()),
         "not_found" => Some("(not found)".to_string()),
-        _           => None,
+        _ => None,
     }
 }

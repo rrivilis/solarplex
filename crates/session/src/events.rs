@@ -123,11 +123,10 @@ bitflags::bitflags! {
 /// - `SAGA` is not included because saga state is not in `SessionSnapshot`.
 /// - `PROJECTION` only updates `snapshot_seq`, which is not projected out.
 /// - `POLICY` is not included because gated-bundle state is not in `SessionSnapshot`.
-pub const SNAPSHOT_DEPENDS_ON: AlgebraMask =
-    AlgebraMask::LIFECYCLE
-        .union(AlgebraMask::MEMBERSHIP)
-        .union(AlgebraMask::APPROVAL)
-        .union(AlgebraMask::EFFECT);
+pub const SNAPSHOT_DEPENDS_ON: AlgebraMask = AlgebraMask::LIFECYCLE
+    .union(AlgebraMask::MEMBERSHIP)
+    .union(AlgebraMask::APPROVAL)
+    .union(AlgebraMask::EFFECT);
 
 // ── Policy algebra supporting types ──────────────────────────────────────────
 
@@ -184,9 +183,9 @@ pub enum PolicyConstraint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleTransport {
     /// Override the destination session (sub-bundle fan-out or redirect).
-    pub to_session:  String,
+    pub to_session: String,
     /// Adjusted hard expiry in milliseconds from epoch.
-    pub ttl_ms:      u64,
+    pub ttl_ms: u64,
     /// Tracing / QoS annotations added by the adapter layer.
     pub annotations: serde_json::Value,
 }
@@ -199,16 +198,16 @@ pub struct BundleTransport {
 /// full `SagaRecord` without any external lookup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SagaStepSpec {
-    pub step_idx:     usize,
+    pub step_idx: usize,
     /// Session ID of the participant who must acknowledge this step.
-    pub participant:  String,
+    pub participant: String,
     /// Payload delivered on the forward path ("do the work").
-    pub message:      serde_json::Value,
+    pub message: serde_json::Value,
     /// Payload delivered on the backward path if the saga aborts after this
     /// step was already committed ("undo the work").
     pub compensation: serde_json::Value,
     /// Milliseconds to wait for an ack before treating this step as rejected.
-    pub timeout_ms:   u64,
+    pub timeout_ms: u64,
 }
 
 /// Outcome reported by a participant when they acknowledge a saga step.
@@ -233,21 +232,20 @@ pub enum SagaTermination {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEvent {
     // ── Session lifecycle ─────────────────────────────────────────────────────
-
     /// A new session was created.
     SessionCreated {
         session_id: String,
-        owner_id:   String,
-        name:       String,
+        owner_id: String,
+        name: String,
         /// Approval policy slug: "single_vote" | "majority" | "unanimous"
-        policy:     String,
+        policy: String,
         created_at: DateTime<Utc>,
     },
 
     /// The owner paused the session; agents are suspended.
     SessionPaused {
         paused_by: String,
-        reason:    Option<String>,
+        reason: Option<String>,
         paused_at: DateTime<Utc>,
     },
 
@@ -264,64 +262,62 @@ pub enum SessionEvent {
     },
 
     // ── Participation algebra ─────────────────────────────────────────────────
-
     /// A human participant joined the session.
     ParticipantJoined {
-        actor_id:  String,
+        actor_id: String,
         /// "owner" | "collaborator" | "observer"
-        role:      String,
+        role: String,
         joined_at: DateTime<Utc>,
     },
 
     /// A human participant left the session (voluntary or timeout).
     ParticipantLeft {
         actor_id: String,
-        reason:   Option<String>,
-        left_at:  DateTime<Utc>,
+        reason: Option<String>,
+        left_at: DateTime<Utc>,
     },
 
     /// Session ownership was transferred to another participant.
     OwnershipTransferred {
-        from_actor:     String,
-        to_actor:       String,
+        from_actor: String,
+        to_actor: String,
         transferred_at: DateTime<Utc>,
     },
 
     /// An agent sidecar attached to the session with a validated capability.
     AgentAttached {
-        actor_id:    String,
-        cap_id:      String,
+        actor_id: String,
+        cap_id: String,
         attached_at: DateTime<Utc>,
     },
 
     /// An agent sidecar detached from the session.
     AgentDetached {
-        actor_id:    String,
-        reason:      Option<String>,
+        actor_id: String,
+        reason: Option<String>,
         detached_at: DateTime<Utc>,
     },
 
     // ── Cap algebra (link-graph rewrites) ─────────────────────────────────────
-
     /// A capability was delegated from a parent to a new actor.
     ///
     /// Invariant: child.permissions ⊆ parent.permissions.
     /// Invariant: child.epoch == parent.epoch == session.epoch at issue time.
     CapDelegated {
-        cap_id:      String,
-        parent_cap:  Option<String>,
-        actor_id:    String,
+        cap_id: String,
+        parent_cap: Option<String>,
+        actor_id: String,
         permissions: Vec<String>,
-        epoch:       i64,
-        stratum:     i64,
-        issued_at:   DateTime<Utc>,
+        epoch: i64,
+        stratum: i64,
+        issued_at: DateTime<Utc>,
     },
 
     /// A capability (and optionally its subtree) was revoked.
     CapRevoked {
-        cap_id:     String,
+        cap_id: String,
         /// "subtree" revokes cap + all descendants; "leaf" revokes only this cap.
-        strategy:   String,
+        strategy: String,
         revoked_by: String,
         revoked_at: DateTime<Utc>,
     },
@@ -332,70 +328,69 @@ pub enum SessionEvent {
     /// `fenced_actor_ids` lists actors whose active cap was at the old epoch —
     /// they are disconnected during the subsequent drain phase.
     EpochAdvanced {
-        old_epoch:         i64,
-        new_epoch:         i64,
+        old_epoch: i64,
+        new_epoch: i64,
         /// "hard_fence" | "graceful"
-        strategy:          String,
+        strategy: String,
         /// How long (ms) to wait for fenced actors to disconnect cleanly.
         drain_deadline_ms: u64,
-        fenced_actor_ids:  Vec<String>,
-        advanced_by:       String,
-        advanced_at:       DateTime<Utc>,
+        fenced_actor_ids: Vec<String>,
+        advanced_by: String,
+        advanced_at: DateTime<Utc>,
     },
 
     // ── Approval algebra (link-graph rewrites) ────────────────────────────────
-
     /// An agent requested human approval for a Ring-2 effect.
     ApprovalRequested {
-        approval_id:  String,
-        actor_id:     String,
-        tool:         String,
-        arguments:    serde_json::Value,
-        expires_at:   Option<DateTime<Utc>>,
+        approval_id: String,
+        actor_id: String,
+        tool: String,
+        arguments: serde_json::Value,
+        expires_at: Option<DateTime<Utc>>,
         requested_at: DateTime<Utc>,
     },
 
     /// A human claimed the approval request to review it.
     ApprovalClaimed {
         approval_id: String,
-        claimed_by:  String,
-        claimed_at:  DateTime<Utc>,
+        claimed_by: String,
+        claimed_at: DateTime<Utc>,
     },
 
     /// A human cast a vote on the approval.
     ApprovalVoted {
         approval_id: String,
-        voter_id:    String,
+        voter_id: String,
         /// "approve" | "deny"
-        decision:    String,
-        voted_at:    DateTime<Utc>,
+        decision: String,
+        voted_at: DateTime<Utc>,
     },
 
     /// The approval was resolved as granted (policy threshold met).
     ApprovalGranted {
         approval_id: String,
         resolved_by: String,
-        granted_at:  DateTime<Utc>,
+        granted_at: DateTime<Utc>,
     },
 
     /// The approval was resolved as denied.
     ApprovalDenied {
         approval_id: String,
         resolved_by: String,
-        reason:      Option<String>,
-        denied_at:   DateTime<Utc>,
+        reason: Option<String>,
+        denied_at: DateTime<Utc>,
     },
 
     /// The approval expired before a resolution was reached.
     ApprovalExpired {
         approval_id: String,
-        expired_at:  DateTime<Utc>,
+        expired_at: DateTime<Utc>,
     },
 
     /// The approval was interrupted (agent disconnected or cancelled it).
     ApprovalInterrupted {
-        approval_id:    String,
-        reason:         String,
+        approval_id: String,
+        reason: String,
         interrupted_at: DateTime<Utc>,
     },
 
@@ -406,7 +401,7 @@ pub enum SessionEvent {
     /// (matching it exactly) reuses `ApprovalStatus::Expired` rather than a
     /// distinct cancelled status — the DB row it writes does the same.
     ApprovalCancelled {
-        approval_id:  String,
+        approval_id: String,
         cancelled_by: String,
         cancelled_at: DateTime<Utc>,
     },
@@ -417,9 +412,9 @@ pub enum SessionEvent {
     /// project delegation into `SessionSnapshot` either (delegation doesn't
     /// change who *can* resolve the approval, only who's been asked to).
     ApprovalDelegated {
-        approval_id:  String,
-        from:         String,
-        to:           String,
+        approval_id: String,
+        from: String,
+        to: String,
         delegated_at: DateTime<Utc>,
     },
 
@@ -429,7 +424,7 @@ pub enum SessionEvent {
     ApprovalDisputed {
         approval_id: String,
         disputed_by: String,
-        reason:      String,
+        reason: String,
         disputed_at: DateTime<Utc>,
     },
 
@@ -445,14 +440,13 @@ pub enum SessionEvent {
     // migration 028). EventLog only on both ends, same reasoning as
     // ApprovalDelegated — delegation doesn't itself change who can resolve
     // anything, only what's been asked of a peer session.
-
     /// The source session (A) began a cross-session delegation saga.
     CrossSessionDelegationRequested {
-        saga_id:            String,
-        approval_id:        String,
-        target_session_id:  String,
-        requested_by:       String,
-        requested_at:       DateTime<Utc>,
+        saga_id: String,
+        approval_id: String,
+        target_session_id: String,
+        requested_by: String,
+        requested_at: DateTime<Utc>,
     },
 
     /// The target session (B) received the delegation bundle. `target_
@@ -462,24 +456,24 @@ pub enum SessionEvent {
     /// bundle delivery, recorded mutably in the `cross_session_delegations`
     /// table (not this immutable event) once it happens.
     CrossSessionDelegationReceived {
-        saga_id:             String,
-        source_session_id:   String,
-        source_approval_id:  String,
+        saga_id: String,
+        source_session_id: String,
+        source_approval_id: String,
         /// Carried through from the saga step's message so the server-side
         /// hook that creates B's real ApprovalRequest has something to show.
-        arguments:           serde_json::Value,
-        target_approval_id:  Option<String>,
-        received_at:         DateTime<Utc>,
+        arguments: serde_json::Value,
+        target_approval_id: Option<String>,
+        received_at: DateTime<Utc>,
     },
 
     /// The source session (A) received B's decision via the saga Ack and
     /// resolved its original local approval to match.
     CrossSessionDelegationResolved {
-        saga_id:      String,
-        approval_id:  String,
+        saga_id: String,
+        approval_id: String,
         /// "granted" | "denied" — mirrors the decision B's own approval_policy reached.
-        decision:     String,
-        resolved_at:  DateTime<Utc>,
+        decision: String,
+        resolved_at: DateTime<Utc>,
     },
 
     /// The target session received an artifact-import bundle from a linked
@@ -490,20 +484,20 @@ pub enum SessionEvent {
     /// hook (`session_task.rs`) that this event triggers, with nothing to
     /// thread back into a later event.
     CrossSessionArtifactImportReceived {
-        source_session_id:  String,
+        source_session_id: String,
         source_artifact_id: String,
-        source_seq:          i64,
-        name:                String,
-        artifact_type:       String,
-        storage_ref:         String,
-        content_hash:        String,
-        source_created_by:   String,
-        source_created_at:   DateTime<Utc>,
-        imported_by:         String,
-        link_id:             Option<String>,
-        source_name:         String,
-        target_name:         String,
-        received_at:         DateTime<Utc>,
+        source_seq: i64,
+        name: String,
+        artifact_type: String,
+        storage_ref: String,
+        content_hash: String,
+        source_created_by: String,
+        source_created_at: DateTime<Utc>,
+        imported_by: String,
+        link_id: Option<String>,
+        source_name: String,
+        target_name: String,
+        received_at: DateTime<Utc>,
     },
 
     /// The target session received a context-summary-send bundle: an
@@ -516,16 +510,16 @@ pub enum SessionEvent {
     /// `session_task.rs`'s side-effect hook) *is* the durable write.
     CrossSessionContextReceived {
         source_session_id: String,
-        source_entry_id:   String,
-        kind:               ContextEntryKind,
-        content:            String,
+        source_entry_id: String,
+        kind: ContextEntryKind,
+        content: String,
         source_authored_by: String,
         source_authored_at: DateTime<Utc>,
-        imported_by:        String,
-        link_id:             Option<String>,
-        source_name:         String,
-        target_name:         String,
-        received_at:         DateTime<Utc>,
+        imported_by: String,
+        link_id: Option<String>,
+        source_name: String,
+        target_name: String,
+        received_at: DateTime<Utc>,
     },
 
     /// The target session received an annotation on one of its own objects
@@ -535,77 +529,75 @@ pub enum SessionEvent {
     /// EventLog-only audit trail of the cross-session hop itself.
     CrossSessionAnnotationReceived {
         source_session_id: String,
-        object_type:        String,
-        object_id:           String,
-        object_name:         String,
-        note:                 String,
-        authored_by:          String,
-        link_id:              Option<String>,
-        source_name:          String,
-        received_at:          DateTime<Utc>,
+        object_type: String,
+        object_id: String,
+        object_name: String,
+        note: String,
+        authored_by: String,
+        link_id: Option<String>,
+        source_name: String,
+        received_at: DateTime<Utc>,
     },
 
     // ── Effect algebra (place-graph rewrites) ─────────────────────────────────
-
     /// A Ring-0 write proposal was created.
     EffectProposed {
-        proposal_id:          String,
+        proposal_id: String,
         /// Ring-1: present (receipt bound); Ring-0: absent (server CAS).
-        receipt_id:           Option<String>,
-        effect_type:          String,
+        receipt_id: Option<String>,
+        effect_type: String,
         expected_hash_before: Option<String>,
-        claimed_hash_after:   Option<String>,
-        proposed_at:          DateTime<Utc>,
+        claimed_hash_after: Option<String>,
+        proposed_at: DateTime<Utc>,
     },
 
     /// A Ring-2 scout manifest was recorded during the approval window.
     EffectScouted {
-        approval_id:    String,
+        approval_id: String,
         scout_manifest: serde_json::Value,
-        scouted_at:     DateTime<Utc>,
+        scouted_at: DateTime<Utc>,
     },
 
     /// A Ring-1 filesystem write attestation was recorded post-execution.
     EffectAttested {
         attestation_id: String,
-        receipt_id:     String,
-        tool:           String,
-        path:           String,
+        receipt_id: String,
+        tool: String,
+        path: String,
         /// True when observed hashes diverged from approved hashes — security event.
-        hash_mismatch:  bool,
-        attested_at:    DateTime<Utc>,
+        hash_mismatch: bool,
+        attested_at: DateTime<Utc>,
     },
 
     /// A Ring-0 effect was committed with verified CAS hashes.
     EffectCommitted {
-        proposal_id:  String,
-        event_id:     String,
-        h_before:     String,
-        h_after:      String,
+        proposal_id: String,
+        event_id: String,
+        h_before: String,
+        h_after: String,
         committed_at: DateTime<Utc>,
     },
 
     /// A Ring-2 execution manifest diverged from the scout prediction.
     /// This is a security event — stored permanently for audit.
     EffectDiverged {
-        approval_id:     String,
+        approval_id: String,
         /// "unexpected_writes" | "missing_writes" | "both"
         divergence_type: String,
-        details:         serde_json::Value,
-        detected_at:     DateTime<Utc>,
+        details: serde_json::Value,
+        detected_at: DateTime<Utc>,
     },
 
     // ── Content sub-shape of the effect algebra ───────────────────────────────
     //
     // Shadow-persisted only today — see the module doc comment above.
-
     /// A human or agent posted a message to the session.
     ///
     /// EventLog only — matches `ws.rs`'s own `apply_event`, which also does
     /// not project message content into `SessionSnapshot`.
     MessagePosted {
-        actor_id:  String,
-        content:   String,
+        actor_id: String,
+        content: String,
         posted_at: DateTime<Utc>,
     },
 
@@ -613,26 +605,26 @@ pub enum SessionEvent {
     ContextEntryAdded {
         entry_id: String,
         actor_id: String,
-        kind:     ContextEntryKind,
-        content:  String,
+        kind: ContextEntryKind,
+        content: String,
         added_at: DateTime<Utc>,
     },
 
     /// A context entry was marked resolved.
     ContextEntryResolved {
-        entry_id:    String,
+        entry_id: String,
         resolved_by: String,
-        note:        Option<String>,
+        note: Option<String>,
         resolved_at: DateTime<Utc>,
     },
 
     /// An artifact was created.
     ArtifactCreated {
-        artifact_id:   String,
-        actor_id:      String,
-        name:          String,
+        artifact_id: String,
+        actor_id: String,
+        name: String,
         artifact_type: Option<String>,
-        created_at:    DateTime<Utc>,
+        created_at: DateTime<Utc>,
     },
 
     /// An artifact's content was updated.
@@ -641,11 +633,11 @@ pub enum SessionEvent {
     /// update event carries `artifact_type` but the hub doesn't currently
     /// project a type change either. Kept at parity rather than fixed here.
     ArtifactUpdated {
-        artifact_id:   String,
-        actor_id:      String,
-        name:          String,
+        artifact_id: String,
+        actor_id: String,
+        name: String,
         artifact_type: Option<String>,
-        updated_at:    DateTime<Utc>,
+        updated_at: DateTime<Utc>,
     },
 
     /// An artifact was deleted.
@@ -655,29 +647,27 @@ pub enum SessionEvent {
     /// already fetches them before deleting for its own event payload, and
     /// `session_broadcast::to_ws_payload`'s `ArtifactPayload` requires a name.
     ArtifactDeleted {
-        artifact_id:   String,
-        actor_id:      String,
-        name:          String,
+        artifact_id: String,
+        actor_id: String,
+        name: String,
         artifact_type: Option<String>,
-        deleted_at:    DateTime<Utc>,
+        deleted_at: DateTime<Utc>,
     },
 
     // ── Projection algebra ────────────────────────────────────────────────────
-
     /// A session snapshot was checkpointed at the given cursor.
     SnapshotCreated {
         snapshot_seq: i64,
-        created_at:   DateTime<Utc>,
+        created_at: DateTime<Utc>,
     },
 
     /// A previously valid snapshot was invalidated (e.g., membership change).
     SnapshotInvalidated {
-        reason:         String,
+        reason: String,
         invalidated_at: DateTime<Utc>,
     },
 
     // ── Saga algebra (cross-session coordination) ─────────────────────────────
-
     /// A multi-step coordination saga was initiated in this session.
     ///
     /// The `steps` field embeds the full saga spec so cold replay can
@@ -686,46 +676,46 @@ pub enum SessionEvent {
     /// needed to reconstruct the typed `SessionSaga` discriminant in
     /// `live_saga_ack` without any external lookup.
     SagaBegun {
-        saga_id:   String,
+        saga_id: String,
         /// Discriminator: "approval" | "ownership_transfer" | "custom"
         saga_type: String,
-        steps:     Vec<SagaStepSpec>,
-        begun_at:  DateTime<Utc>,
+        steps: Vec<SagaStepSpec>,
+        begun_at: DateTime<Utc>,
         /// Type-specific parameters for reducer reconstruction on replay.
         /// Approval: `{ "policy": "...", "eligible": N, "approval_id": "..." }`
         /// OwnershipTransfer: `{ "from_session": "...", "to_session": "..." }`
         /// Custom / unknown: `{}`
-        metadata:  serde_json::Value,
+        metadata: serde_json::Value,
     },
 
     /// The coordinator dispatched a forward step to a participant session.
     SagaStepSent {
-        saga_id:     String,
-        step_idx:    usize,
+        saga_id: String,
+        step_idx: usize,
         participant: String,
-        sent_at:     DateTime<Utc>,
+        sent_at: DateTime<Utc>,
     },
 
     /// A participant returned an outcome for their step.
     SagaStepAcked {
-        saga_id:  String,
+        saga_id: String,
         step_idx: usize,
-        outcome:  SagaOutcome,
+        outcome: SagaOutcome,
         acked_at: DateTime<Utc>,
     },
 
     /// A compensation message was dispatched for a previously-committed step
     /// during the abort path (backward traverse, reverse order).
     SagaCompensated {
-        saga_id:  String,
+        saga_id: String,
         step_idx: usize,
-        sent_at:  DateTime<Utc>,
+        sent_at: DateTime<Utc>,
     },
 
     /// The saga reached a terminal state (Completed or Aborted).
     SagaTerminated {
-        saga_id:       String,
-        outcome:       SagaTermination,
+        saga_id: String,
+        outcome: SagaTermination,
         terminated_at: DateTime<Utc>,
     },
 
@@ -736,11 +726,10 @@ pub enum SessionEvent {
     // is presently gated) lives in `SessionMemory::gated_bundles`.  This split
     // mirrors the act / ask CLI separation: `sp policy set` emits events,
     // `sp reflect policy` reads the snapshot.
-
     /// Bundle transport metadata was annotated by the adapter layer.
     BundleAnnotated {
         bundle_id: String,
-        metadata:  serde_json::Value,
+        metadata: serde_json::Value,
     },
 
     /// Bundle transport fields were reshaped by the adapter layer.
@@ -750,7 +739,7 @@ pub enum SessionEvent {
     BundleReshaped {
         bundle_id: String,
         transport: BundleTransport,
-        reason:    String,
+        reason: String,
     },
 
     /// Bundle delivery was deferred by the adapter layer.
@@ -760,15 +749,15 @@ pub enum SessionEvent {
     /// `SetTimer` for the remaining duration; if the deadline has already
     /// passed it delivers immediately (1 ms minimum).
     BundleDeferred {
-        bundle_id:          String,
-        defer_until_ms:     u64,
+        bundle_id: String,
+        defer_until_ms: u64,
         interceptor_cap_id: String,
     },
 
     /// Bundle was rejected by the adapter layer and will not be delivered.
     BundleRejected {
-        bundle_id:          String,
-        reason:             String,
+        bundle_id: String,
+        reason: String,
         interceptor_cap_id: String,
     },
 
@@ -779,8 +768,8 @@ pub enum SessionEvent {
     /// without knowing a human approved it — meta level governs base level
     /// transparently (RODS §4.2, FMOA object adapter pattern).
     BundleApprovalGated {
-        bundle_id:          String,
-        approval_id:        String,
+        bundle_id: String,
+        approval_id: String,
         interceptor_cap_id: String,
     },
 
@@ -793,11 +782,11 @@ pub enum SessionEvent {
     /// - `sp policy set bundle.step require_approval` → writes this event.
     /// - `sp reflect policy` → reads `SessionMemory::policies` (the snapshot).
     PolicySet {
-        target:     PolicyTarget,
+        target: PolicyTarget,
         constraint: PolicyConstraint,
         /// Cap ID of the sidecar that issued the policy change.
         set_by_cap: String,
-        set_at:     chrono::DateTime<chrono::Utc>,
+        set_at: chrono::DateTime<chrono::Utc>,
     },
 }
 
@@ -849,8 +838,9 @@ impl SessionEvent {
             | SessionEvent::CrossSessionContextReceived { .. }
             | SessionEvent::CrossSessionAnnotationReceived { .. } => "effect",
 
-            SessionEvent::SnapshotCreated { .. }
-            | SessionEvent::SnapshotInvalidated { .. } => "projection",
+            SessionEvent::SnapshotCreated { .. } | SessionEvent::SnapshotInvalidated { .. } => {
+                "projection"
+            }
 
             SessionEvent::SagaBegun { .. }
             | SessionEvent::SagaStepSent { .. }
@@ -858,12 +848,12 @@ impl SessionEvent {
             | SessionEvent::SagaCompensated { .. }
             | SessionEvent::SagaTerminated { .. } => "saga",
 
-            SessionEvent::BundleAnnotated     { .. }
-            | SessionEvent::BundleReshaped    { .. }
-            | SessionEvent::BundleDeferred    { .. }
-            | SessionEvent::BundleRejected    { .. }
+            SessionEvent::BundleAnnotated { .. }
+            | SessionEvent::BundleReshaped { .. }
+            | SessionEvent::BundleDeferred { .. }
+            | SessionEvent::BundleRejected { .. }
             | SessionEvent::BundleApprovalGated { .. }
-            | SessionEvent::PolicySet           { .. } => "policy",
+            | SessionEvent::PolicySet { .. } => "policy",
         }
     }
 
@@ -873,16 +863,16 @@ impl SessionEvent {
     /// invalidation: `event.algebra_mask().intersects(projection.depends_on)`.
     pub fn algebra_mask(&self) -> AlgebraMask {
         match self.algebra() {
-            "lifecycle"   => AlgebraMask::LIFECYCLE,
+            "lifecycle" => AlgebraMask::LIFECYCLE,
             "participation" | "membership" => AlgebraMask::MEMBERSHIP,
-            "cap"         => AlgebraMask::AUTHORITY,
-            "approval"    => AlgebraMask::APPROVAL,
-            "effect"      => AlgebraMask::EFFECT,
-            "projection"  => AlgebraMask::PROJECTION,
-            "saga"        => AlgebraMask::SAGA,
-            "policy"      => AlgebraMask::POLICY,
+            "cap" => AlgebraMask::AUTHORITY,
+            "approval" => AlgebraMask::APPROVAL,
+            "effect" => AlgebraMask::EFFECT,
+            "projection" => AlgebraMask::PROJECTION,
+            "saga" => AlgebraMask::SAGA,
+            "policy" => AlgebraMask::POLICY,
             // Unknown algebra — conservative: treat as invalidating everything.
-            _             => AlgebraMask::all(),
+            _ => AlgebraMask::all(),
         }
     }
 
@@ -895,58 +885,68 @@ impl SessionEvent {
     /// The returned string is the variant name under `rename_all = "snake_case"`.
     pub fn type_name(&self) -> &'static str {
         match self {
-            SessionEvent::SessionCreated    { .. } => "session_created",
-            SessionEvent::SessionPaused     { .. } => "session_paused",
-            SessionEvent::SessionResumed    { .. } => "session_resumed",
-            SessionEvent::SessionArchived   { .. } => "session_archived",
+            SessionEvent::SessionCreated { .. } => "session_created",
+            SessionEvent::SessionPaused { .. } => "session_paused",
+            SessionEvent::SessionResumed { .. } => "session_resumed",
+            SessionEvent::SessionArchived { .. } => "session_archived",
             SessionEvent::ParticipantJoined { .. } => "participant_joined",
-            SessionEvent::ParticipantLeft   { .. } => "participant_left",
+            SessionEvent::ParticipantLeft { .. } => "participant_left",
             SessionEvent::OwnershipTransferred { .. } => "ownership_transferred",
-            SessionEvent::AgentAttached     { .. } => "agent_attached",
-            SessionEvent::AgentDetached     { .. } => "agent_detached",
-            SessionEvent::CapDelegated      { .. } => "cap_delegated",
-            SessionEvent::CapRevoked        { .. } => "cap_revoked",
-            SessionEvent::EpochAdvanced     { .. } => "epoch_advanced",
-            SessionEvent::ApprovalRequested  { .. } => "approval_requested",
-            SessionEvent::ApprovalClaimed   { .. } => "approval_claimed",
-            SessionEvent::ApprovalVoted     { .. } => "approval_voted",
-            SessionEvent::ApprovalGranted   { .. } => "approval_granted",
-            SessionEvent::ApprovalDenied    { .. } => "approval_denied",
-            SessionEvent::ApprovalExpired   { .. } => "approval_expired",
+            SessionEvent::AgentAttached { .. } => "agent_attached",
+            SessionEvent::AgentDetached { .. } => "agent_detached",
+            SessionEvent::CapDelegated { .. } => "cap_delegated",
+            SessionEvent::CapRevoked { .. } => "cap_revoked",
+            SessionEvent::EpochAdvanced { .. } => "epoch_advanced",
+            SessionEvent::ApprovalRequested { .. } => "approval_requested",
+            SessionEvent::ApprovalClaimed { .. } => "approval_claimed",
+            SessionEvent::ApprovalVoted { .. } => "approval_voted",
+            SessionEvent::ApprovalGranted { .. } => "approval_granted",
+            SessionEvent::ApprovalDenied { .. } => "approval_denied",
+            SessionEvent::ApprovalExpired { .. } => "approval_expired",
             SessionEvent::ApprovalInterrupted { .. } => "approval_interrupted",
             SessionEvent::ApprovalCancelled { .. } => "approval_cancelled",
             SessionEvent::ApprovalDelegated { .. } => "approval_delegated",
-            SessionEvent::ApprovalDisputed  { .. } => "approval_disputed",
-            SessionEvent::CrossSessionDelegationRequested { .. } => "cross_session_delegation_requested",
-            SessionEvent::CrossSessionDelegationReceived  { .. } => "cross_session_delegation_received",
-            SessionEvent::CrossSessionDelegationResolved  { .. } => "cross_session_delegation_resolved",
-            SessionEvent::CrossSessionArtifactImportReceived { .. } => "cross_session_artifact_import_received",
+            SessionEvent::ApprovalDisputed { .. } => "approval_disputed",
+            SessionEvent::CrossSessionDelegationRequested { .. } => {
+                "cross_session_delegation_requested"
+            }
+            SessionEvent::CrossSessionDelegationReceived { .. } => {
+                "cross_session_delegation_received"
+            }
+            SessionEvent::CrossSessionDelegationResolved { .. } => {
+                "cross_session_delegation_resolved"
+            }
+            SessionEvent::CrossSessionArtifactImportReceived { .. } => {
+                "cross_session_artifact_import_received"
+            }
             SessionEvent::CrossSessionContextReceived { .. } => "cross_session_context_received",
-            SessionEvent::CrossSessionAnnotationReceived { .. } => "cross_session_annotation_received",
-            SessionEvent::EffectProposed    { .. } => "effect_proposed",
-            SessionEvent::EffectScouted     { .. } => "effect_scouted",
-            SessionEvent::EffectAttested    { .. } => "effect_attested",
-            SessionEvent::EffectCommitted   { .. } => "effect_committed",
-            SessionEvent::EffectDiverged    { .. } => "effect_diverged",
-            SessionEvent::MessagePosted        { .. } => "message_posted",
-            SessionEvent::ContextEntryAdded    { .. } => "context_entry_added",
+            SessionEvent::CrossSessionAnnotationReceived { .. } => {
+                "cross_session_annotation_received"
+            }
+            SessionEvent::EffectProposed { .. } => "effect_proposed",
+            SessionEvent::EffectScouted { .. } => "effect_scouted",
+            SessionEvent::EffectAttested { .. } => "effect_attested",
+            SessionEvent::EffectCommitted { .. } => "effect_committed",
+            SessionEvent::EffectDiverged { .. } => "effect_diverged",
+            SessionEvent::MessagePosted { .. } => "message_posted",
+            SessionEvent::ContextEntryAdded { .. } => "context_entry_added",
             SessionEvent::ContextEntryResolved { .. } => "context_entry_resolved",
-            SessionEvent::ArtifactCreated      { .. } => "artifact_created",
-            SessionEvent::ArtifactUpdated      { .. } => "artifact_updated",
-            SessionEvent::ArtifactDeleted      { .. } => "artifact_deleted",
-            SessionEvent::SnapshotCreated   { .. } => "snapshot_created",
+            SessionEvent::ArtifactCreated { .. } => "artifact_created",
+            SessionEvent::ArtifactUpdated { .. } => "artifact_updated",
+            SessionEvent::ArtifactDeleted { .. } => "artifact_deleted",
+            SessionEvent::SnapshotCreated { .. } => "snapshot_created",
             SessionEvent::SnapshotInvalidated { .. } => "snapshot_invalidated",
-            SessionEvent::SagaBegun             { .. } => "saga_begun",
-            SessionEvent::SagaStepSent          { .. } => "saga_step_sent",
-            SessionEvent::SagaStepAcked         { .. } => "saga_step_acked",
-            SessionEvent::SagaCompensated       { .. } => "saga_compensated",
-            SessionEvent::SagaTerminated        { .. } => "saga_terminated",
-            SessionEvent::BundleAnnotated       { .. } => "bundle_annotated",
-            SessionEvent::BundleReshaped        { .. } => "bundle_reshaped",
-            SessionEvent::BundleDeferred        { .. } => "bundle_deferred",
-            SessionEvent::BundleRejected        { .. } => "bundle_rejected",
-            SessionEvent::BundleApprovalGated   { .. } => "bundle_approval_gated",
-            SessionEvent::PolicySet             { .. } => "policy_set",
+            SessionEvent::SagaBegun { .. } => "saga_begun",
+            SessionEvent::SagaStepSent { .. } => "saga_step_sent",
+            SessionEvent::SagaStepAcked { .. } => "saga_step_acked",
+            SessionEvent::SagaCompensated { .. } => "saga_compensated",
+            SessionEvent::SagaTerminated { .. } => "saga_terminated",
+            SessionEvent::BundleAnnotated { .. } => "bundle_annotated",
+            SessionEvent::BundleReshaped { .. } => "bundle_reshaped",
+            SessionEvent::BundleDeferred { .. } => "bundle_deferred",
+            SessionEvent::BundleRejected { .. } => "bundle_rejected",
+            SessionEvent::BundleApprovalGated { .. } => "bundle_approval_gated",
+            SessionEvent::PolicySet { .. } => "policy_set",
         }
     }
 

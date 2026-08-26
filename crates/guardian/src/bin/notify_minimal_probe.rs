@@ -65,11 +65,22 @@ const fn ioc(dir: u32, ty: u32, nr: u32, size: u32) -> u64 {
 const SECCOMP_IOCTL_NOTIF_ID_VALID: u64 = ioc(1, b'!' as u32, 2, 8);
 const SECCOMP_IOCTL_NOTIF_ADDFD: u64 = ioc(1, b'!' as u32, 3, 24);
 
-struct NotifSizes { recv: u64, send: u64 }
+struct NotifSizes {
+    recv: u64,
+    send: u64,
+}
 fn notif_ioctls() -> NotifSizes {
     #[repr(C)]
-    struct Sizes { seccomp_notif: u16, seccomp_notif_resp: u16, seccomp_data: u16 }
-    let mut sizes = Sizes { seccomp_notif: 0, seccomp_notif_resp: 0, seccomp_data: 0 };
+    struct Sizes {
+        seccomp_notif: u16,
+        seccomp_notif_resp: u16,
+        seccomp_data: u16,
+    }
+    let mut sizes = Sizes {
+        seccomp_notif: 0,
+        seccomp_notif_resp: 0,
+        seccomp_data: 0,
+    };
     let rc = unsafe { libc::syscall(libc::SYS_seccomp, 3u32, 0u32, &mut sizes as *mut Sizes) };
     assert!(rc == 0, "SECCOMP_GET_NOTIF_SIZES failed");
     NotifSizes {
@@ -81,24 +92,49 @@ fn notif_ioctls() -> NotifSizes {
 fn notif_recv(fd: RawFd, ioctls: &NotifSizes) -> io::Result<SeccompNotif> {
     let mut req = SeccompNotif::default();
     let rc = unsafe { libc::ioctl(fd, ioctls.recv, &mut req as *mut SeccompNotif) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(req)
 }
 fn notif_id_valid(fd: RawFd, id: u64) -> io::Result<()> {
     let rc = unsafe { libc::ioctl(fd, SECCOMP_IOCTL_NOTIF_ID_VALID, &id as *const u64) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 fn notif_continue(fd: RawFd, id: u64, ioctls: &NotifSizes) -> io::Result<()> {
-    let resp = SeccompNotifResp { id, val: 0, error: 0, flags: SECCOMP_USER_NOTIF_FLAG_CONTINUE };
+    let resp = SeccompNotifResp {
+        id,
+        val: 0,
+        error: 0,
+        flags: SECCOMP_USER_NOTIF_FLAG_CONTINUE,
+    };
     let rc = unsafe { libc::ioctl(fd, ioctls.send, &resp as *const SeccompNotifResp) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(())
 }
 fn notif_addfd(fd: RawFd, id: u64, src_fd: RawFd) -> io::Result<i32> {
-    let addfd = SeccompNotifAddfd { id, flags: SECCOMP_ADDFD_FLAG_SEND, srcfd: src_fd as u32, newfd: 0, newfd_flags: libc::O_CLOEXEC as u32 };
-    let rc = unsafe { libc::ioctl(fd, SECCOMP_IOCTL_NOTIF_ADDFD, &addfd as *const SeccompNotifAddfd) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
+    let addfd = SeccompNotifAddfd {
+        id,
+        flags: SECCOMP_ADDFD_FLAG_SEND,
+        srcfd: src_fd as u32,
+        newfd: 0,
+        newfd_flags: libc::O_CLOEXEC as u32,
+    };
+    let rc = unsafe {
+        libc::ioctl(
+            fd,
+            SECCOMP_IOCTL_NOTIF_ADDFD,
+            &addfd as *const SeccompNotifAddfd,
+        )
+    };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(rc)
 }
 
@@ -114,7 +150,10 @@ fn read_tracee_cstring(pid: u32, addr: u64) -> Option<String> {
 // Matches fd_passing.rs's SCM_RIGHTS recv, trimmed to just what's needed.
 fn recv_fd(sock_fd: RawFd) -> io::Result<OwnedFd> {
     let mut iobuf = [0u8; 1];
-    let mut iov = libc::iovec { iov_base: iobuf.as_mut_ptr() as *mut _, iov_len: 1 };
+    let mut iov = libc::iovec {
+        iov_base: iobuf.as_mut_ptr() as *mut _,
+        iov_len: 1,
+    };
     let mut cbuf = [0u8; 64];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
@@ -122,8 +161,12 @@ fn recv_fd(sock_fd: RawFd) -> io::Result<OwnedFd> {
     msg.msg_control = cbuf.as_mut_ptr() as *mut _;
     msg.msg_controllen = cbuf.len();
     let rc = unsafe { libc::recvmsg(sock_fd, &mut msg, 0) };
-    if rc < 0 { return Err(io::Error::last_os_error()); }
-    if rc == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed")); }
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if rc == 0 {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
+    }
     unsafe {
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
         assert!(!cmsg.is_null(), "no cmsg");
@@ -140,37 +183,59 @@ fn main() -> anyhow::Result<()> {
     let target_file = &args[3];
 
     let mut sv = [0i32; 2];
-    unsafe { assert_eq!(libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()), 0); }
+    unsafe {
+        assert_eq!(
+            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()),
+            0
+        );
+    }
     let (parent_end, child_end) = (sv[0], sv[1]);
 
     let mut cmd = std::process::Command::new(bwrap);
     cmd.args([
-        "--ro-bind", "/", "/",
-        "--tmpfs", "/tmp",
-        "--dev", "/dev",
-        "--proc", "/proc",
-        "--bind", target_file, target_file,
-        "--unshare-net", "--unshare-pid", "--unshare-ipc",
+        "--ro-bind",
+        "/",
+        "/",
+        "--tmpfs",
+        "/tmp",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--bind",
+        target_file,
+        target_file,
+        "--unshare-net",
+        "--unshare-pid",
+        "--unshare-ipc",
         "--",
-        guardian_bin, "sandbox-entry",
+        guardian_bin,
+        "sandbox-entry",
         "--no-network",
-        "--file-effect", &format!("w:-:-:{target_file}"),
+        "--file-effect",
+        &format!("w:-:-:{target_file}"),
         "--",
-        "cat", target_file,
+        "cat",
+        target_file,
     ]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     unsafe {
         cmd.pre_exec(move || {
             libc::close(parent_end);
-            if libc::dup2(child_end, 5) < 0 { return Err(io::Error::last_os_error()); }
+            if libc::dup2(child_end, 5) < 0 {
+                return Err(io::Error::last_os_error());
+            }
             Ok(())
         });
     }
     let mut child = cmd.spawn()?;
-    unsafe { libc::close(child_end); }
+    unsafe {
+        libc::close(child_end);
+    }
 
-    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id() as libc::pid_t, 0) } as RawFd;
+    let pidfd =
+        unsafe { libc::syscall(libc::SYS_pidfd_open, child.id() as libc::pid_t, 0) } as RawFd;
     assert!(pidfd >= 0, "pidfd_open failed");
 
     eprintln!("MINIMAL-PROBE: waiting for notify_fd over fd-5 rendezvous...");
@@ -184,11 +249,21 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         let mut fds = [
-            libc::pollfd { fd: pidfd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: notify_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: pidfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: notify_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 5000) };
-        if rc < 0 { return Err(io::Error::last_os_error().into()); }
+        if rc < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
         if rc == 0 {
             eprintln!("MINIMAL-PROBE: poll timeout, no activity in 5s -- treating as hang");
             break;
@@ -203,17 +278,29 @@ fn main() -> anyhow::Result<()> {
                 Err(e) if e.raw_os_error() == Some(libc::ENOENT) => continue,
                 Err(e) => return Err(e.into()),
             };
-            if notif_id_valid(notify_fd, req.id).is_err() { continue; }
+            if notif_id_valid(notify_fd, req.id).is_err() {
+                continue;
+            }
             let nr_openat = libc::SYS_openat;
             let is_openat = req.nr as i64 == nr_openat;
-            let path = if is_openat { read_tracee_cstring(req.pid, req.args[1]) } else { None };
-            let matches = path.as_deref().map(|p| p.ends_with(target_file.rsplit('/').next().unwrap())).unwrap_or(false);
+            let path = if is_openat {
+                read_tracee_cstring(req.pid, req.args[1])
+            } else {
+                None
+            };
+            let matches = path
+                .as_deref()
+                .map(|p| p.ends_with(target_file.rsplit('/').next().unwrap()))
+                .unwrap_or(false);
             if matches {
                 let real_path = target_file.clone();
                 match std::fs::File::open(&real_path) {
                     Ok(file) => {
                         let r = notif_addfd(notify_fd, req.id, file.as_raw_fd());
-                        eprintln!("MINIMAL-PROBE: ADDFD pid={} path={} result={:?}", req.pid, real_path, r);
+                        eprintln!(
+                            "MINIMAL-PROBE: ADDFD pid={} path={} result={:?}",
+                            req.pid, real_path, r
+                        );
                     }
                     Err(e) => {
                         eprintln!("MINIMAL-PROBE: open failed: {e}, CONTINUE instead");

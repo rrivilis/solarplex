@@ -20,12 +20,12 @@ use anyhow::{anyhow, Result};
 use clap::Args;
 use serde_json::Value;
 
+use super::session::resolve_session_id;
 use crate::{
     client::Client,
     config::{self, Ctx, SavedCursor},
     output::*,
 };
-use super::session::resolve_session_id;
 
 #[derive(Args)]
 pub struct WatchArgs {
@@ -53,11 +53,13 @@ pub async fn run(args: WatchArgs, ctx: &Ctx) -> Result<()> {
     let client = Client::new(ctx)?;
 
     // Resolve session.
-    let raw = args.session.as_deref()
+    let raw = args
+        .session
+        .as_deref()
         .or(ctx.session_id.as_deref())
-        .ok_or_else(|| anyhow!(
-            "no session — pass session/<id> or run `sp session attach <id>` first"
-        ))?;
+        .ok_or_else(|| {
+            anyhow!("no session — pass session/<id> or run `sp session attach <id>` first")
+        })?;
     let token = raw.strip_prefix("session/").unwrap_or(raw);
     let session_id = resolve_session_id(&client, token).await?;
 
@@ -70,7 +72,9 @@ pub async fn run(args: WatchArgs, ctx: &Ctx) -> Result<()> {
 
     if !args.json {
         let name = client
-            .get_session(&session_id).await.ok()
+            .get_session(&session_id)
+            .await
+            .ok()
             .and_then(|s| s["name"].as_str().map(str::to_string))
             .unwrap_or_else(|| session_id[..session_id.len().min(8)].to_string());
         eprintln!(
@@ -128,7 +132,9 @@ pub async fn run(args: WatchArgs, ctx: &Ctx) -> Result<()> {
     if !args.json {
         eprintln!(
             "\n{} stopped  cursor seq:{} epoch:{}",
-            dim("◎"), cursor.seq, cursor.epoch,
+            dim("◎"),
+            cursor.seq,
+            cursor.epoch,
         );
     }
     Ok(())
@@ -163,7 +169,8 @@ fn event_summary(etype: &str, inner: &Value, outer: &Value) -> String {
     let t = etype.to_lowercase();
 
     if t.contains("bundle") {
-        let bid = inner["bundle_id"].as_str()
+        let bid = inner["bundle_id"]
+            .as_str()
             .or_else(|| outer["bundle_id"].as_str())
             .unwrap_or("?");
         let short = &bid[..bid.len().min(12)];
@@ -184,7 +191,8 @@ fn event_summary(etype: &str, inner: &Value, outer: &Value) -> String {
     if t.contains("policy") {
         let target = sanitize_terminal(inner["target"].as_str().unwrap_or("?"));
         let action = sanitize_terminal(
-            inner["constraint"].as_str()
+            inner["constraint"]
+                .as_str()
                 .or_else(|| inner["constraint"]["action"].as_str())
                 .unwrap_or("?"),
         );
@@ -193,7 +201,8 @@ fn event_summary(etype: &str, inner: &Value, outer: &Value) -> String {
 
     if t.contains("approval") {
         let tool = sanitize_terminal(inner["tool_name"].as_str().unwrap_or(""));
-        let aid  = inner["approval_id"].as_str()
+        let aid = inner["approval_id"]
+            .as_str()
             .or_else(|| outer["approval_id"].as_str())
             .unwrap_or("?");
         let short_ap = &aid[..aid.len().min(10)];
@@ -205,8 +214,9 @@ fn event_summary(etype: &str, inner: &Value, outer: &Value) -> String {
     }
 
     if t.contains("saga") {
-        let sid  = inner["saga_id"].as_str().unwrap_or("?");
-        let step = inner["step_idx"].as_u64()
+        let sid = inner["saga_id"].as_str().unwrap_or("?");
+        let step = inner["step_idx"]
+            .as_u64()
             .map(|s| format!(" step:{s}"))
             .unwrap_or_default();
         return format!("{}{step}", &sid[..sid.len().min(16)]);
@@ -215,7 +225,11 @@ fn event_summary(etype: &str, inner: &Value, outer: &Value) -> String {
     if t.contains("message") {
         let c = sanitize_terminal(inner["content"].as_str().unwrap_or(""));
         let v = c.trim().to_string();
-        return if v.len() > 60 { format!("{}…", &v[..60]) } else { v };
+        return if v.len() > 60 {
+            format!("{}…", &v[..60])
+        } else {
+            v
+        };
     }
 
     // Generic fallback: first non-empty scalar field.
@@ -224,7 +238,11 @@ fn event_summary(etype: &str, inner: &Value, outer: &Value) -> String {
             let v = sanitize_terminal(v);
             let v = v.trim().to_string();
             if !v.is_empty() {
-                return if v.len() > 60 { format!("{}…", &v[..60]) } else { v };
+                return if v.len() > 60 {
+                    format!("{}…", &v[..60])
+                } else {
+                    v
+                };
             }
         }
     }

@@ -13,19 +13,16 @@
 //! This split is the key invariant that makes event-sourced replay deterministic.
 //! See `transition.rs` and the `proptest_invariants` test.
 
+use crate::effects::{ReflectorCursor, SagaBundle};
+use crate::events::{SagaOutcome, SagaStepSpec, SessionEvent};
 use protocol::types::ContextEntryKind;
 use serde::{Deserialize, Serialize};
-use crate::effects::{ReflectorCursor, SagaBundle};
-use crate::events::{SessionEvent, SagaOutcome, SagaStepSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InboundEvent {
     /// An event being replayed from the persisted event log during startup or
     /// after a crash.  The seq is the DB-assigned sequence number.
-    Replayed {
-        seq:   i64,
-        event: SessionEvent,
-    },
+    Replayed { seq: i64, event: SessionEvent },
 
     /// A real-time event from the runtime.
     Live(LiveEvent),
@@ -35,44 +32,38 @@ pub enum InboundEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LiveEvent {
     // ── Actor connection lifecycle ────────────────────────────────────────────
-
     /// An actor established a WebSocket connection.
     ActorConnected {
-        actor_id:      String,
+        actor_id: String,
         connection_id: String,
     },
 
     /// An actor's WebSocket connection was closed.
     ActorDisconnected {
-        actor_id:      String,
+        actor_id: String,
         connection_id: String,
-        reason:        DisconnectReason,
+        reason: DisconnectReason,
     },
 
     /// An actor reconnected after a transient network drop.
     ActorReconnected {
-        actor_id:          String,
+        actor_id: String,
         new_connection_id: String,
     },
 
     // ── Approval votes ────────────────────────────────────────────────────────
-
     /// A human actor cast a vote on a pending approval.
     VoteCast {
         approval_id: String,
-        voter_id:    String,
-        decision:    VoteDecision,
+        voter_id: String,
+        decision: VoteDecision,
     },
 
     // ── Timer ─────────────────────────────────────────────────────────────────
-
     /// A previously armed timer fired.
-    TimerFired {
-        id: String,
-    },
+    TimerFired { id: String },
 
     // ── Ownership ─────────────────────────────────────────────────────────────
-
     /// The session owner transferred ownership to another actor.
     ///
     /// Currently always shadow-persisted (see `is_machine_autonomous` in
@@ -80,41 +71,37 @@ pub enum LiveEvent {
     /// the authoritative writer and broadcaster; this feed exists so the
     /// machine's own memory (`owner_id`, `eligible_approvers`) stays correct
     /// without waiting for cold replay.
-    OwnershipTransfer {
-        from: String,
-        to:   String,
-    },
+    OwnershipTransfer { from: String, to: String },
 
     // ── Approval claim ────────────────────────────────────────────────────────
-
     /// A human claimed a pending approval to review it.
     ///
     /// Currently always shadow-persisted, same reasoning as `OwnershipTransfer`
     /// above — `ws.rs::handle_approval_claim` remains the authoritative writer.
     ApprovalClaim {
         approval_id: String,
-        actor_id:    String,
+        actor_id: String,
     },
 
     /// A human cancelled their own pending approval request. Shadow-persisted
     /// — see `ApprovalClaim`'s doc comment for why.
     ApprovalCancel {
         approval_id: String,
-        actor_id:    String,
+        actor_id: String,
     },
 
     /// An approval was delegated to another actor for review. Shadow-persisted.
     ApprovalDelegate {
         approval_id: String,
-        from:        String,
-        to:          String,
+        from: String,
+        to: String,
     },
 
     /// An approval decision was disputed. Shadow-persisted.
     ApprovalDispute {
         approval_id: String,
-        actor_id:    String,
-        reason:      String,
+        actor_id: String,
+        reason: String,
     },
 
     /// Begin a cross-session approval delegation: session A asks session B
@@ -134,11 +121,11 @@ pub enum LiveEvent {
         /// Caller-supplied — `crates/session` has no ulid/rand dependency by
         /// design (see `SagaBundle::bundle_id`'s own doc comment), so IDs
         /// here are always minted server-side and passed in, never generated.
-        saga_id:           String,
-        approval_id:       String,
+        saga_id: String,
+        approval_id: String,
         target_session_id: String,
-        requested_by:      String,
-        arguments:         serde_json::Value,
+        requested_by: String,
+        arguments: serde_json::Value,
     },
 
     // ── Content sub-shape ─────────────────────────────────────────────────────
@@ -148,41 +135,37 @@ pub enum LiveEvent {
     // caller-supplied (the ID the real write path already minted or the DB
     // already assigned) — the machine never invents IDs for content it isn't
     // the write-owner of.
-
     /// A human or agent posted a message to the session.
-    MessagePost {
-        actor_id: String,
-        content:  String,
-    },
+    MessagePost { actor_id: String, content: String },
 
     /// A typed entry was added to the session's shared epistemic context.
     ContextAdd {
         entry_id: String,
         actor_id: String,
-        kind:     ContextEntryKind,
-        content:  String,
+        kind: ContextEntryKind,
+        content: String,
     },
 
     /// A context entry was marked resolved.
     ContextResolve {
-        entry_id:    String,
+        entry_id: String,
         resolved_by: String,
-        note:        Option<String>,
+        note: Option<String>,
     },
 
     /// An artifact was created.
     ArtifactCreate {
-        artifact_id:   String,
-        actor_id:      String,
-        name:          String,
+        artifact_id: String,
+        actor_id: String,
+        name: String,
         artifact_type: Option<String>,
     },
 
     /// An artifact's content was updated.
     ArtifactUpdate {
-        artifact_id:   String,
-        actor_id:      String,
-        name:          String,
+        artifact_id: String,
+        actor_id: String,
+        name: String,
         artifact_type: Option<String>,
     },
 
@@ -190,46 +173,33 @@ pub enum LiveEvent {
     /// from the caller (who already fetched them before deleting) — see
     /// `SessionEvent::ArtifactDeleted`'s doc comment for why.
     ArtifactDelete {
-        artifact_id:   String,
-        actor_id:      String,
-        name:          String,
+        artifact_id: String,
+        actor_id: String,
+        name: String,
         artifact_type: Option<String>,
     },
 
     // ── Admin / session owner ─────────────────────────────────────────────────
-
     /// An admin or owner requested the session be paused.
-    AdminPause {
-        by:     String,
-        reason: Option<String>,
-    },
+    AdminPause { by: String, reason: Option<String> },
 
     /// An admin or owner requested the session be resumed from pause.
-    AdminResume {
-        by: String,
-    },
+    AdminResume { by: String },
 
     /// An admin or owner requested the session be permanently archived.
-    AdminArchive {
-        by: String,
-    },
+    AdminArchive { by: String },
 
     // ── Sidecar events ────────────────────────────────────────────────────────
-
     /// A sidecar agent is requesting to attach with the given cap.
-    SidecarAttach {
-        actor_id: String,
-        cap_id:   String,
-    },
+    SidecarAttach { actor_id: String, cap_id: String },
 
     /// A sidecar agent is voluntarily detaching.
     SidecarDetach {
         actor_id: String,
-        reason:   Option<String>,
+        reason: Option<String>,
     },
 
     // ── Approval creation ─────────────────────────────────────────────────────
-
     /// An agent is creating a new approval request (Ring-2 human gate).
     ///
     /// The machine validates the requesting actor's cap, emits
@@ -238,15 +208,14 @@ pub enum LiveEvent {
     /// DB insert so the machine stays in sync without a WS round-trip.
     ApprovalCreate {
         approval_id: String,
-        actor_id:    String,
-        tool:        String,
-        args:        serde_json::Value,
+        actor_id: String,
+        tool: String,
+        args: serde_json::Value,
         /// Expiry window in milliseconds (None = no expiry timer armed).
-        expires_ms:  Option<u64>,
+        expires_ms: Option<u64>,
     },
 
     // ── Inter-session routing ─────────────────────────────────────────────────
-
     /// A message forwarded from another session node via `Effect::Forward`.
     ///
     /// Inbound DOF coupling: Session A emitted `Forward { to_session: self }`;
@@ -257,23 +226,22 @@ pub enum LiveEvent {
     /// etc.).  Routing is done in `live_forwarded_message` in `transition.rs`.
     ForwardedMessage {
         from_session: String,
-        payload:      serde_json::Value,
+        payload: serde_json::Value,
     },
 
     // ── Saga coordination ─────────────────────────────────────────────────────
-
     /// Initiate a multi-step saga coordination protocol in this session.
     ///
     /// The machine records the saga, dispatches the first step to its
     /// participant, and arms a per-step timeout timer.
     SagaBegin {
-        saga_id:   String,
+        saga_id: String,
         /// Discriminator: "approval" | "ownership_transfer" | "custom"
         saga_type: String,
-        steps:     Vec<SagaStepSpec>,
+        steps: Vec<SagaStepSpec>,
         /// Type-specific policy parameters forwarded verbatim into `SagaBegun`
         /// so the reducer can be reconstructed from the event log on cold replay.
-        metadata:  serde_json::Value,
+        metadata: serde_json::Value,
     },
 
     /// A participant session acknowledged a saga step.
@@ -282,13 +250,12 @@ pub enum LiveEvent {
     /// backward path (Rejected).  Also delivered internally when a step
     /// timer fires (treated as `Rejected { reason: "timed out" }`).
     SagaAck {
-        saga_id:  String,
+        saga_id: String,
         step_idx: usize,
-        outcome:  SagaOutcome,
+        outcome: SagaOutcome,
     },
 
     // ── Bundle relay ──────────────────────────────────────────────────────────
-
     /// A `SagaBundle` intercepted by the FMOA adapter layer before delivery.
     ///
     /// Sent by `route_bundle` in place of `BundleReceived`.  The session machine
@@ -300,7 +267,7 @@ pub enum LiveEvent {
     /// intercept policy; empty string means session-default policy (no specific
     /// cap constraint active).
     BundleIntercepted {
-        bundle:             SagaBundle,
+        bundle: SagaBundle,
         interceptor_cap_id: String,
         /// Position in the reflector log at which this bundle was appended.
         ///
@@ -308,7 +275,7 @@ pub enum LiveEvent {
         /// cursor as a fallback foothold: if the session restarts before a
         /// deferred or approval-gated bundle is delivered, the cursor provides
         /// the exact log position for re-fetch from a durable reflector (Phase 6+).
-        reflector_cursor:   ReflectorCursor,
+        reflector_cursor: ReflectorCursor,
     },
 
     /// A `SagaBundle` ready for delivery to the saga machine.
@@ -318,9 +285,7 @@ pub enum LiveEvent {
     /// The session's bundle unwrapper validates authority (cap_id check for
     /// `BundleKind::Ack`, TTL re-check for all variants) before routing to
     /// the appropriate saga handler.
-    BundleReceived {
-        bundle: SagaBundle,
-    },
+    BundleReceived { bundle: SagaBundle },
 }
 
 /// Why an actor's connection was closed.

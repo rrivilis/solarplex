@@ -25,8 +25,8 @@ pub enum SessionState {
     /// Agent-originated events are dropped; human WS messages may still arrive.
     Suspended {
         paused_by: String,
-        reason:    Option<String>,
-        since:     DateTime<Utc>,
+        reason: Option<String>,
+        since: DateTime<Utc>,
     },
 
     /// Epoch revocation is in progress.
@@ -35,7 +35,7 @@ pub enum SessionState {
     Draining {
         drain_deadline: DateTime<Utc>,
         /// Event log sequence at which the epoch was advanced.
-        drain_seq:      i64,
+        drain_seq: i64,
     },
 
     /// Session is permanently closed.  No further transitions are possible.

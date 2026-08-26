@@ -26,12 +26,12 @@ use crate::{Config, GuardianHandle};
 /// Blocks until the approval resolves (human votes, ORB auto-approves, or timeout).
 /// For `solarplex_exec`: also blocks until the guardian finishes executing.
 pub async fn handle_proposal(
-    req:        ipc::ProposalRequest,
-    config:     &Config,
-    session:    &Arc<SessionClient>,
+    req: ipc::ProposalRequest,
+    config: &Config,
+    session: &Arc<SessionClient>,
     scout_pool: &ScoutPool,
-    guardian:   &GuardianHandle,
-    policy:     &Policy,
+    guardian: &GuardianHandle,
+    policy: &Policy,
 ) -> ipc::ProposalDecision {
     let tool = &req.tool;
     let identity = config.identity();
@@ -52,9 +52,14 @@ pub async fn handle_proposal(
         tracing::debug!(tool = %tool.tool, "shim: auto-approved (allow-list)");
         session.update_status(AgentStatus::Running).await;
         return ipc::ProposalDecision {
-            id: req.id, granted: true,
+            id: req.id,
+            granted: true,
             canonical_rpc: Some(req.raw_rpc),
-            approval_id: None, scout: None, exec_result: None, tier2_ctx: None, error: None,
+            approval_id: None,
+            scout: None,
+            exec_result: None,
+            tier2_ctx: None,
+            error: None,
         };
     }
 
@@ -69,9 +74,8 @@ pub async fn handle_proposal(
         }
     };
 
-    let scout_rx = scout::extract_command(&tool.args).and_then(|cmd| {
-        scout_pool.try_dispatch(cmd, approval_id.clone(), session.clone(), None)
-    });
+    let scout_rx = scout::extract_command(&tool.args)
+        .and_then(|cmd| scout_pool.try_dispatch(cmd, approval_id.clone(), session.clone(), None));
 
     match session.poll_approval(&approval_id).await {
         ApprovalDecision::Granted => {
@@ -83,17 +87,26 @@ pub async fn handle_proposal(
                 let exec = run_via_guardian(guardian, &approval_id).await;
                 session.update_status(AgentStatus::Idle).await;
                 return ipc::ProposalDecision {
-                    id: req.id, granted: true,
-                    approval_id: Some(approval_id), scout: manifest,
-                    exec_result: Some(exec), canonical_rpc: None, tier2_ctx: None, error: None,
+                    id: req.id,
+                    granted: true,
+                    approval_id: Some(approval_id),
+                    scout: manifest,
+                    exec_result: Some(exec),
+                    canonical_rpc: None,
+                    tier2_ctx: None,
+                    error: None,
                 };
             }
 
             ipc::ProposalDecision {
-                id: req.id, granted: true,
-                approval_id: Some(approval_id), scout: manifest,
+                id: req.id,
+                granted: true,
+                approval_id: Some(approval_id),
+                scout: manifest,
                 canonical_rpc: Some(req.raw_rpc),
-                exec_result: None, tier2_ctx: None, error: None,
+                exec_result: None,
+                tier2_ctx: None,
+                error: None,
             }
         }
         other => {
@@ -107,16 +120,16 @@ pub async fn handle_proposal(
 // ── ORB path ──────────────────────────────────────────────────────────────────
 
 async fn orb_path(
-    req:        ipc::ProposalRequest,
-    config:     &Config,
-    session:    &Arc<SessionClient>,
+    req: ipc::ProposalRequest,
+    config: &Config,
+    session: &Arc<SessionClient>,
     scout_pool: &ScoutPool,
-    guardian:   &GuardianHandle,
-    cap_id:     &str,
+    guardian: &GuardianHandle,
+    cap_id: &str,
 ) -> ipc::ProposalDecision {
     let tool = &req.tool;
-    let slug  = actor_id_to_slug(&config.identity().actor_id);
-    let addr  = format!("mcp.{slug}.{}", tool.tool);
+    let slug = actor_id_to_slug(&config.identity().actor_id);
+    let addr = format!("mcp.{slug}.{}", tool.tool);
 
     session.update_status(AgentStatus::Waiting).await;
 
@@ -126,13 +139,23 @@ async fn orb_path(
         Some(resp) if resp.status == "approved" => {
             // Auto-approved — consume receipt to get canonical args.
             let (canonical_rpc, tier2_ctx) = consume_and_patch(
-                &req.raw_rpc, resp.receipt_id.as_deref(), cap_id, tool, session,
-            ).await;
+                &req.raw_rpc,
+                resp.receipt_id.as_deref(),
+                cap_id,
+                tool,
+                session,
+            )
+            .await;
             session.update_status(AgentStatus::Running).await;
             ipc::ProposalDecision {
-                id: req.id, granted: true, approval_id: None,
-                canonical_rpc: Some(canonical_rpc), tier2_ctx,
-                scout: None, exec_result: None, error: None,
+                id: req.id,
+                granted: true,
+                approval_id: None,
+                canonical_rpc: Some(canonical_rpc),
+                tier2_ctx,
+                scout: None,
+                exec_result: None,
+                error: None,
             }
         }
 
@@ -165,8 +188,13 @@ async fn orb_path(
                 ApprovalDecision::Granted => {
                     let manifest = collect_scout(scout_rx).await;
                     let (canonical_rpc, tier2_ctx) = consume_and_patch(
-                        &req.raw_rpc, resp.receipt_id.as_deref(), cap_id, tool, session,
-                    ).await;
+                        &req.raw_rpc,
+                        resp.receipt_id.as_deref(),
+                        cap_id,
+                        tool,
+                        session,
+                    )
+                    .await;
                     session.update_status(AgentStatus::Running).await;
 
                     // solarplex_exec via guardian.
@@ -174,17 +202,26 @@ async fn orb_path(
                         let exec = run_via_guardian(guardian, &orb_approval_id).await;
                         session.update_status(AgentStatus::Idle).await;
                         return ipc::ProposalDecision {
-                            id: req.id, granted: true,
-                            approval_id: Some(orb_approval_id), scout: manifest,
-                            exec_result: Some(exec), canonical_rpc: None, tier2_ctx: None, error: None,
+                            id: req.id,
+                            granted: true,
+                            approval_id: Some(orb_approval_id),
+                            scout: manifest,
+                            exec_result: Some(exec),
+                            canonical_rpc: None,
+                            tier2_ctx: None,
+                            error: None,
                         };
                     }
 
                     ipc::ProposalDecision {
-                        id: req.id, granted: true,
-                        approval_id: Some(orb_approval_id), scout: manifest,
-                        canonical_rpc: Some(canonical_rpc), tier2_ctx,
-                        exec_result: None, error: None,
+                        id: req.id,
+                        granted: true,
+                        approval_id: Some(orb_approval_id),
+                        scout: manifest,
+                        canonical_rpc: Some(canonical_rpc),
+                        tier2_ctx,
+                        exec_result: None,
+                        error: None,
                     }
                 }
                 other => {
@@ -213,7 +250,7 @@ async fn orb_path(
 
 async fn run_via_guardian(guardian: &GuardianHandle, approval_id: &str) -> ExecResultIpc {
     let req = ipc::GuardianRequest {
-        id:          ulid::Ulid::new().to_string(),
+        id: ulid::Ulid::new().to_string(),
         approval_id: approval_id.to_string(),
         // command and declared_effects are NOT sent; the guardian fetches
         // them from the server directly so the untrusted adapter cannot
@@ -227,7 +264,8 @@ async fn run_via_guardian(guardian: &GuardianHandle, approval_id: &str) -> ExecR
         let mut stream = guardian.socket.lock().await;
         ipc::write_frame(&mut *stream, &req).await?;
         Ok(ipc::read_frame(&mut *stream).await?)
-    }.await;
+    }
+    .await;
 
     match result {
         Ok(resp) => {
@@ -235,20 +273,20 @@ async fn run_via_guardian(guardian: &GuardianHandle, approval_id: &str) -> ExecR
                 tracing::error!(approval_id, "guardian exec failed: {e}");
             }
             ExecResultIpc {
-                stdout:    resp.stdout,
-                stderr:    resp.stderr,
+                stdout: resp.stdout,
+                stderr: resp.stderr,
                 exit_code: resp.exit_code,
-                pre_snap:  resp.pre_snap,
+                pre_snap: resp.pre_snap,
                 post_snap: resp.post_snap,
             }
         }
         Err(e) => {
             tracing::error!(approval_id, "guardian IPC error: {e}");
             ExecResultIpc {
-                stdout:    String::new(),
-                stderr:    format!("guardian unreachable: {e}"),
+                stdout: String::new(),
+                stderr: format!("guardian unreachable: {e}"),
                 exit_code: -1,
-                pre_snap:  std::collections::HashMap::new(),
+                pre_snap: std::collections::HashMap::new(),
                 post_snap: std::collections::HashMap::new(),
             }
         }
@@ -257,21 +295,25 @@ async fn run_via_guardian(guardian: &GuardianHandle, approval_id: &str) -> ExecR
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async fn collect_scout(rx: Option<tokio::sync::oneshot::Receiver<protocol::effects::ScoutManifest>>)
-    -> Option<protocol::effects::ScoutManifest>
-{
+async fn collect_scout(
+    rx: Option<tokio::sync::oneshot::Receiver<protocol::effects::ScoutManifest>>,
+) -> Option<protocol::effects::ScoutManifest> {
     if let Some(rx) = rx {
         tokio::time::timeout(Duration::from_secs(2), rx)
-            .await.ok().and_then(|r| r.ok())
-    } else { None }
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+    } else {
+        None
+    }
 }
 
 async fn consume_and_patch(
-    raw_rpc:    &serde_json::Value,
+    raw_rpc: &serde_json::Value,
     receipt_id: Option<&str>,
-    cap_id:     &str,
-    tool:       &ToolCall,
-    session:    &Arc<SessionClient>,
+    cap_id: &str,
+    tool: &ToolCall,
+    session: &Arc<SessionClient>,
 ) -> (serde_json::Value, Option<Tier2Ctx>) {
     let Some(rid) = receipt_id else {
         return (raw_rpc.clone(), None);
@@ -291,38 +333,39 @@ async fn consume_and_patch(
 
 fn extract_tier2_ctx(
     receipt_id: &str,
-    cap_id:     &str,
-    tool:       &str,
-    args:       &serde_json::Value,
+    cap_id: &str,
+    tool: &str,
+    args: &serde_json::Value,
 ) -> Option<Tier2Ctx> {
-    let path     = args.get("path")?.as_str()?;
+    let path = args.get("path")?.as_str()?;
     let h_before = args.get("expected_hash_before")?.as_str()?;
-    let h_after  = args.get("claimed_hash_after")?.as_str()?;
+    let h_after = args.get("claimed_hash_after")?.as_str()?;
     Some(Tier2Ctx {
-        receipt_id:      receipt_id.to_owned(),
-        cap_id:          cap_id.to_owned(),
-        tool:            tool.to_owned(),
-        path:            path.to_owned(),
+        receipt_id: receipt_id.to_owned(),
+        cap_id: cap_id.to_owned(),
+        tool: tool.to_owned(),
+        path: path.to_owned(),
         approved_before: h_before.to_owned(),
-        approved_after:  h_after.to_owned(),
+        approved_after: h_after.to_owned(),
     })
 }
 
 fn deny(id: &str, msg: &str) -> ipc::ProposalDecision {
     ipc::ProposalDecision {
-        id:            id.to_string(),
-        granted:       false,
-        approval_id:   None,
+        id: id.to_string(),
+        granted: false,
+        approval_id: None,
         canonical_rpc: None,
-        scout:         None,
-        exec_result:   None,
-        tier2_ctx:     None,
-        error:         Some(msg.to_string()),
+        scout: None,
+        exec_result: None,
+        tier2_ctx: None,
+        error: Some(msg.to_string()),
     }
 }
 
 fn actor_id_to_slug(actor_id: &str) -> String {
-    actor_id.to_lowercase()
+    actor_id
+        .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect()
@@ -331,15 +374,21 @@ fn actor_id_to_slug(actor_id: &str) -> String {
 /// Handle a post-execution notice from the adapter: run Ring-2 divergence check
 /// and Ring-1 attestation fire-and-forget.
 pub async fn handle_exec_done(
-    notice:  ipc::ExecDoneNotice,
+    notice: ipc::ExecDoneNotice,
     session: Arc<SessionClient>,
-    config:  &Config,
+    config: &Config,
 ) {
     // Ring-2 divergence check.
-    let pre  = notice.pre_snap.iter()
-        .map(|(k, v)| (k.clone(), (v.mtime, v.size))).collect();
-    let post = notice.post_snap.iter()
-        .map(|(k, v)| (k.clone(), (v.mtime, v.size))).collect();
+    let pre = notice
+        .pre_snap
+        .iter()
+        .map(|(k, v)| (k.clone(), (v.mtime, v.size)))
+        .collect();
+    let post = notice
+        .post_snap
+        .iter()
+        .map(|(k, v)| (k.clone(), (v.mtime, v.size)))
+        .collect();
 
     // Reconstruct a minimal scout to drive the manifest comparison.
     // We don't have the full scout manifest here, but post-exec divergence
@@ -354,22 +403,31 @@ pub async fn handle_exec_done(
         );
     }
     let sess = session.clone();
-    let aid  = notice.approval_id.clone();
+    let aid = notice.approval_id.clone();
     tokio::spawn(async move {
-        sess.patch_approval_execution(&aid, &exec_manifest, diverged).await;
+        sess.patch_approval_execution(&aid, &exec_manifest, diverged)
+            .await;
     });
 
     // Ring-1 attestation.
     if let Some(ref t) = notice.tier2 {
         let t_clone = t.clone();
-        let sess    = session.clone();
-        let actor   = config.identity().actor_id;
+        let sess = session.clone();
+        let actor = config.identity().actor_id;
         tokio::spawn(async move {
-            if let Some(result) = sess.attest_file_write(
-                &t_clone.receipt_id, &t_clone.cap_id, &t_clone.tool, &t_clone.path,
-                &t_clone.approved_before, &t_clone.approved_after,
-                &t_clone.observed_before_hash, &t_clone.actual_after_hash,
-            ).await {
+            if let Some(result) = sess
+                .attest_file_write(
+                    &t_clone.receipt_id,
+                    &t_clone.cap_id,
+                    &t_clone.tool,
+                    &t_clone.path,
+                    &t_clone.approved_before,
+                    &t_clone.approved_after,
+                    &t_clone.observed_before_hash,
+                    &t_clone.actual_after_hash,
+                )
+                .await
+            {
                 if result.hash_mismatch {
                     tracing::warn!(
                         path           = %t_clone.path,
@@ -384,6 +442,10 @@ pub async fn handle_exec_done(
     }
 
     // Feed message: "agent called X".
-    let content = format!("**{}** called `{}`", config.identity().actor_id, notice.tool_name);
+    let content = format!(
+        "**{}** called `{}`",
+        config.identity().actor_id,
+        notice.tool_name
+    );
     session.post_message(content).await;
 }

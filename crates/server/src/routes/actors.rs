@@ -9,9 +9,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use db::actors;
 use crate::state::AppState;
 use autometrics::autometrics;
+use db::actors;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -26,7 +26,7 @@ pub fn router() -> Router<Arc<AppState>> {
 /// `email`/`provider`/`model`/`config`, which `ActorRow` also carries.
 #[derive(Serialize)]
 struct ActorSummary {
-    id:   String,
+    id: String,
     name: String,
     #[serde(rename = "type")]
     actor_type: String,
@@ -34,15 +34,20 @@ struct ActorSummary {
 
 #[autometrics]
 async fn get_actor(
-    Path(id):     Path<String>,
-    headers:      HeaderMap,
+    Path(id): Path<String>,
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     if let Err(res) = crate::auth::require_sp_auth(&state.db, &headers).await {
         return res;
     }
     match actors::get(&state.db, &id).await {
-        Ok(a) => Json(ActorSummary { id: a.id, name: a.name, actor_type: a.r#type }).into_response(),
+        Ok(a) => Json(ActorSummary {
+            id: a.id,
+            name: a.name,
+            actor_type: a.r#type,
+        })
+        .into_response(),
         Err(db::DbError::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -59,10 +64,13 @@ async fn create_human(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateHumanBody>,
 ) -> impl IntoResponse {
-    match actors::create_human(&state.db, actors::CreateHuman {
-        name: body.name,
-        email: body.email,
-    })
+    match actors::create_human(
+        &state.db,
+        actors::CreateHuman {
+            name: body.name,
+            email: body.email,
+        },
+    )
     .await
     {
         Ok(actor) => (StatusCode::CREATED, Json(actor)).into_response(),
@@ -83,12 +91,15 @@ async fn create_agent(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateAgentBody>,
 ) -> impl IntoResponse {
-    match actors::create_agent(&state.db, actors::CreateAgent {
-        name: body.name,
-        provider: body.provider,
-        model: body.model,
-        config: body.config,
-    })
+    match actors::create_agent(
+        &state.db,
+        actors::CreateAgent {
+            name: body.name,
+            provider: body.provider,
+            model: body.model,
+            config: body.config,
+        },
+    )
     .await
     {
         Ok(actor) => (StatusCode::CREATED, Json(actor)).into_response(),

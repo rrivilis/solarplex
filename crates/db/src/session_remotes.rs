@@ -39,7 +39,9 @@ pub async fn add_remote(
     added_by: &str,
 ) -> DbResult<SessionRemoteRow> {
     if local_session_id == remote_session_id {
-        return Err(DbError::Conflict("cannot add a session as its own remote".to_string()));
+        return Err(DbError::Conflict(
+            "cannot add a session as its own remote".to_string(),
+        ));
     }
     let id = Ulid::new().to_string();
     sqlx::query_as::<_, SessionRemoteRow>(
@@ -72,7 +74,10 @@ pub async fn get(pool: &PgPool, remote_id: &str) -> DbResult<SessionRemoteRow> {
     .ok_or(DbError::NotFound)
 }
 
-pub async fn list_for_session(pool: &PgPool, local_session_id: &str) -> DbResult<Vec<SessionRemoteRow>> {
+pub async fn list_for_session(
+    pool: &PgPool,
+    local_session_id: &str,
+) -> DbResult<Vec<SessionRemoteRow>> {
     sqlx::query_as::<_, SessionRemoteRow>(
         "SELECT id, local_session_id, remote_session_id, added_by,
                 last_fetched_seq, last_fetched_at, created_at
@@ -113,6 +118,8 @@ pub async fn remove(pool: &PgPool, remote_id: &str) -> DbResult<()> {
         .bind(remote_id)
         .execute(pool)
         .await?;
-    if result.rows_affected() == 0 { return Err(DbError::NotFound); }
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
     Ok(())
 }

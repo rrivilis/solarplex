@@ -23,7 +23,12 @@
 
 use std::sync::Arc;
 
-use axum::{extract::{Query, State}, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::{Query, State},
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -43,28 +48,37 @@ struct ParseQuery {
 
 #[autometrics]
 async fn parse(
-    headers:      axum::http::HeaderMap,
-    Query(q):     Query<ParseQuery>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<ParseQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
 
     let Some(parsed) = intent::parse_intent(&q.text) else {
-        return Json(serde_json::json!({ "intent": null, "target_session": null, "resolution": {} })).into_response();
+        return Json(
+            serde_json::json!({ "intent": null, "target_session": null, "resolution": {} }),
+        )
+        .into_response();
     };
 
     let mut resolution = serde_json::Map::new();
     if let Some(name) = &parsed.target_session {
         let outcome = resolve_target_session(&state.db, &actor_id, name).await;
-        resolution.insert("target_session".into(), serde_json::to_value(outcome).unwrap());
+        resolution.insert(
+            "target_session".into(),
+            serde_json::to_value(outcome).unwrap(),
+        );
     }
     let actor_name = match &parsed.intent {
-        Intent::Invite { invitee: Some(name), .. } => Some(name.as_str()),
-        Intent::TransferOwnership { to }            => Some(to.as_str()),
-        _                                            => None,
+        Intent::Invite {
+            invitee: Some(name),
+            ..
+        } => Some(name.as_str()),
+        Intent::TransferOwnership { to } => Some(to.as_str()),
+        _ => None,
     };
     if let Some(name) = actor_name {
         let outcome = resolve_actor(&state.db, &actor_id, name).await;
@@ -75,7 +89,8 @@ async fn parse(
         "intent":         parsed.intent,
         "target_session": parsed.target_session,
         "resolution":     resolution,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ── Name resolution ──────────────────────────────────────────────────────
@@ -92,51 +107,82 @@ enum NameResolution {
         #[serde(skip_serializing_if = "Option::is_none")]
         email: Option<String>,
     },
-    Ambiguous { candidates: Vec<NameHit> },
+    Ambiguous {
+        candidates: Vec<NameHit>,
+    },
     NotFound,
 }
 
 #[derive(Serialize)]
 struct NameHit {
-    id:    String,
-    name:  String,
+    id: String,
+    name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<String>,
 }
 
-async fn resolve_target_session(pool: &PgPool, viewer_actor_id: &str, raw_name: &str) -> NameResolution {
+async fn resolve_target_session(
+    pool: &PgPool,
+    viewer_actor_id: &str,
+    raw_name: &str,
+) -> NameResolution {
     match db::sessions::list_by_actor(pool, viewer_actor_id).await {
-        Ok(sessions) => resolve_by_name(raw_name, sessions.into_iter().map(|s| (s.id, s.name, None))),
-        Err(_)       => NameResolution::NotFound,
+        Ok(sessions) => {
+            resolve_by_name(raw_name, sessions.into_iter().map(|s| (s.id, s.name, None)))
+        }
+        Err(_) => NameResolution::NotFound,
     }
 }
 
 async fn resolve_actor(pool: &PgPool, viewer_actor_id: &str, raw_name: &str) -> NameResolution {
     match db::actors::list_teammates(pool, viewer_actor_id).await {
-        Ok(teammates) => resolve_by_name(raw_name, teammates.into_iter().map(|t| (t.id, t.name, t.email))),
-        Err(_)        => NameResolution::NotFound,
+        Ok(teammates) => resolve_by_name(
+            raw_name,
+            teammates.into_iter().map(|t| (t.id, t.name, t.email)),
+        ),
+        Err(_) => NameResolution::NotFound,
     }
 }
 
 /// Exact case-insensitive name match wins outright; otherwise fall back to
 /// a substring match. Zero hits is `NotFound`, more than one at whichever
 /// tier resolved is `Ambiguous` — never silently pick one.
-fn resolve_by_name(raw: &str, items: impl Iterator<Item = (String, String, Option<String>)>) -> NameResolution {
+fn resolve_by_name(
+    raw: &str,
+    items: impl Iterator<Item = (String, String, Option<String>)>,
+) -> NameResolution {
     let items: Vec<(String, String, Option<String>)> = items.collect();
     let needle = raw.to_lowercase();
 
-    let exact: Vec<&(String, String, Option<String>)> = items.iter().filter(|(_, n, _)| n.to_lowercase() == needle).collect();
+    let exact: Vec<&(String, String, Option<String>)> = items
+        .iter()
+        .filter(|(_, n, _)| n.to_lowercase() == needle)
+        .collect();
     let tier = if !exact.is_empty() {
         exact
     } else {
-        items.iter().filter(|(_, n, _)| n.to_lowercase().contains(&needle)).collect()
+        items
+            .iter()
+            .filter(|(_, n, _)| n.to_lowercase().contains(&needle))
+            .collect()
     };
 
     match tier.as_slice() {
-        []       => NameResolution::NotFound,
-        [(id, name, email)] => NameResolution::Matched { id: id.clone(), name: name.clone(), email: email.clone() },
-        many     => NameResolution::Ambiguous {
-            candidates: many.iter().map(|(id, name, email)| NameHit { id: id.clone(), name: name.clone(), email: email.clone() }).collect(),
+        [] => NameResolution::NotFound,
+        [(id, name, email)] => NameResolution::Matched {
+            id: id.clone(),
+            name: name.clone(),
+            email: email.clone(),
+        },
+        many => NameResolution::Ambiguous {
+            candidates: many
+                .iter()
+                .map(|(id, name, email)| NameHit {
+                    id: id.clone(),
+                    name: name.clone(),
+                    email: email.clone(),
+                })
+                .collect(),
         },
     }
 }

@@ -56,12 +56,12 @@ fn empty_results() -> Json<serde_json::Value> {
 
 #[autometrics]
 async fn search_all(
-    headers:      HeaderMap,
-    Query(q):     Query<SearchQuery>,
+    headers: HeaderMap,
+    Query(q): Query<SearchQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
 
@@ -76,8 +76,13 @@ async fn search_all(
     // mention-picker/autocomplete would use. Doesn't apply to a
     // structured-filter-only query (`type:artifact` alone has no free text
     // at all, and is still a perfectly good, cheap, indexed search).
-    let has_filters = parsed.type_filter.is_some() || parsed.session_filter.is_some() || parsed.actor_filter.is_some();
-    let free_text_usable = parsed.free_text.as_deref().is_some_and(|t| t.chars().count() >= 2);
+    let has_filters = parsed.type_filter.is_some()
+        || parsed.session_filter.is_some()
+        || parsed.actor_filter.is_some();
+    let free_text_usable = parsed
+        .free_text
+        .as_deref()
+        .is_some_and(|t| t.chars().count() >= 2);
     if !has_filters && !free_text_usable {
         return empty_results().into_response();
     }
@@ -85,11 +90,13 @@ async fn search_all(
     let limit = q.limit.unwrap_or(10).clamp(1, 50);
 
     let member_sessions = match sessions::list_by_actor(&state.db, &actor_id).await {
-        Ok(s)  => s,
+        Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    let session_names: HashMap<String, String> =
-        member_sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
+    let session_names: HashMap<String, String> = member_sessions
+        .iter()
+        .map(|s| (s.id.clone(), s.name.clone()))
+        .collect();
 
     // `session:` narrows the searchable session set by a case-insensitive
     // substring match on name — same tier-2 fallback `resolve_by_name` in
@@ -102,7 +109,8 @@ async fn search_all(
     let session_ids: Vec<String> = match &parsed.session_filter {
         Some(filter) => {
             let needle = filter.to_lowercase();
-            member_sessions.iter()
+            member_sessions
+                .iter()
                 .filter(|s| s.name.to_lowercase().contains(&needle))
                 .map(|s| s.id.clone())
                 .collect()
@@ -119,11 +127,16 @@ async fn search_all(
     let actor_ids: Option<Vec<String>> = match &parsed.actor_filter {
         Some(filter) => {
             let needle = filter.to_lowercase();
-            let teammates = actors::list_teammates(&state.db, &actor_id).await.unwrap_or_default();
-            Some(teammates.into_iter()
-                .filter(|t| t.name.to_lowercase().contains(&needle))
-                .map(|t| t.id)
-                .collect())
+            let teammates = actors::list_teammates(&state.db, &actor_id)
+                .await
+                .unwrap_or_default();
+            Some(
+                teammates
+                    .into_iter()
+                    .filter(|t| t.name.to_lowercase().contains(&needle))
+                    .map(|t| t.id)
+                    .collect(),
+            )
         }
         None => None,
     };
@@ -135,40 +148,57 @@ async fn search_all(
     // query with neither (e.g. bare `type:artifact`) has nothing to search
     // actors by, so that section just comes back empty rather than
     // matching every co-member via an accidental empty-string ILIKE.
-    let actor_query_term = parsed.actor_filter.clone().or_else(|| parsed.free_text.clone());
+    let actor_query_term = parsed
+        .actor_filter
+        .clone()
+        .or_else(|| parsed.free_text.clone());
 
     let (sessions_hit, artifacts_hit, actors_hit, events_hit) = tokio::join!(
         search::search_sessions(&state.db, &session_ids, parsed.free_text.as_deref(), limit),
         search::search_artifacts(
-            &state.db, &session_ids, parsed.free_text.as_deref(),
-            parsed.type_filter.as_deref(), actor_ids.as_deref(), limit,
+            &state.db,
+            &session_ids,
+            parsed.free_text.as_deref(),
+            parsed.type_filter.as_deref(),
+            actor_ids.as_deref(),
+            limit,
         ),
         async {
             match &actor_query_term {
                 Some(term) => search::search_actors(&state.db, &actor_id, term, limit).await,
-                None       => Ok(vec![]),
+                None => Ok(vec![]),
             }
         },
         search::search_events(
-            &state.db, &session_ids, parsed.free_text.as_deref(),
-            parsed.type_filter.as_deref(), actor_ids.as_deref(), limit,
+            &state.db,
+            &session_ids,
+            parsed.free_text.as_deref(),
+            parsed.type_filter.as_deref(),
+            actor_ids.as_deref(),
+            limit,
         ),
     );
 
-    let sessions_hit  = sessions_hit.unwrap_or_default();
+    let sessions_hit = sessions_hit.unwrap_or_default();
     let artifacts_hit = artifacts_hit.unwrap_or_default();
-    let actors_hit    = actors_hit.unwrap_or_default();
-    let events_hit    = events_hit.unwrap_or_default();
+    let actors_hit = actors_hit.unwrap_or_default();
+    let events_hit = events_hit.unwrap_or_default();
 
     // Enrich artifact/event rows with the session name for display — the
     // same "resolve at render time, from an already-fetched map" pattern
     // activity.rs uses, not a per-row extra query.
     let actor_name_map: HashMap<String, String> = {
-        let ids: Vec<String> = events_hit.iter().map(|e| e.actor_id.clone())
+        let ids: Vec<String> = events_hit
+            .iter()
+            .map(|e| e.actor_id.clone())
             .chain(artifacts_hit.iter().map(|a| a.created_by.clone()))
             .collect();
-        actors::get_many(&state.db, &ids).await.unwrap_or_default()
-            .into_iter().map(|(id, a)| (id, a.name)).collect()
+        actors::get_many(&state.db, &ids)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, a)| (id, a.name))
+            .collect()
     };
 
     Json(json!({
@@ -195,10 +225,10 @@ async fn search_all(
 
 #[derive(Debug, Default, PartialEq)]
 struct ParsedQuery {
-    free_text:      Option<String>,
-    type_filter:    Option<String>,
+    free_text: Option<String>,
+    type_filter: Option<String>,
     session_filter: Option<String>,
-    actor_filter:   Option<String>,
+    actor_filter: Option<String>,
 }
 
 /// Splits `input` into `type:`/`session:`/`actor:` filters plus a free-text
@@ -225,7 +255,11 @@ fn parse_query(input: &str) -> ParsedQuery {
         }
     }
 
-    out.free_text = if free_words.is_empty() { None } else { Some(free_words.join(" ")) };
+    out.free_text = if free_words.is_empty() {
+        None
+    } else {
+        Some(free_words.join(" "))
+    };
     out
 }
 
@@ -255,12 +289,16 @@ fn tokenize_with_quotes(input: &str) -> Vec<String> {
         }
         let mut tok = String::new();
         while let Some(&c) = chars.peek() {
-            if c.is_whitespace() { break; }
+            if c.is_whitespace() {
+                break;
+            }
             if c == '"' {
                 chars.next();
                 while let Some(&c) = chars.peek() {
                     chars.next();
-                    if c == '"' { break; }
+                    if c == '"' {
+                        break;
+                    }
                     tok.push(c);
                 }
                 continue;
@@ -268,7 +306,9 @@ fn tokenize_with_quotes(input: &str) -> Vec<String> {
             tok.push(c);
             chars.next();
         }
-        if !tok.is_empty() { tokens.push(tok); }
+        if !tok.is_empty() {
+            tokens.push(tok);
+        }
     }
     tokens
 }
@@ -280,57 +320,90 @@ mod tests {
     #[test]
     fn plain_free_text_only() {
         let p = parse_query("logo bug");
-        assert_eq!(p, ParsedQuery { free_text: Some("logo bug".into()), ..Default::default() });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                free_text: Some("logo bug".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn single_structured_filter_no_free_text() {
         let p = parse_query("type:artifact");
-        assert_eq!(p, ParsedQuery { type_filter: Some("artifact".into()), ..Default::default() });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                type_filter: Some("artifact".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn mixed_filters_and_free_text_any_order() {
         let p = parse_query("logo type:artifact session:standup");
-        assert_eq!(p, ParsedQuery {
-            free_text: Some("logo".into()),
-            type_filter: Some("artifact".into()),
-            session_filter: Some("standup".into()),
-            ..Default::default()
-        });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                free_text: Some("logo".into()),
+                type_filter: Some("artifact".into()),
+                session_filter: Some("standup".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn quoted_multi_word_filter_value() {
         let p = parse_query(r#"session:"weekly sync" bug"#);
-        assert_eq!(p, ParsedQuery {
-            free_text: Some("bug".into()),
-            session_filter: Some("weekly sync".into()),
-            ..Default::default()
-        });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                free_text: Some("bug".into()),
+                session_filter: Some("weekly sync".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn filter_keys_are_case_insensitive() {
         let p = parse_query("TYPE:artifact Session:standup Actor:alice");
-        assert_eq!(p, ParsedQuery {
-            type_filter: Some("artifact".into()),
-            session_filter: Some("standup".into()),
-            actor_filter: Some("alice".into()),
-            ..Default::default()
-        });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                type_filter: Some("artifact".into()),
+                session_filter: Some("standup".into()),
+                actor_filter: Some("alice".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn bare_key_with_no_value_falls_back_to_free_text() {
         let p = parse_query("type: artifact");
-        assert_eq!(p, ParsedQuery { free_text: Some("type: artifact".into()), ..Default::default() });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                free_text: Some("type: artifact".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn unterminated_quote_runs_to_end_of_input() {
         let p = parse_query(r#"session:"weekly sync"#);
-        assert_eq!(p, ParsedQuery { session_filter: Some("weekly sync".into()), ..Default::default() });
+        assert_eq!(
+            p,
+            ParsedQuery {
+                session_filter: Some("weekly sync".into()),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]

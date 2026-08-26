@@ -18,7 +18,10 @@ pub enum IrError {
     #[error("expected a tagged list, got: {0}")]
     NotATaggedList(String),
     #[error("expected tag :{expected}, got :{actual}")]
-    WrongTag { expected: &'static str, actual: String },
+    WrongTag {
+        expected: &'static str,
+        actual: String,
+    },
     #[error("missing required key :{0}")]
     MissingKey(&'static str),
     #[error("key :{key} has wrong shape: {detail}")]
@@ -77,8 +80,9 @@ impl<'a> TaggedList<'a> {
         let pairs = rest
             .chunks(2)
             .map(|pair| {
-                let key = as_kw(pair[0])
-                    .ok_or_else(|| IrError::NotATaggedList(format!("non-keyword plist key: {}", pair[0])))?;
+                let key = as_kw(pair[0]).ok_or_else(|| {
+                    IrError::NotATaggedList(format!("non-keyword plist key: {}", pair[0]))
+                })?;
                 Ok((key, pair[1]))
             })
             .collect::<Result<Vec<_>, IrError>>()?;
@@ -87,7 +91,10 @@ impl<'a> TaggedList<'a> {
 
     pub fn expect_tag(&self, expected: &'static str) -> Result<(), IrError> {
         if self.tag != expected {
-            return Err(IrError::WrongTag { expected, actual: self.tag.to_string() });
+            return Err(IrError::WrongTag {
+                expected,
+                actual: self.tag.to_string(),
+            });
         }
         Ok(())
     }
@@ -122,16 +129,25 @@ impl AnyOrInt {
         }
         v.as_i64()
             .map(AnyOrInt::Id)
-            .ok_or_else(|| IrError::BadValue { key: "ref/fd", detail: format!("expected :any or integer, got {v}") })
+            .ok_or_else(|| IrError::BadValue {
+                key: "ref/fd",
+                detail: format!("expected :any or integer, got {v}"),
+            })
     }
 }
 
 pub fn require_str<'a>(v: &'a Value, key: &'static str) -> Result<&'a str, IrError> {
-    v.as_str().ok_or_else(|| IrError::BadValue { key, detail: format!("expected string, got {v}") })
+    v.as_str().ok_or_else(|| IrError::BadValue {
+        key,
+        detail: format!("expected string, got {v}"),
+    })
 }
 
 pub fn require_i64(v: &Value, key: &'static str) -> Result<i64, IrError> {
-    v.as_i64().ok_or_else(|| IrError::BadValue { key, detail: format!("expected integer, got {v}") })
+    v.as_i64().ok_or_else(|| IrError::BadValue {
+        key,
+        detail: format!("expected integer, got {v}"),
+    })
 }
 
 /// `:ops (:read :write)` — a list of keywords, each stripped of its `:`.
@@ -140,11 +156,17 @@ pub fn keyword_list(v: &Value, key: &'static str) -> Result<Vec<String>, IrError
         return Ok(Vec::new());
     }
     v.list_iter()
-        .ok_or_else(|| IrError::BadValue { key, detail: format!("expected a list, got {v}") })?
+        .ok_or_else(|| IrError::BadValue {
+            key,
+            detail: format!("expected a list, got {v}"),
+        })?
         .map(|item| {
             as_kw(item)
                 .map(str::to_string)
-                .ok_or_else(|| IrError::BadValue { key, detail: format!("expected keyword in list, got {item}") })
+                .ok_or_else(|| IrError::BadValue {
+                    key,
+                    detail: format!("expected keyword in list, got {item}"),
+                })
         })
         .collect()
 }

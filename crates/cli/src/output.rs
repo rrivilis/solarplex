@@ -45,7 +45,7 @@ pub fn link(uri: &str, text: &str) -> String {
 pub fn entity_link(entity: &str, id: &str, _session_id: &str, _ui: &str) -> String {
     let short = short_id(id);
     let label = format!("{entity}/{short}");
-    let uri   = format!("solarplex://{entity}/{id}");
+    let uri = format!("solarplex://{entity}/{id}");
     link(&uri, &label)
 }
 
@@ -86,22 +86,27 @@ pub fn id_link(entity: &str, id: &str) -> String {
 /// // ← session/01J8X  ←  actor/alice
 /// ```
 pub fn backtrace_links(crumbs: &[(&str, &str, &str)]) -> String {
-    if crumbs.is_empty() { return String::new(); }
-    let parts: Vec<String> = crumbs.iter().map(|(kind, id, name)| {
-        if id.is_empty() {
-            // Collection ref — links to `sp ask <kind>/`
-            let uri = format!("solarplex://ask/{kind}");
-            link(&uri, &format!("{kind}/"))
-        } else {
-            let label = if !name.is_empty() {
-                format!("{kind}/{name}")
+    if crumbs.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = crumbs
+        .iter()
+        .map(|(kind, id, name)| {
+            if id.is_empty() {
+                // Collection ref — links to `sp ask <kind>/`
+                let uri = format!("solarplex://ask/{kind}");
+                link(&uri, &format!("{kind}/"))
             } else {
-                format!("{kind}/{}", short_id(id))
-            };
-            let uri = format!("solarplex://{kind}/{id}");
-            link(&uri, &label)
-        }
-    }).collect();
+                let label = if !name.is_empty() {
+                    format!("{kind}/{name}")
+                } else {
+                    format!("{kind}/{}", short_id(id))
+                };
+                let uri = format!("solarplex://{kind}/{id}");
+                link(&uri, &label)
+            }
+        })
+        .collect();
     dim(&format!("←  {}", parts.join("  ←  ")))
 }
 
@@ -135,17 +140,33 @@ pub fn actor_link_named(id: &str, name: &str) -> String {
 
 /// Return the first 8 chars (4-char block) of a ULID for compact display.
 pub fn short_id(id: &str) -> &str {
-    if id.len() > 8 { &id[..8] } else { id }
+    if id.len() > 8 {
+        &id[..8]
+    } else {
+        id
+    }
 }
 
 // ── ANSI colour helpers ───────────────────────────────────────────────────────
 
-pub fn green(s: &str)  -> String { colour(s, "32") }
-pub fn red(s: &str)    -> String { colour(s, "31") }
-pub fn yellow(s: &str) -> String { colour(s, "33") }
-pub fn cyan(s: &str)   -> String { colour(s, "36") }
-pub fn dim(s: &str)    -> String { colour(s, "2")  }
-pub fn bold(s: &str)   -> String { colour(s, "1")  }
+pub fn green(s: &str) -> String {
+    colour(s, "32")
+}
+pub fn red(s: &str) -> String {
+    colour(s, "31")
+}
+pub fn yellow(s: &str) -> String {
+    colour(s, "33")
+}
+pub fn cyan(s: &str) -> String {
+    colour(s, "36")
+}
+pub fn dim(s: &str) -> String {
+    colour(s, "2")
+}
+pub fn bold(s: &str) -> String {
+    colour(s, "1")
+}
 
 fn colour(s: &str, code: &str) -> String {
     if is_tty() {
@@ -172,9 +193,14 @@ fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_escape = false;
     for c in s.chars() {
-        if c == '\x1b' { in_escape = true; continue; }
+        if c == '\x1b' {
+            in_escape = true;
+            continue;
+        }
         if in_escape {
-            if c == 'm' || c == '\\' { in_escape = false; }
+            if c == 'm' || c == '\\' {
+                in_escape = false;
+            }
             continue;
         }
         out.push(c);
@@ -254,8 +280,13 @@ pub fn sanitize_terminal(s: &str) -> String {
                         chars.next();
                         loop {
                             match chars.peek().copied() {
-                                Some(c) if ('\x20'..='\x3f').contains(&c) => { chars.next(); }
-                                Some(c) if ('\x40'..='\x7e').contains(&c) => { chars.next(); break; }
+                                Some(c) if ('\x20'..='\x3f').contains(&c) => {
+                                    chars.next();
+                                }
+                                Some(c) if ('\x40'..='\x7e').contains(&c) => {
+                                    chars.next();
+                                    break;
+                                }
                                 _ => break,
                             }
                         }
@@ -266,20 +297,22 @@ pub fn sanitize_terminal(s: &str) -> String {
                         loop {
                             match chars.next() {
                                 Some('\x07') | None => break,
-                                Some('\x1b')        => { chars.next(); break; }
-                                _                   => {}
+                                Some('\x1b') => {
+                                    chars.next();
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
                     }
-                    Some(_) => { chars.next(); } // other two-byte ESC sequences
-                    None    => {}
+                    Some(_) => {
+                        chars.next();
+                    } // other two-byte ESC sequences
+                    None => {}
                 }
             }
             // C0 — allow HT, LF, CR only
-            '\x00'..='\x08'
-            | '\x0b'..='\x0c'
-            | '\x0e'..='\x1f'
-            | '\x7f' => {}
+            '\x00'..='\x08' | '\x0b'..='\x0c' | '\x0e'..='\x1f' | '\x7f' => {}
             // C1 (U+0080–U+009F)
             c if ('\u{0080}'..='\u{009f}').contains(&c) => {}
             c => out.push(c),
@@ -292,16 +325,16 @@ pub fn sanitize_terminal(s: &str) -> String {
 
 pub fn status_icon(status: &str) -> &'static str {
     match status {
-        "active"   => "●",
+        "active" => "●",
         "archived" => "○",
-        "suspended"=> "◐",
-        "granted"  => "✓",
-        "denied"   => "✗",
-        "pending"  => "⋯",
-        "running"  => "▶",
-        "waiting"  => "⏳",
-        "idle"     => "·",
-        "error"    => "✕",
-        _          => "?",
+        "suspended" => "◐",
+        "granted" => "✓",
+        "denied" => "✗",
+        "pending" => "⋯",
+        "running" => "▶",
+        "waiting" => "⏳",
+        "idle" => "·",
+        "error" => "✕",
+        _ => "?",
     }
 }

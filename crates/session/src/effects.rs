@@ -40,8 +40,8 @@
 //!    - `PersistSnapshot` → serialize current `SessionMemory` to DB snapshot table,
 //!      then feed back `Replayed(SnapshotCreated { snapshot_seq: cursor })`.
 
-use serde::{Deserialize, Serialize};
 use crate::events::{BundleTransport, SessionEvent};
+use serde::{Deserialize, Serialize};
 
 // ── Bundle relay types ────────────────────────────────────────────────────────
 
@@ -63,22 +63,20 @@ pub enum BundleKind {
     /// Forward saga step.
     Step {
         /// The message to deliver to the participant session.
-        message:      serde_json::Value,
+        message: serde_json::Value,
         /// Rollback payload stored on the coordinator for use if this step is
         /// later compensated.  Opaque to the participant.
         compensation: serde_json::Value,
     },
     /// Compensating rollback dispatched in reverse order.
-    Compensation {
-        message: serde_json::Value,
-    },
+    Compensation { message: serde_json::Value },
     /// Acknowledgement from participant back to coordinator.
     Ack {
         outcome: crate::events::SagaOutcome,
         /// The cap that authorised the participant's decision.
         /// Validated by the coordinator's bundle unwrapper before being
         /// forwarded to `live_saga_ack`; the reducer never sees an invalid cap.
-        cap_id:  String,
+        cap_id: String,
     },
 }
 
@@ -97,17 +95,17 @@ pub enum BundleKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SagaBundle {
     /// Stable ULID assigned by the emitting session at emit time.
-    pub bundle_id:    String,
-    pub saga_id:      String,
-    pub step_idx:     usize,
+    pub bundle_id: String,
+    pub saga_id: String,
+    pub step_idx: usize,
     /// The session that produced this bundle.
     pub from_session: String,
     /// The session that should receive and process this bundle.
-    pub to_session:   String,
-    pub kind:         BundleKind,
+    pub to_session: String,
+    pub kind: BundleKind,
     /// Hard expiry in milliseconds from epoch.  The reflector drops bundles
     /// past their TTL on `replay`; the unwrapper re-checks on delivery.
-    pub ttl_ms:       u64,
+    pub ttl_ms: u64,
 }
 
 /// A typed position in the global bundle reflector log.
@@ -150,20 +148,24 @@ pub struct SagaBundle {
 pub struct ReflectorCursor {
     /// Monotonic position in the reflector log.  `replay(cursor)` returns
     /// all bundles with `seq > cursor.seq` that have not expired.
-    pub seq:   i64,
+    pub seq: i64,
     /// Reflector epoch — incremented on compaction / shard migration.
     /// Stale epoch → full replay (relocalize).
     pub epoch: u32,
     /// Membership generation. Stale view → revalidate against current
     /// membership. See the struct doc for why this is separate from `epoch`.
-    pub view:  u32,
+    pub view: u32,
 }
 
 impl ReflectorCursor {
     /// The zero cursor: no bundles seen, epoch 0, view 0.  Pass to `replay`
     /// to drain the entire live log from the beginning.
     pub const fn zero() -> Self {
-        Self { seq: 0, epoch: 0, view: 0 }
+        Self {
+            seq: 0,
+            epoch: 0,
+            view: 0,
+        }
     }
 
     /// Advance this cursor to a new position (same epoch, same view).
@@ -216,7 +218,6 @@ pub type TimerId = String;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Effect {
     // ── Event log ─────────────────────────────────────────────────────────────
-
     /// Write a new event to the session event log.
     ///
     /// The runtime assigns the next sequence number, persists the event,
@@ -227,23 +228,19 @@ pub enum Effect {
     Persist(SessionEvent),
 
     // ── Intra-session messaging (actor routing plane) ─────────────────────────
-
     /// Send a payload to a single actor connected to this session via WebSocket.
     ///
     /// Keyed by `actor_id`.  The runtime looks up the actor's WS sender in the
     /// session hub.  No-op if the actor is not currently connected.
     Send {
-        to:      String,   // actor_id
+        to: String, // actor_id
         payload: serde_json::Value,
     },
 
     /// Broadcast a payload to all actors currently connected to this session.
-    Broadcast {
-        payload: serde_json::Value,
-    },
+    Broadcast { payload: serde_json::Value },
 
     // ── Inter-session messaging (session routing plane) ───────────────────────
-
     /// Route a message to another session node's task mailbox.
     ///
     /// Keyed by `session_id` — distinct from `Send` (actor routing).  The
@@ -259,42 +256,33 @@ pub enum Effect {
     /// saga ack routing (participant → coordinator).
     Forward {
         to_session: String,
-        payload:    serde_json::Value,
+        payload: serde_json::Value,
     },
 
     // ── Timer management ──────────────────────────────────────────────────────
-
     /// Arm a timer for `duration_ms` milliseconds.
     /// Fires as `LiveEvent::TimerFired { id }`.
     /// Replaces any existing timer with the same ID.
-    SetTimer {
-        id:          TimerId,
-        duration_ms: u64,
-    },
+    SetTimer { id: TimerId, duration_ms: u64 },
 
     /// Cancel a previously armed timer.  No-op if the timer has already fired
     /// or was never armed.
-    CancelTimer {
-        id: TimerId,
-    },
+    CancelTimer { id: TimerId },
 
     // ── Connection management ─────────────────────────────────────────────────
-
     /// Send a WebSocket close frame to the given actor and drop the handle.
     CloseConnection {
         actor_id: String,
-        code:     u16,
-        reason:   String,
+        code: u16,
+        reason: String,
     },
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
-
     /// Serialize the current `SessionMemory` as a snapshot checkpoint.
     /// The runtime persists it, then feeds back `Replayed(SnapshotCreated { … })`.
     PersistSnapshot,
 
     // ── Bundle relay (cross-session saga protocol) ────────────────────────────
-
     /// Route a typed `SagaBundle` through the reflector to another session.
     ///
     /// The runtime appends the bundle to the global `Reflector` (which assigns

@@ -92,7 +92,9 @@ async fn async_main() -> Result<()> {
         .unwrap_or(false);
 
     if fail_open {
-        tracing::warn!("guardian: SOLARPLEX_GUARDIAN_FAIL_OPEN=1 — fail-closed disabled (dev only)");
+        tracing::warn!(
+            "guardian: SOLARPLEX_GUARDIAN_FAIL_OPEN=1 — fail-closed disabled (dev only)"
+        );
     }
 
     // IMA appraisal and dm-verity are NOT enforced at runtime.
@@ -175,10 +177,10 @@ fn ima_appraisal_appears_active() -> bool {
 
 #[cfg(unix)]
 async fn run_unix(
-    api_base:   String,
+    api_base: String,
     session_id: String,
-    actor_id:   String,
-    fail_open:  bool,
+    actor_id: String,
+    fail_open: bool,
 ) -> Result<()> {
     use std::os::unix::io::FromRawFd;
 
@@ -228,16 +230,18 @@ async fn run_unix(
 }
 
 async fn handle_request(
-    req:        ipc::GuardianRequest,
-    api_base:   &str,
+    req: ipc::GuardianRequest,
+    api_base: &str,
     session_id: &str,
-    actor_id:   &str,
-    fail_open:  bool,
+    actor_id: &str,
+    fail_open: bool,
 ) -> ipc::GuardianResponse {
     // Independent verification: fetch approval status AND server-canonical
     // command + declared effects in a single call.  The adapter never supplies
     // the command; only the server's record drives what we execute.
-    let approved = match verify::verify_and_fetch(&req.approval_id, api_base, session_id, actor_id).await {
+    let approved = match verify::verify_and_fetch(&req.approval_id, api_base, session_id, actor_id)
+        .await
+    {
         Ok(Some(a)) => a,
         Ok(None) => {
             tracing::error!(
@@ -277,7 +281,10 @@ async fn handle_request(
     // command actually touched (the adapter's own view, a different
     // process entirely, never sees the guardian's sandbox at all, which is
     // exactly why this used to be an unfixable no-op one hop downstream).
-    let snap_paths: Vec<String> = approved.declared.file_effects.iter()
+    let snap_paths: Vec<String> = approved
+        .declared
+        .file_effects
+        .iter()
         .map(|fe| fe.path.0.clone())
         .collect();
     let pre_snap = ipc::snapshot_paths(&snap_paths).await;
@@ -286,14 +293,14 @@ async fn handle_request(
         Ok(result) => {
             let post_snap = ipc::snapshot_paths(&snap_paths).await;
             ipc::GuardianResponse {
-                id:          req.id,
+                id: req.id,
                 approval_id: req.approval_id,
-                stdout:      result.stdout,
-                stderr:      result.stderr,
-                exit_code:   result.exit_code,
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exit_code: result.exit_code,
                 pre_snap,
                 post_snap,
-                error:       None,
+                error: None,
             }
         }
         Err(e) => error_response(req, &format!("sandbox exec failed: {e}")),
@@ -302,14 +309,13 @@ async fn handle_request(
 
 fn error_response(req: ipc::GuardianRequest, msg: &str) -> ipc::GuardianResponse {
     ipc::GuardianResponse {
-        id:          req.id,
+        id: req.id,
         approval_id: req.approval_id,
-        stdout:      String::new(),
-        stderr:      String::new(),
-        pre_snap:    std::collections::HashMap::new(),
-        post_snap:   std::collections::HashMap::new(),
-        exit_code:   -1,
-        error:       Some(msg.to_string()),
+        stdout: String::new(),
+        stderr: String::new(),
+        pre_snap: std::collections::HashMap::new(),
+        post_snap: std::collections::HashMap::new(),
+        exit_code: -1,
+        error: Some(msg.to_string()),
     }
 }
-

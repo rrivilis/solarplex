@@ -17,30 +17,33 @@ use serde::{Deserialize, Serialize};
 /// fact -- so a secret-bearing file (credentials.json) is never briefly
 /// world-readable in the window between write and chmod.
 fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<()> {
-    let dir = path.parent()
+    let dir = path
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
 
     #[cfg(unix)]
     if let Some(mode) = mode {
         use std::os::unix::fs::PermissionsExt;
-        tmp.as_file().set_permissions(std::fs::Permissions::from_mode(mode))?;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
     }
     #[cfg(not(unix))]
     let _ = mode;
 
     tmp.write_all(contents)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| anyhow::anyhow!("persisting {}: {}", path.display(), e.error))?;
+    tmp.persist(path)
+        .map_err(|e| anyhow::anyhow!("persisting {}: {}", path.display(), e.error))?;
     Ok(())
 }
 
 /// Runtime context — assembled from env vars, config file, and CLI flags.
 #[derive(Debug, Clone)]
 pub struct Ctx {
-    pub server:     String,
+    pub server: String,
     pub session_id: Option<String>,
-    pub actor_id:   Option<String>,
+    pub actor_id: Option<String>,
     /// The `--actor`/`SOLARPLEX_ACTOR_ID` value for *this invocation only* —
     /// `None` when the caller relied on a persisted config-file default
     /// instead of stating one explicitly. Distinct from `actor_id`, which
@@ -51,12 +54,12 @@ pub struct Ctx {
     /// default. See `cmd::session::enter`.
     pub actor_flag: Option<String>,
     /// Web UI base URL (for OSC-8 hyperlinks, and as the `sp login` handoff target).
-    pub ui:         String,
+    pub ui: String,
     /// sp_token from `sp login`, if any. `SOLARPLEX_TOKEN` env (for CI/scripts)
     /// overrides the stored credentials file; there's no CLI flag for this one
     /// deliberately — flags land in shell history and process listings, which
     /// a bearer token shouldn't.
-    pub token:      Option<String>,
+    pub token: Option<String>,
 }
 
 impl Ctx {
@@ -64,32 +67,52 @@ impl Ctx {
     pub fn load(
         server_flag: Option<String>,
         session_flag: Option<String>,
-        actor_flag:   Option<String>,
+        actor_flag: Option<String>,
     ) -> Self {
         // 1. Defaults
-        let mut server     = "http://localhost:8080".to_string();
+        let mut server = "http://localhost:8080".to_string();
         let mut session_id = None::<String>;
-        let mut actor_id   = None::<String>;
-        let mut ui         = "http://localhost:3000".to_string();
+        let mut actor_id = None::<String>;
+        let mut ui = "http://localhost:3000".to_string();
 
         // 2. Config file
         if let Some(cfg) = load_file() {
-            if let Some(v) = cfg.server     { server     = v; }
-            if let Some(v) = cfg.session_id { session_id = Some(v); }
-            if let Some(v) = cfg.actor_id   { actor_id   = Some(v); }
-            if let Some(v) = cfg.ui         { ui         = v; }
+            if let Some(v) = cfg.server {
+                server = v;
+            }
+            if let Some(v) = cfg.session_id {
+                session_id = Some(v);
+            }
+            if let Some(v) = cfg.actor_id {
+                actor_id = Some(v);
+            }
+            if let Some(v) = cfg.ui {
+                ui = v;
+            }
         }
 
         // 3. Env vars (override file)
-        if let Ok(v) = std::env::var("SOLARPLEX_SERVER")     { server     = v; }
-        if let Ok(v) = std::env::var("SOLARPLEX_SESSION_ID") { session_id = Some(v); }
+        if let Ok(v) = std::env::var("SOLARPLEX_SERVER") {
+            server = v;
+        }
+        if let Ok(v) = std::env::var("SOLARPLEX_SESSION_ID") {
+            session_id = Some(v);
+        }
         let env_actor = std::env::var("SOLARPLEX_ACTOR_ID").ok();
-        if let Some(ref v) = env_actor { actor_id = Some(v.clone()); }
-        if let Ok(v) = std::env::var("SOLARPLEX_UI")         { ui         = v; }
+        if let Some(ref v) = env_actor {
+            actor_id = Some(v.clone());
+        }
+        if let Ok(v) = std::env::var("SOLARPLEX_UI") {
+            ui = v;
+        }
 
         // 4. Explicit CLI flags (highest priority)
-        if let Some(v) = server_flag  { server     = v; }
-        if let Some(v) = session_flag { session_id = Some(v); }
+        if let Some(v) = server_flag {
+            server = v;
+        }
+        if let Some(v) = session_flag {
+            session_id = Some(v);
+        }
         // Deliberately NOT folding `env_actor` in here (unlike server/session
         // above) — `actor_flag` only ever holds a *literal* `--actor <value>`
         // now that main.rs's Cli struct dropped `env = "SOLARPLEX_ACTOR_ID"`
@@ -97,25 +120,40 @@ impl Ctx {
         // that env var is self-exported by our own `session.fish`/`session.sh`,
         // so treating it as "explicit" here would be the same self-poisoning
         // loop moved one level down instead of actually fixed.
-        if let Some(ref v) = actor_flag { actor_id = Some(v.clone()); }
+        if let Some(ref v) = actor_flag {
+            actor_id = Some(v.clone());
+        }
 
         // Token: stored credentials file, then SOLARPLEX_TOKEN env override.
         let mut token = load_token();
-        if let Ok(v) = std::env::var("SOLARPLEX_TOKEN") { token = Some(v); }
+        if let Ok(v) = std::env::var("SOLARPLEX_TOKEN") {
+            token = Some(v);
+        }
 
-        Self { server, session_id, actor_id, actor_flag, ui, token }
+        Self {
+            server,
+            session_id,
+            actor_id,
+            actor_flag,
+            ui,
+            token,
+        }
     }
 
     pub fn require_session(&self) -> Result<&str> {
-        self.session_id.as_deref().ok_or_else(|| anyhow::anyhow!(
-            "No session attached. Run `sp session attach <id>` or set SOLARPLEX_SESSION_ID."
-        ))
+        self.session_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "No session attached. Run `sp session attach <id>` or set SOLARPLEX_SESSION_ID."
+            )
+        })
     }
 
     pub fn require_actor(&self) -> Result<&str> {
-        self.actor_id.as_deref().ok_or_else(|| anyhow::anyhow!(
+        self.actor_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
             "No actor set. Run `sp session attach <id> --actor <name>` or set SOLARPLEX_ACTOR_ID."
-        ))
+        )
+        })
     }
 }
 
@@ -123,10 +161,10 @@ impl Ctx {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileConfig {
-    pub server:     Option<String>,
+    pub server: Option<String>,
     pub session_id: Option<String>,
-    pub actor_id:   Option<String>,
-    pub ui:         Option<String>,
+    pub actor_id: Option<String>,
+    pub ui: Option<String>,
 }
 
 /// Platform-appropriate config path:
@@ -135,13 +173,18 @@ pub struct FileConfig {
 pub fn config_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok()
+        std::env::var("APPDATA")
+            .ok()
             .map(|v| PathBuf::from(v).join("solarplex").join("session.json"))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME").ok()
-            .map(|v| PathBuf::from(v).join(".config").join("solarplex").join("session.json"))
+        std::env::var("HOME").ok().map(|v| {
+            PathBuf::from(v)
+                .join(".config")
+                .join("solarplex")
+                .join("session.json")
+        })
     }
 }
 
@@ -151,7 +194,7 @@ pub fn config_path() -> Option<PathBuf> {
 /// server crate but lives here to avoid a cross-crate dependency in the CLI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct SavedCursor {
-    pub seq:   i64,
+    pub seq: i64,
     pub epoch: u32,
 }
 
@@ -175,8 +218,8 @@ pub fn load_cursor(session_id: &str) -> SavedCursor {
 
 /// Persist the cursor for a session to disk.
 pub fn save_cursor(session_id: &str, cursor: SavedCursor) -> Result<()> {
-    let path = cursor_path(session_id)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine cursor dir"))?;
+    let path =
+        cursor_path(session_id).ok_or_else(|| anyhow::anyhow!("cannot determine cursor dir"))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -187,13 +230,18 @@ pub fn save_cursor(session_id: &str, cursor: SavedCursor) -> Result<()> {
 pub fn fish_env_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok()
+        std::env::var("APPDATA")
+            .ok()
             .map(|v| PathBuf::from(v).join("solarplex").join("session.fish"))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME").ok()
-            .map(|v| PathBuf::from(v).join(".config").join("solarplex").join("session.fish"))
+        std::env::var("HOME").ok().map(|v| {
+            PathBuf::from(v)
+                .join(".config")
+                .join("solarplex")
+                .join("session.fish")
+        })
     }
 }
 
@@ -202,13 +250,18 @@ pub fn fish_env_path() -> Option<PathBuf> {
 pub fn posix_env_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok()
+        std::env::var("APPDATA")
+            .ok()
             .map(|v| PathBuf::from(v).join("solarplex").join("session.sh"))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME").ok()
-            .map(|v| PathBuf::from(v).join(".config").join("solarplex").join("session.sh"))
+        std::env::var("HOME").ok().map(|v| {
+            PathBuf::from(v)
+                .join(".config")
+                .join("solarplex")
+                .join("session.sh")
+        })
     }
 }
 
@@ -272,7 +325,9 @@ pub fn save_token(sp_token: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(&Credentials { sp_token: sp_token.to_string() })?;
+    let json = serde_json::to_string_pretty(&Credentials {
+        sp_token: sp_token.to_string(),
+    })?;
     write_atomic(&path, json.as_bytes(), Some(0o600))
 }
 
@@ -281,9 +336,9 @@ pub fn save_token(sp_token: &str) -> Result<()> {
 pub fn clear_token() -> Result<()> {
     if let Some(path) = credentials_path() {
         match std::fs::remove_file(&path) {
-            Ok(())                                            => Ok(()),
+            Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e)                                             => Err(e.into()),
+            Err(e) => Err(e.into()),
         }
     } else {
         Ok(())
@@ -307,20 +362,36 @@ pub fn save(cfg: &FileConfig) -> Result<()> {
     // Write fish companion
     if let Some(fish_path) = fish_env_path() {
         let mut lines = Vec::new();
-        if let Some(ref v) = cfg.server     { lines.push(format!("set -gx SOLARPLEX_SERVER {v:?}")); }
-        if let Some(ref v) = cfg.session_id { lines.push(format!("set -gx SOLARPLEX_SESSION_ID {v:?}")); }
-        if let Some(ref v) = cfg.actor_id   { lines.push(format!("set -gx SOLARPLEX_ACTOR_ID {v:?}")); }
-        if let Some(ref v) = cfg.ui         { lines.push(format!("set -gx SOLARPLEX_UI {v:?}")); }
+        if let Some(ref v) = cfg.server {
+            lines.push(format!("set -gx SOLARPLEX_SERVER {v:?}"));
+        }
+        if let Some(ref v) = cfg.session_id {
+            lines.push(format!("set -gx SOLARPLEX_SESSION_ID {v:?}"));
+        }
+        if let Some(ref v) = cfg.actor_id {
+            lines.push(format!("set -gx SOLARPLEX_ACTOR_ID {v:?}"));
+        }
+        if let Some(ref v) = cfg.ui {
+            lines.push(format!("set -gx SOLARPLEX_UI {v:?}"));
+        }
         write_atomic(&fish_path, (lines.join("\n") + "\n").as_bytes(), None)?;
     }
 
     // Write POSIX companion (bash/zsh/Oils-OSH)
     if let Some(posix_path) = posix_env_path() {
         let mut lines = Vec::new();
-        if let Some(ref v) = cfg.server     { lines.push(format!("export SOLARPLEX_SERVER={}", posix_quote(v))); }
-        if let Some(ref v) = cfg.session_id { lines.push(format!("export SOLARPLEX_SESSION_ID={}", posix_quote(v))); }
-        if let Some(ref v) = cfg.actor_id   { lines.push(format!("export SOLARPLEX_ACTOR_ID={}", posix_quote(v))); }
-        if let Some(ref v) = cfg.ui         { lines.push(format!("export SOLARPLEX_UI={}", posix_quote(v))); }
+        if let Some(ref v) = cfg.server {
+            lines.push(format!("export SOLARPLEX_SERVER={}", posix_quote(v)));
+        }
+        if let Some(ref v) = cfg.session_id {
+            lines.push(format!("export SOLARPLEX_SESSION_ID={}", posix_quote(v)));
+        }
+        if let Some(ref v) = cfg.actor_id {
+            lines.push(format!("export SOLARPLEX_ACTOR_ID={}", posix_quote(v)));
+        }
+        if let Some(ref v) = cfg.ui {
+            lines.push(format!("export SOLARPLEX_UI={}", posix_quote(v)));
+        }
         write_atomic(&posix_path, (lines.join("\n") + "\n").as_bytes(), None)?;
     }
 

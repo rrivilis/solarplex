@@ -3,8 +3,8 @@ use clap::{Args, Subcommand};
 use serde_json::Value;
 use std::path::PathBuf;
 
-use crate::{client::Client, config::Ctx, output::*};
 use super::session;
+use crate::{client::Client, config::Ctx, output::*};
 
 #[derive(Args)]
 pub struct ArtifactArgs {
@@ -51,21 +51,22 @@ pub enum ArtifactCmd {
 pub async fn run(args: ArtifactArgs, ctx: &Ctx) -> Result<()> {
     let client = Client::new(ctx)?;
     match args.cmd {
-        ArtifactCmd::Ls                          => ls(&client, ctx).await,
-        ArtifactCmd::Get { id, save }            => get(&client, ctx, &id, save.as_deref()).await,
+        ArtifactCmd::Ls => ls(&client, ctx).await,
+        ArtifactCmd::Get { id, save } => get(&client, ctx, &id, save.as_deref()).await,
         ArtifactCmd::Create { name, r#type, file } => {
             create(&client, ctx, &name, &r#type, file.as_deref()).await
         }
-        ArtifactCmd::Import { artifact_id, from_session } => {
-            import(&client, ctx, &artifact_id, &from_session).await
-        }
+        ArtifactCmd::Import {
+            artifact_id,
+            from_session,
+        } => import(&client, ctx, &artifact_id, &from_session).await,
     }
 }
 
 pub async fn ls(client: &Client, ctx: &Ctx) -> Result<()> {
     let session_id = ctx.require_session()?;
     let rows = client.list_artifacts(session_id).await?;
-    let arr  = rows.as_array().cloned().unwrap_or_default();
+    let arr = rows.as_array().cloned().unwrap_or_default();
 
     if arr.is_empty() {
         println!("{}", dim("No artifacts."));
@@ -88,12 +89,18 @@ pub async fn ls(client: &Client, ctx: &Ctx) -> Result<()> {
 // SANITIZATION AUDIT — print_artifact_row():
 // id is a ULID (safe). name, typ, by are FOREIGN (actor-supplied).
 fn print_artifact_row(a: &Value, ctx: &Ctx, session_id: &str) {
-    let id   = a["id"].as_str().unwrap_or("?");                               // ULID — safe
-    let name = sanitize_terminal(a["name"].as_str().unwrap_or("?"));          // FOREIGN
-    let typ  = sanitize_terminal(a["type"].as_str().unwrap_or("other"));      // FOREIGN
-    let by   = sanitize_terminal(a["created_by"].as_str().unwrap_or("?"));    // FOREIGN
+    let id = a["id"].as_str().unwrap_or("?"); // ULID — safe
+    let name = sanitize_terminal(a["name"].as_str().unwrap_or("?")); // FOREIGN
+    let typ = sanitize_terminal(a["type"].as_str().unwrap_or("other")); // FOREIGN
+    let by = sanitize_terminal(a["created_by"].as_str().unwrap_or("?")); // FOREIGN
     let link = entity_link("artifact", id, session_id, &ctx.ui);
-    println!("  {}  {}  {}  {}", pad(&link, 10), pad(&name, 32), pad(&typ, 16), actor_link(&by));
+    println!(
+        "  {}  {}  {}  {}",
+        pad(&link, 10),
+        pad(&name, 32),
+        pad(&typ, 16),
+        actor_link(&by)
+    );
 }
 
 pub async fn get(
@@ -108,9 +115,10 @@ pub async fn get(
     let artifact_id = if id.len() < 26 {
         let rows = client.list_artifacts(session_id).await?;
         rows.as_array()
-            .and_then(|arr| arr.iter().find(|a| {
-                a["id"].as_str().map(|s| s.starts_with(id)).unwrap_or(false)
-            }))
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|a| a["id"].as_str().map(|s| s.starts_with(id)).unwrap_or(false))
+            })
             .and_then(|a| a["id"].as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| id.to_string())
@@ -122,22 +130,29 @@ pub async fn get(
     // artifact_id is a ULID (safe). name, mime, by are FOREIGN (actor-supplied).
     // Decoded content is the highest-risk path: up to 60 lines of arbitrary bytes
     // from whoever created the artifact — each line must be sanitized individually.
-    let a        = client.get_artifact(session_id, &artifact_id).await?;
-    let name     = sanitize_terminal(a["name"].as_str().unwrap_or("?"));               // FOREIGN
-    let mime     = sanitize_terminal(a["type"].as_str().unwrap_or("application/octet-stream")); // FOREIGN
-    let by       = sanitize_terminal(a["created_by"].as_str().unwrap_or("?"));         // FOREIGN
-    let storage  = a["storage_ref"].as_str().unwrap_or(""); // decoded below, not printed raw
+    let a = client.get_artifact(session_id, &artifact_id).await?;
+    let name = sanitize_terminal(a["name"].as_str().unwrap_or("?")); // FOREIGN
+    let mime = sanitize_terminal(a["type"].as_str().unwrap_or("application/octet-stream")); // FOREIGN
+    let by = sanitize_terminal(a["created_by"].as_str().unwrap_or("?")); // FOREIGN
+    let storage = a["storage_ref"].as_str().unwrap_or(""); // decoded below, not printed raw
 
     // ── Decode the data URI ──────────────────────────────────────────────────
     let (decoded_mime, bytes) = decode_storage_ref(storage);
-    let effective_mime = if decoded_mime.is_empty() { &mime } else { &decoded_mime };
-    let is_text  = is_text_mime(effective_mime);
+    let effective_mime = if decoded_mime.is_empty() {
+        &mime
+    } else {
+        &decoded_mime
+    };
+    let is_text = is_text_mime(effective_mime);
     let byte_len = bytes.len();
 
     // ── Header ───────────────────────────────────────────────────────────────
     println!();
-    println!("  {} {}", bold(&name),
-             entity_link("artifact", &artifact_id, session_id, &ctx.ui));
+    println!(
+        "  {} {}",
+        bold(&name),
+        entity_link("artifact", &artifact_id, session_id, &ctx.ui)
+    );
     println!("  type:  {effective_mime}");
     println!("  by:    {}", actor_link(&by));
     println!("  size:  {} bytes", byte_len);
@@ -152,7 +167,7 @@ pub async fn get(
 
     // ── Display ───────────────────────────────────────────────────────────────
     if is_text {
-        let text  = String::from_utf8_lossy(&bytes);
+        let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
         let limit = 60usize;
         for line in lines.iter().take(limit) {
@@ -162,18 +177,29 @@ pub async fn get(
         }
         if lines.len() > limit {
             println!();
-            println!("  {} {} more lines — use --save FILE to write full content",
-                     dim("…"), lines.len() - limit);
+            println!(
+                "  {} {} more lines — use --save FILE to write full content",
+                dim("…"),
+                lines.len() - limit
+            );
         }
     } else {
         println!("  {} binary content ({effective_mime})", dim("["));
-        println!("  Use {} to save to disk.", cyan(&format!("sp artifact get {id} --save FILENAME")));
+        println!(
+            "  Use {} to save to disk.",
+            cyan(&format!("sp artifact get {id} --save FILENAME"))
+        );
     }
     println!();
     Ok(())
 }
 
-pub async fn import(client: &Client, ctx: &Ctx, artifact_ref: &str, from_session_ref: &str) -> Result<()> {
+pub async fn import(
+    client: &Client,
+    ctx: &Ctx,
+    artifact_ref: &str,
+    from_session_ref: &str,
+) -> Result<()> {
     let target_id = ctx.require_session()?;
     let source_id = session::resolve_session_id(client, from_session_ref).await?;
 
@@ -181,28 +207,49 @@ pub async fn import(client: &Client, ctx: &Ctx, artifact_ref: &str, from_session
     let artifact_id = if artifact_ref.len() < 26 {
         let rows = client.list_artifacts(&source_id).await?;
         rows.as_array()
-            .and_then(|arr| arr.iter().find(|a| {
-                a["id"].as_str().map(|s| s.starts_with(artifact_ref)).unwrap_or(false)
-            }))
+            .and_then(|arr| {
+                arr.iter().find(|a| {
+                    a["id"]
+                        .as_str()
+                        .map(|s| s.starts_with(artifact_ref))
+                        .unwrap_or(false)
+                })
+            })
             .and_then(|a| a["id"].as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("no artifact matching `{artifact_ref}` in {source_id}"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("no artifact matching `{artifact_ref}` in {source_id}")
+            })?
     } else {
         artifact_ref.to_string()
     };
 
-    let data = client.import_artifact(target_id, &source_id, &artifact_id).await?;
+    let data = client
+        .import_artifact(target_id, &source_id, &artifact_id)
+        .await?;
     let new_artifact = &data["artifact"];
     let new_id = new_artifact["id"].as_str().unwrap_or("?");
-    let name   = sanitize_terminal(new_artifact["name"].as_str().unwrap_or("?"));
+    let name = sanitize_terminal(new_artifact["name"].as_str().unwrap_or("?"));
     let already = data["already_imported"].as_bool().unwrap_or(false);
 
     if already {
-        println!("{} {} was already imported as {} — no duplicate created",
-                 dim("·"), bold(&name), entity_link("artifact", new_id, target_id, &ctx.ui));
+        println!(
+            "{} {} was already imported as {} — no duplicate created",
+            dim("·"),
+            bold(&name),
+            entity_link("artifact", new_id, target_id, &ctx.ui)
+        );
     } else {
-        println!("{} Imported {} as {}", green("✓"), bold(&name), entity_link("artifact", new_id, target_id, &ctx.ui));
-        println!("{}", dim("A context entry recording provenance was added automatically."));
+        println!(
+            "{} Imported {} as {}",
+            green("✓"),
+            bold(&name),
+            entity_link("artifact", new_id, target_id, &ctx.ui)
+        );
+        println!(
+            "{}",
+            dim("A context entry recording provenance was added automatically.")
+        );
     }
     Ok(())
 }
@@ -244,7 +291,7 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_val(bytes[i+1]), hex_val(bytes[i+2])) {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
                 out.push((h << 4 | l) as char);
                 i += 3;
                 continue;
@@ -289,7 +336,7 @@ pub async fn create(
     file: Option<&std::path::Path>,
 ) -> Result<()> {
     let session_id = ctx.require_session()?;
-    let actor_id   = ctx.require_actor()?;
+    let actor_id = ctx.require_actor()?;
 
     let content = if let Some(path) = file {
         std::fs::read_to_string(path)
@@ -301,8 +348,10 @@ pub async fn create(
         buf
     };
 
-    let a = client.create_artifact(session_id, actor_id, name, artifact_type, &content).await?;
-    let id   = a["id"].as_str().unwrap_or("?");
+    let a = client
+        .create_artifact(session_id, actor_id, name, artifact_type, &content)
+        .await?;
+    let id = a["id"].as_str().unwrap_or("?");
     let link = entity_link("artifact", id, session_id, &ctx.ui);
 
     println!("{} Created {}", green("✓"), link);

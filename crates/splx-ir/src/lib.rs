@@ -71,7 +71,10 @@ impl SplxValue {
             "send-receipt" => Ok(SplxValue::SendReceipt(SendReceipt::from_value(v)?)),
             "saga-log-entry" => Ok(SplxValue::SagaLogEntry(SagaLogEntry::from_value(v)?)),
             "saga-log" => Ok(SplxValue::SagaLog(SagaLog::from_value(v)?)),
-            other => Err(IrError::WrongTag { expected: "a known splx-ir wire tag", actual: other.to_string() }),
+            other => Err(IrError::WrongTag {
+                expected: "a known splx-ir wire tag",
+                actual: other.to_string(),
+            }),
         }
     }
 }

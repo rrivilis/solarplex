@@ -43,6 +43,15 @@ jobs:
     defaults:
       run:
         working-directory: frontend
+    # Dummy values only — next.config.mjs hard-fails if these are unset,
+    # and as of Next 15, `next lint` loads next.config.mjs too (it didn't
+    # under 14), not just `next build`. Set at job level so every step
+    # sees them, rather than chasing which specific next command needs
+    # them this version. Never need to point at a real backend — this is
+    # a build/typecheck/lint verification, not a runtime smoke test.
+    env:
+      NEXT_PUBLIC_API_URL: http://localhost:8080/api
+      NEXT_PUBLIC_WS_URL: ws://localhost:8080
     steps:
       - uses: actions/checkout@v4
 
@@ -67,14 +76,6 @@ jobs:
       - run: pnpm run lint
 
       - name: Build
-        # Dummy values only — next.config.mjs hard-fails a production build
-        # (which `next build` always is, regardless of the runner's own
-        # NODE_ENV) if these are unset. This is a build/typecheck
-        # verification, not a runtime smoke test, so they never need to
-        # point at a real backend.
-        env:
-          NEXT_PUBLIC_API_URL: http://localhost:8080/api
-          NEXT_PUBLIC_WS_URL: ws://localhost:8080
         run: pnpm run build
 
   a11y:

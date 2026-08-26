@@ -28,7 +28,7 @@ pub enum MailboxCmd {
 pub async fn run(args: MailboxArgs, ctx: &Ctx) -> Result<()> {
     let client = Client::new(ctx)?;
     match args.cmd {
-        MailboxCmd::Ls          => ls(&client, ctx).await,
+        MailboxCmd::Ls => ls(&client, ctx).await,
         MailboxCmd::Seen { id } => seen(&client, &id).await,
     }
 }
@@ -44,32 +44,53 @@ async fn ls(client: &Client, ctx: &Ctx) -> Result<()> {
 
     for e in &arr {
         let route_id = e["id"].as_str().unwrap_or("?");
-        let kind     = e["kind"].as_str().unwrap_or("?");
-        let seen     = e["seen_at"].is_string();
-        let dot      = if seen { " ".to_string() } else { yellow("●") };
+        let kind = e["kind"].as_str().unwrap_or("?");
+        let seen = e["seen_at"].is_string();
+        let dot = if seen { " ".to_string() } else { yellow("●") };
 
         match kind {
             "invite" => {
-                let inv          = &e["invite"];
-                let invite_id    = inv["id"].as_str().unwrap_or("?");
+                let inv = &e["invite"];
+                let invite_id = inv["id"].as_str().unwrap_or("?");
                 let session_name = sanitize_terminal(inv["session_name"].as_str().unwrap_or("?"));
-                let role         = sanitize_terminal(inv["role"].as_str().unwrap_or("?"));
-                let inviter      = sanitize_terminal(inv["invited_by_name"].as_str().unwrap_or("?"));
-                let redeemed     = inv["redeemed_at"].is_string();
-                let revoked      = inv["revoked_at"].is_string();
-                let status = if revoked { red("revoked") } else if redeemed { dim("redeemed") } else { green("pending") };
-                let ilink  = entity_link("invite", invite_id, "", &ctx.ui);
-                println!("{} {}  invited to {} as {}  by {}  {}",
-                    dot, pad(&ilink, 14), bold(&session_name), role, inviter, status);
+                let role = sanitize_terminal(inv["role"].as_str().unwrap_or("?"));
+                let inviter = sanitize_terminal(inv["invited_by_name"].as_str().unwrap_or("?"));
+                let redeemed = inv["redeemed_at"].is_string();
+                let revoked = inv["revoked_at"].is_string();
+                let status = if revoked {
+                    red("revoked")
+                } else if redeemed {
+                    dim("redeemed")
+                } else {
+                    green("pending")
+                };
+                let ilink = entity_link("invite", invite_id, "", &ctx.ui);
+                println!(
+                    "{} {}  invited to {} as {}  by {}  {}",
+                    dot,
+                    pad(&ilink, 14),
+                    bold(&session_name),
+                    role,
+                    inviter,
+                    status
+                );
             }
             // Route pointed at something that no longer resolves (e.g. a
             // hard-deleted invite) — the server surfaces it rather than
             // silently dropping it, so this mirrors that instead of hiding it.
-            _ => println!("{} {}  {}", dot, pad(&short_id(route_id), 14), dim("(entry no longer resolves)")),
+            _ => println!(
+                "{} {}  {}",
+                dot,
+                pad(&short_id(route_id), 14),
+                dim("(entry no longer resolves)")
+            ),
         }
     }
     println!();
-    println!("  {}  sp invite show/redeem <invite-id>  ·  sp mailbox seen <entry-id>", dim("→"));
+    println!(
+        "  {}  sp invite show/redeem <invite-id>  ·  sp mailbox seen <entry-id>",
+        dim("→")
+    );
     Ok(())
 }
 

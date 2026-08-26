@@ -11,8 +11,8 @@ use tuirealm::command::{Cmd, CmdResult, Direction, Position};
 use tuirealm::component::Component;
 use tuirealm::event::{Key, KeyEvent, KeyModifiers};
 use tuirealm::props::{AttrValue, Attribute, Borders};
-use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 // Package name is `tui-realm-stdlib`; Cargo maps the hyphen to an
 // underscore for the Rust import path. Components live under its
@@ -52,7 +52,8 @@ impl TextInput {
     }
 
     pub fn clear(&mut self) {
-        self.inner.attr(Attribute::Value, AttrValue::String(String::new()));
+        self.inner
+            .attr(Attribute::Value, AttrValue::String(String::new()));
     }
 
     /// The buffer's current content. Same `state()` -> `unwrap_string()` path
@@ -71,18 +72,36 @@ impl TextInput {
     /// anything `Input` should know about).
     pub fn handle_key(&mut self, key: &KeyEvent) -> Option<TextInputEvent> {
         let cmd = match key {
-            KeyEvent { code: Key::Char(c), modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT } => Cmd::Type(*c),
-            KeyEvent { code: Key::Backspace, .. } => Cmd::Delete,
-            KeyEvent { code: Key::Delete, .. }    => Cmd::Cancel,
-            KeyEvent { code: Key::Left, .. }      => Cmd::Move(Direction::Left),
-            KeyEvent { code: Key::Right, .. }     => Cmd::Move(Direction::Right),
-            KeyEvent { code: Key::Home, .. }      => Cmd::GoTo(Position::Begin),
-            KeyEvent { code: Key::End, .. }       => Cmd::GoTo(Position::End),
-            KeyEvent { code: Key::Enter, .. }     => Cmd::Submit,
+            KeyEvent {
+                code: Key::Char(c),
+                modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
+            } => Cmd::Type(*c),
+            KeyEvent {
+                code: Key::Backspace,
+                ..
+            } => Cmd::Delete,
+            KeyEvent {
+                code: Key::Delete, ..
+            } => Cmd::Cancel,
+            KeyEvent {
+                code: Key::Left, ..
+            } => Cmd::Move(Direction::Left),
+            KeyEvent {
+                code: Key::Right, ..
+            } => Cmd::Move(Direction::Right),
+            KeyEvent {
+                code: Key::Home, ..
+            } => Cmd::GoTo(Position::Begin),
+            KeyEvent { code: Key::End, .. } => Cmd::GoTo(Position::End),
+            KeyEvent {
+                code: Key::Enter, ..
+            } => Cmd::Submit,
             _ => return None,
         };
         match self.inner.perform(cmd) {
-            CmdResult::Submit(State::Single(value)) => Some(TextInputEvent::Submitted(value.unwrap_string())),
+            CmdResult::Submit(State::Single(value)) => {
+                Some(TextInputEvent::Submitted(value.unwrap_string()))
+            }
             CmdResult::Changed(_) | CmdResult::Visual => Some(TextInputEvent::Changed),
             _ => None,
         }

@@ -8,10 +8,10 @@ use crate::sealed::SealedJson;
 /// `crate::state::StandingPolicy` shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerPolicy {
-    pub actor_id:       Option<String>,
+    pub actor_id: Option<String>,
     pub method_pattern: String,
     /// "auto_approve" | "always_deny"
-    pub decision:       String,
+    pub decision: String,
 }
 
 /// The plain, mutable shape used only while building a [`Policy`] at shim
@@ -22,9 +22,9 @@ pub struct ServerPolicy {
 /// legacy approval path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyData {
-    pub auto_approve:         HashSet<String>,
-    pub always_require:       HashSet<String>,
-    pub require_prefixes:     Vec<String>,
+    pub auto_approve: HashSet<String>,
+    pub always_require: HashSet<String>,
+    pub require_prefixes: Vec<String>,
     pub default_timeout_secs: u64,
     /// Session-owner-configured standing policies, fetched once from the
     /// server at shim startup (see main.rs). These take priority over the
@@ -41,11 +41,11 @@ pub struct PolicyData {
 impl Default for PolicyData {
     fn default() -> Self {
         Self {
-            auto_approve:         HashSet::new(),
-            always_require:       HashSet::new(),
-            require_prefixes:     vec![],
+            auto_approve: HashSet::new(),
+            always_require: HashSet::new(),
+            require_prefixes: vec![],
             default_timeout_secs: 300,
-            server_policies:      vec![],
+            server_policies: vec![],
         }
     }
 }
@@ -151,9 +151,9 @@ mod tests {
         let policy = Policy::build(|p| {
             p.auto_approve.insert("read_file".to_string());
             p.server_policies.push(ServerPolicy {
-                actor_id:       Some("actor-1".to_string()),
+                actor_id: Some("actor-1".to_string()),
                 method_pattern: "read_file".to_string(),
-                decision:       "always_deny".to_string(),
+                decision: "always_deny".to_string(),
             });
         });
         assert!(policy.requires_approval("actor-1", "read_file"));
@@ -166,9 +166,9 @@ mod tests {
     fn server_wildcard_policy_matches_any_actor_and_prefix() {
         let policy = Policy::build(|p| {
             p.server_policies.push(ServerPolicy {
-                actor_id:       None,
+                actor_id: None,
                 method_pattern: "solarplex_*".to_string(),
-                decision:       "auto_approve".to_string(),
+                decision: "auto_approve".to_string(),
             });
         });
         assert!(!policy.requires_approval("anyone", "solarplex_read_feed"));

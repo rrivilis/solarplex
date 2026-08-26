@@ -16,7 +16,7 @@ use session::SessionClient;
 // Well-known fd numbers placed in each child by dup2 in the pre_exec hook.
 // These are part of the IPC API surface — changing them requires matching
 // updates in sidecar/src/main.rs and guardian/src/main.rs.
-const ADAPTER_IPC_FD:  i32 = 3; // adapter reads/writes its shim socket on this fd
+const ADAPTER_IPC_FD: i32 = 3; // adapter reads/writes its shim socket on this fd
 const GUARDIAN_IPC_FD: i32 = 4; // guardian reads/writes its shim socket on this fd
 
 /// This shim's own held cap-node: `(session_id, actor_id, cap_id,
@@ -29,9 +29,9 @@ const GUARDIAN_IPC_FD: i32 = 4; // guardian reads/writes its shim socket on this
 /// enforcement of the DAG's attenuation invariant (`approval::handle_proposal`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
-    pub session_id:  String,
-    pub actor_id:    String,
-    pub cap_id:      Option<String>,
+    pub session_id: String,
+    pub actor_id: String,
+    pub cap_id: Option<String>,
     pub permissions: Vec<String>,
 }
 
@@ -40,34 +40,43 @@ pub struct Config {
     /// Private: reachable only via `Config::identity()`, which always
     /// deserializes fresh from the sealed region rather than exposing a
     /// long-lived reference to a plain field — see `crate::sealed`.
-    identity:             SealedJson<Identity>,
-    pub server_ws:        String,
-    pub listen_port:      u16,
-    pub upstream_mcp:     String,
+    identity: SealedJson<Identity>,
+    pub server_ws: String,
+    pub listen_port: u16,
+    pub upstream_mcp: String,
     pub upstream_mcp_cmd: Option<String>,
-    pub fail_open:        bool,
-    pub tool_categories:  HashMap<String, String>,
+    pub fail_open: bool,
+    pub tool_categories: HashMap<String, String>,
 }
 
 impl Config {
     fn from_env() -> anyhow::Result<Self> {
         let permissions: Vec<String> = std::env::var("SOLARPLEX_PERMISSIONS")
-            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         let tool_categories: HashMap<String, String> = std::env::var("SOLARPLEX_TOOL_CATEGORIES")
-            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         let identity = Identity {
-            session_id:  std::env::var("SOLARPLEX_SESSION_ID")?,
-            actor_id:    std::env::var("SOLARPLEX_ACTOR_ID")?,
-            cap_id:      std::env::var("SOLARPLEX_CAP_ID").ok(),
+            session_id: std::env::var("SOLARPLEX_SESSION_ID")?,
+            actor_id: std::env::var("SOLARPLEX_ACTOR_ID")?,
+            cap_id: std::env::var("SOLARPLEX_CAP_ID").ok(),
             permissions,
         };
         Ok(Self {
-            identity:     SealedJson::new(&identity),
-            server_ws:    std::env::var("SOLARPLEX_WS").unwrap_or_else(|_| "ws://localhost:8080".into()),
-            listen_port:  std::env::var("SIDECAR_PORT").unwrap_or_else(|_| "7777".into()).parse()?,
+            identity: SealedJson::new(&identity),
+            server_ws: std::env::var("SOLARPLEX_WS")
+                .unwrap_or_else(|_| "ws://localhost:8080".into()),
+            listen_port: std::env::var("SIDECAR_PORT")
+                .unwrap_or_else(|_| "7777".into())
+                .parse()?,
             upstream_mcp: std::env::var("UPSTREAM_MCP_URL").unwrap_or_default(),
             upstream_mcp_cmd: std::env::var("UPSTREAM_MCP_CMD").ok(),
-            fail_open:    std::env::var("FAIL_OPEN").map(|v| v == "true" || v == "1").unwrap_or(false),
+            fail_open: std::env::var("FAIL_OPEN")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
             tool_categories,
         })
     }
@@ -104,12 +113,14 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(token) = std::env::var("SOLARPLEX_TOKEN") {
         let server_http = std::env::var("SOLARPLEX_WS")
             .unwrap_or_else(|_| "ws://localhost:8080".into())
-            .replace("ws://", "http://").replace("wss://", "https://");
+            .replace("ws://", "http://")
+            .replace("wss://", "https://");
         tracing::info!("shim: exchanging attach token…");
         let resp = reqwest::Client::new()
             .post(format!("{server_http}/api/attach"))
             .json(&serde_json::json!({ "token": token }))
-            .send().await
+            .send()
+            .await
             .map_err(|e| anyhow::anyhow!("token exchange failed: {e}"))?;
         if resp.status() == reqwest::StatusCode::GONE {
             anyhow::bail!("attach token is expired or invalid");
@@ -118,18 +129,29 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("token exchange failed: HTTP {}", resp.status());
         }
         let body: serde_json::Value = resp.json().await?;
-        let session_id = body["session_id"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("token exchange: missing session_id"))?.to_string();
-        let actor_id = body["actor_id"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("token exchange: missing actor_id"))?.to_string();
+        let session_id = body["session_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("token exchange: missing session_id"))?
+            .to_string();
+        let actor_id = body["actor_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("token exchange: missing actor_id"))?
+            .to_string();
         let permissions: Vec<String> = body["permissions"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         std::env::set_var("SOLARPLEX_SESSION_ID", &session_id);
         std::env::set_var("SOLARPLEX_ACTOR_ID", &actor_id);
         std::env::set_var("SOLARPLEX_CAP_ID", &token);
-        std::env::set_var("SOLARPLEX_PERMISSIONS", serde_json::to_string(&permissions)?);
+        std::env::set_var(
+            "SOLARPLEX_PERMISSIONS",
+            serde_json::to_string(&permissions)?,
+        );
     }
 
     let config = Config::from_env()?;
@@ -212,14 +234,14 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     let (guardian_sv0, guardian_sv1) = StdUnixStream::pair()?;
     let guardian_sv1_raw = guardian_sv1.into_raw_fd();
 
-    let guardian_bin = std::env::var("SOLARPLEX_GUARDIAN_BIN")
-        .unwrap_or_else(|_| "solarplex-guardian".into());
+    let guardian_bin =
+        std::env::var("SOLARPLEX_GUARDIAN_BIN").unwrap_or_else(|_| "solarplex-guardian".into());
 
     let mut guardian_cmd = std::process::Command::new(&guardian_bin);
     guardian_cmd
-        .env("SOLARPLEX_WS",         &config.server_ws)
+        .env("SOLARPLEX_WS", &config.server_ws)
         .env("SOLARPLEX_SESSION_ID", &identity.session_id)
-        .env("SOLARPLEX_ACTOR_ID",   &identity.actor_id)
+        .env("SOLARPLEX_ACTOR_ID", &identity.actor_id)
         .stderr(std::process::Stdio::inherit());
     if std::env::var("SOLARPLEX_GUARDIAN_FAIL_OPEN").is_ok() {
         guardian_cmd.env("SOLARPLEX_GUARDIAN_FAIL_OPEN", "1");
@@ -259,10 +281,13 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
             Ok(())
         });
     }
-    guardian_cmd.spawn()
+    guardian_cmd
+        .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn guardian ({guardian_bin}): {e}"))?;
     // Close the parent's copy of sv1 — the guardian owns it now.
-    unsafe { libc::close(guardian_sv1_raw); }
+    unsafe {
+        libc::close(guardian_sv1_raw);
+    }
 
     // Wrap the shim's end of the guardian socket as a tokio stream.
     guardian_sv0.set_nonblocking(true)?;
@@ -276,16 +301,16 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     let (adapter_sv0, adapter_sv1) = StdUnixStream::pair()?;
     let adapter_sv1_raw = adapter_sv1.into_raw_fd();
 
-    let adapter_bin = std::env::var("SOLARPLEX_ADAPTER_BIN")
-        .unwrap_or_else(|_| "solarplex-adapter".into());
+    let adapter_bin =
+        std::env::var("SOLARPLEX_ADAPTER_BIN").unwrap_or_else(|_| "solarplex-adapter".into());
 
     let mut adapter_cmd = std::process::Command::new(&adapter_bin);
     adapter_cmd
-        .env("SOLARPLEX_WS",         &config.server_ws)
+        .env("SOLARPLEX_WS", &config.server_ws)
         .env("SOLARPLEX_SESSION_ID", &identity.session_id)
-        .env("SOLARPLEX_ACTOR_ID",   &identity.actor_id)
-        .env("SIDECAR_PORT",         config.listen_port.to_string())
-        .env("UPSTREAM_MCP_URL",     &config.upstream_mcp);
+        .env("SOLARPLEX_ACTOR_ID", &identity.actor_id)
+        .env("SIDECAR_PORT", config.listen_port.to_string())
+        .env("UPSTREAM_MCP_URL", &config.upstream_mcp);
     if let Some(ref cmd_str) = config.upstream_mcp_cmd {
         adapter_cmd.env("UPSTREAM_MCP_CMD", cmd_str);
     }
@@ -296,8 +321,10 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
         adapter_cmd.env("SOLARPLEX_CAP_ID", cap_id);
     }
     if !identity.permissions.is_empty() {
-        adapter_cmd.env("SOLARPLEX_PERMISSIONS",
-            serde_json::to_string(&identity.permissions)?);
+        adapter_cmd.env(
+            "SOLARPLEX_PERMISSIONS",
+            serde_json::to_string(&identity.permissions)?,
+        );
     }
     // Safety: same as guardian pre_exec above.
     unsafe {
@@ -314,9 +341,12 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
             Ok(())
         });
     }
-    adapter_cmd.spawn()
+    adapter_cmd
+        .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn adapter ({adapter_bin}): {e}"))?;
-    unsafe { libc::close(adapter_sv1_raw); }
+    unsafe {
+        libc::close(adapter_sv1_raw);
+    }
 
     // Wrap the shim's end of the adapter socket as a tokio stream.
     adapter_sv0.set_nonblocking(true)?;
@@ -344,11 +374,18 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
     );
     let policy = policy::Policy::build(|p| {
         for name in &[
-            "read_file", "list_directory", "directory_tree", "search_files",
-            "get_file_info", "list_allowed_directories",
-            "solarplex_session_info", "solarplex_list_artifacts",
-            "solarplex_read_artifact", "solarplex_read_feed",
-            "solarplex_read_context", "solarplex_read_whiteboard",
+            "read_file",
+            "list_directory",
+            "directory_tree",
+            "search_files",
+            "get_file_info",
+            "list_allowed_directories",
+            "solarplex_session_info",
+            "solarplex_list_artifacts",
+            "solarplex_read_artifact",
+            "solarplex_read_feed",
+            "solarplex_read_context",
+            "solarplex_read_whiteboard",
         ] {
             p.auto_approve.insert(name.to_string());
         }
@@ -357,12 +394,14 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
 
     // ── Adapter IPC: background writer ────────────────────────────────────────
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<ipc::ShimMessage>();
-    let (read_half, write_half)  = tokio::io::split(adapter_stream);
+    let (read_half, write_half) = tokio::io::split(adapter_stream);
 
     tokio::spawn(async move {
         let mut w = write_half;
         while let Some(msg) = write_rx.recv().await {
-            if ipc::write_frame(&mut w, &msg).await.is_err() { break; }
+            if ipc::write_frame(&mut w, &msg).await.is_err() {
+                break;
+            }
         }
     });
 
@@ -377,28 +416,31 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
             let msg: ipc::AdapterMessage = match ipc::read_frame(&mut r).await {
                 Ok(m) => m,
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => { tracing::warn!("shim: read error: {e}"); break; }
+                Err(e) => {
+                    tracing::warn!("shim: read error: {e}");
+                    break;
+                }
             };
 
             match msg {
                 ipc::AdapterMessage::Propose(req) => {
-                    let config     = config.clone();
-                    let sess       = session.clone();
-                    let pool       = scout_pool.clone();
-                    let ghandle    = guardian.clone();
-                    let pol        = policy.clone();
-                    let tx         = write_tx2.clone();
+                    let config = config.clone();
+                    let sess = session.clone();
+                    let pool = scout_pool.clone();
+                    let ghandle = guardian.clone();
+                    let pol = policy.clone();
+                    let tx = write_tx2.clone();
                     tokio::spawn(async move {
-                        let decision = approval::handle_proposal(
-                            req, &config, &sess, &pool, &ghandle, &pol,
-                        ).await;
+                        let decision =
+                            approval::handle_proposal(req, &config, &sess, &pool, &ghandle, &pol)
+                                .await;
                         let _ = tx.send(ipc::ShimMessage::Decision(decision));
                     });
                 }
                 ipc::AdapterMessage::ExecDone(notice) => {
-                    let sess   = session.clone();
+                    let sess = session.clone();
                     let config = config.clone();
-                    let tx     = write_tx2.clone();
+                    let tx = write_tx2.clone();
                     tokio::spawn(async move {
                         approval::handle_exec_done(notice, sess, &config).await;
                         let _ = tx.send(ipc::ShimMessage::ExecDoneAck);
@@ -409,26 +451,34 @@ async fn run_unix(config: Config, session: Arc<SessionClient>) -> anyhow::Result
                 // adapter isn't waiting on a reply for either of these.
                 ipc::AdapterMessage::ClientConnected => {
                     let sess = session.clone();
-                    tokio::spawn(async move { sess.announce().await; });
+                    tokio::spawn(async move {
+                        sess.announce().await;
+                    });
                 }
                 // The adapter observed its SSE stream close.
                 ipc::AdapterMessage::ClientDisconnected => {
                     let sess = session.clone();
-                    tokio::spawn(async move { sess.detach().await; });
+                    tokio::spawn(async move {
+                        sess.detach().await;
+                    });
                 }
                 // Server-authority call on the adapter's behalf — see
                 // ServerCall's doc comment for why this exists instead of
                 // the adapter calling the server directly.
                 ipc::AdapterMessage::ServerCall(req) => {
                     let sess = session.clone();
-                    let tx   = write_tx2.clone();
+                    let tx = write_tx2.clone();
                     tokio::spawn(async move {
                         let (body, error) = match sess.dispatch_server_call(req.call).await {
-                            Ok(v)  => (Some(v), None),
+                            Ok(v) => (Some(v), None),
                             Err(e) => (None, Some(e)),
                         };
                         let _ = tx.send(ipc::ShimMessage::ServerCallResult(
-                            ipc::ServerCallResponse { id: req.id, body, error },
+                            ipc::ServerCallResponse {
+                                id: req.id,
+                                body,
+                                error,
+                            },
                         ));
                     });
                 }

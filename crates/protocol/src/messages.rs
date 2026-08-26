@@ -27,7 +27,6 @@ impl WsMessage {
 #[serde(tag = "type")]
 pub enum WsPayload {
     // ── Commands (imperative, directed) ──────────────────────────────────────
-
     #[serde(rename = "approval.request")]
     ApprovalRequest {
         session_id: String,
@@ -108,10 +107,7 @@ pub enum WsPayload {
 
     /// Human sends a chat message to the session.
     #[serde(rename = "message.post")]
-    MessagePost {
-        session_id: String,
-        content: String,
-    },
+    MessagePost { session_id: String, content: String },
 
     /// Agent reports its own status change (client→server command).
     #[serde(rename = "agent.status.update")]
@@ -141,7 +137,6 @@ pub enum WsPayload {
     },
 
     // ── Events (broadcast, timeline) ─────────────────────────────────────────
-
     #[serde(rename = "tool.call.requested")]
     ToolCallRequested {
         session_id: String,
@@ -417,7 +412,6 @@ pub enum WsPayload {
     },
 
     // ── Shell adapter events ──────────────────────────────────────────────────
-
     /// Emitted when a shell command begins executing (from the fish adapter).
     #[serde(rename = "shell.command.started")]
     ShellCommandStarted {
@@ -439,7 +433,6 @@ pub enum WsPayload {
     },
 
     // ── Rate limiting ───────────────────────────────────────────────────────
-
     /// Emitted when a Tier-1 (session-scoped) rate limit denies an action.
     /// The REST handler returns 429 to the caller directly — this event is
     /// only the durable audit trail of that denial, log-only like the shell
@@ -455,7 +448,6 @@ pub enum WsPayload {
     },
 
     // ── Three-tier commitment model ───────────────────────────────────────────
-
     /// Emitted when a Tier-1 (Solarplex-managed state) write proposal commits.
     ///
     /// The commit validated `H_before` and `H_after` inside a single Postgres
@@ -486,7 +478,6 @@ pub enum WsPayload {
     },
 
     // ── Epoch revocation ──────────────────────────────────────────────────────
-
     /// Broadcast when a revocation fires and the session's epoch advances.
     ///
     /// All connected actors receive this message.  Agents whose caps are in
@@ -506,7 +497,6 @@ pub enum WsPayload {
     },
 
     // ── Snapshots ─────────────────────────────────────────────────────────────
-
     #[serde(rename = "session.snapshot")]
     SessionSnapshot {
         session_id: String,
@@ -550,21 +540,21 @@ impl WsPayload {
             Self::ArtifactDeleted { .. } => "artifact.deleted",
             Self::AgentStatusChanged { .. } => "agent.status.changed",
             Self::SessionStatusChanged { .. } => "session.status.changed",
-            Self::SessionRenamed { .. }        => "session.renamed",
-            Self::MessagePost { .. }           => "message.post",
-            Self::MessagePosted { .. }         => "message.posted",
-            Self::AgentStatusUpdate { .. }     => "agent.status.update",
-            Self::ContextEntryAdd { .. }       => "context.entry.add",
-            Self::ContextEntryResolve { .. }   => "context.entry.resolve",
-            Self::ContextEntryAdded { .. }     => "context.entry.added",
-            Self::ContextEntryResolved { .. }  => "context.entry.resolved",
-            Self::ShellCommandStarted { .. }   => "shell.command.started",
+            Self::SessionRenamed { .. } => "session.renamed",
+            Self::MessagePost { .. } => "message.post",
+            Self::MessagePosted { .. } => "message.posted",
+            Self::AgentStatusUpdate { .. } => "agent.status.update",
+            Self::ContextEntryAdd { .. } => "context.entry.add",
+            Self::ContextEntryResolve { .. } => "context.entry.resolve",
+            Self::ContextEntryAdded { .. } => "context.entry.added",
+            Self::ContextEntryResolved { .. } => "context.entry.resolved",
+            Self::ShellCommandStarted { .. } => "shell.command.started",
             Self::ShellCommandCompleted { .. } => "shell.command.completed",
-            Self::EffectRateLimited { .. }     => "effect.rate_limited",
-            Self::ProposalCommitted { .. }     => "proposal.committed",
-            Self::FileWriteAttested { .. }     => "proposal.file_write.attested",
-            Self::EpochAdvanced { .. }         => "cap.epoch.advanced",
-            Self::SessionSnapshot { .. }       => "session.snapshot",
+            Self::EffectRateLimited { .. } => "effect.rate_limited",
+            Self::ProposalCommitted { .. } => "proposal.committed",
+            Self::FileWriteAttested { .. } => "proposal.file_write.attested",
+            Self::EpochAdvanced { .. } => "cap.epoch.advanced",
+            Self::SessionSnapshot { .. } => "session.snapshot",
         }
     }
 }
@@ -752,15 +742,15 @@ pub struct EffectRateLimitedPayload {
 /// can verify the transition without re-reading the artifact history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalCommittedPayload {
-    pub proposal_id:  String,
-    pub effect_type:  String,
+    pub proposal_id: String,
+    pub effect_type: String,
     /// For `artifact_patch`: the artifact that was updated.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub artifact_id:  Option<String>,
+    pub artifact_id: Option<String>,
     /// Hash of the state *before* the effect was applied (sha256:<hex>).
-    pub h_before:     String,
+    pub h_before: String,
     /// Hash of the state *after* the effect was applied (sha256:<hex>).
-    pub h_after:      String,
+    pub h_after: String,
 }
 
 /// Payload for `proposal.file_write.attested`.
@@ -768,16 +758,16 @@ pub struct ProposalCommittedPayload {
 /// `hash_mismatch = true` is a security event: surface it in the UI and alert.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileWriteAttestedPayload {
-    pub attestation_id:       String,
-    pub receipt_id:           String,
-    pub tool:                 String,
-    pub path:                 String,
+    pub attestation_id: String,
+    pub receipt_id: String,
+    pub tool: String,
+    pub path: String,
     /// True when observed_before ≠ approved_before or actual_after ≠ approved_after.
-    pub hash_mismatch:        bool,
+    pub hash_mismatch: bool,
     pub approved_hash_before: String,
-    pub approved_hash_after:  String,
+    pub approved_hash_after: String,
     pub observed_hash_before: String,
-    pub actual_hash_after:    String,
+    pub actual_hash_after: String,
 }
 
 /// Payload for the `cap.epoch.advanced` broadcast.

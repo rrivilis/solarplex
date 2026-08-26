@@ -20,9 +20,9 @@ use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 
-use session::effects::{BundleKind, ReflectorCursor, SagaBundle};
 use server::numa::session_numa_node;
 use server::reflector::Reflector;
+use session::effects::{BundleKind, ReflectorCursor, SagaBundle};
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 
@@ -35,13 +35,13 @@ fn now_ms() -> u64 {
 
 fn make_bundle(saga_id: &str, step_idx: usize) -> SagaBundle {
     SagaBundle {
-        bundle_id:    ulid::Ulid::new().to_string(),
-        saga_id:      saga_id.to_string(),
+        bundle_id: ulid::Ulid::new().to_string(),
+        saga_id: saga_id.to_string(),
         step_idx,
         from_session: "session-a".into(),
-        to_session:   "session-b".into(),
+        to_session: "session-b".into(),
         kind: BundleKind::Step {
-            message:      serde_json::json!({"action": "step"}),
+            message: serde_json::json!({"action": "step"}),
             compensation: serde_json::json!({"action": "rollback"}),
         },
         ttl_ms: now_ms() + 30_000,
@@ -88,27 +88,23 @@ fn bench_reflector(c: &mut Criterion) {
     // replay at various log sizes (cursor = 0 → drain full log).
     for n in [10usize, 100, 1_000, 10_000] {
         let r = Arc::new(reflector_with_n(n));
-        g.bench_with_input(
-            BenchmarkId::new("replay_full", n),
-            &n,
-            |b, _| {
-                b.iter(|| black_box(r.replay(ReflectorCursor::zero())))
-            },
-        );
+        g.bench_with_input(BenchmarkId::new("replay_full", n), &n, |b, _| {
+            b.iter(|| black_box(r.replay(ReflectorCursor::zero())))
+        });
     }
 
     // replay_cursor: incremental replay of last N entries (simulates reconnect).
     // The consumer already saw all but the last 10 entries.
     for n in [100usize, 1_000, 10_000] {
         let r = Arc::new(reflector_with_n(n));
-        let cursor = ReflectorCursor { seq: (n - 10) as i64, epoch: 0, view: 0 };
-        g.bench_with_input(
-            BenchmarkId::new("replay_cursor_tail10", n),
-            &n,
-            |b, _| {
-                b.iter(|| black_box(r.replay(cursor)))
-            },
-        );
+        let cursor = ReflectorCursor {
+            seq: (n - 10) as i64,
+            epoch: 0,
+            view: 0,
+        };
+        g.bench_with_input(BenchmarkId::new("replay_cursor_tail10", n), &n, |b, _| {
+            b.iter(|| black_box(r.replay(cursor)))
+        });
     }
 
     // subscribe: get a receiver, then immediately drop it (channel subscription overhead).
@@ -173,9 +169,7 @@ fn bench_numa(c: &mut Criterion) {
         g.bench_with_input(
             BenchmarkId::new("session_numa_node", n_nodes),
             &n_nodes,
-            |b, &n| {
-                b.iter(|| black_box(session_numa_node(black_box(session_id), n)))
-            },
+            |b, &n| b.iter(|| black_box(session_numa_node(black_box(session_id), n))),
         );
     }
 

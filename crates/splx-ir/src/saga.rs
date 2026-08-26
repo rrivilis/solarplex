@@ -36,7 +36,10 @@ impl TransferReceipt {
                 v if is_lisp_nil(v) => Vec::new(),
                 v => v
                     .list_iter()
-                    .ok_or_else(|| IrError::BadValue { key: "authority", detail: format!("{v}") })?
+                    .ok_or_else(|| IrError::BadValue {
+                        key: "authority",
+                        detail: format!("{v}"),
+                    })?
                     .map(AuthorityEntry::from_value)
                     .collect::<Result<Vec<_>, IrError>>()?,
             },
@@ -61,7 +64,10 @@ impl SendReceipt {
         let list = TaggedList::parse(v)?;
         list.expect_tag("send-receipt")?;
         let message_kind = as_kw(list.require("message-kind")?)
-            .ok_or_else(|| IrError::BadValue { key: "message-kind", detail: "expected keyword".into() })?
+            .ok_or_else(|| IrError::BadValue {
+                key: "message-kind",
+                detail: "expected keyword".into(),
+            })?
             .to_string();
         Ok(SendReceipt {
             saga_id: require_str(list.require("saga-id")?, "saga-id")?.to_string(),
@@ -94,7 +100,10 @@ impl SagaLogEntry {
         let list = TaggedList::parse(v)?;
         list.expect_tag("saga-log-entry")?;
         let kind = as_kw(list.require("kind")?)
-            .ok_or_else(|| IrError::BadValue { key: "kind", detail: "expected keyword".into() })?
+            .ok_or_else(|| IrError::BadValue {
+                key: "kind",
+                detail: "expected keyword".into(),
+            })?
             .to_string();
         let payload_value = list.require("payload")?;
         let payload = match kind.as_str() {
@@ -131,10 +140,16 @@ impl SagaLog {
             v if is_lisp_nil(v) => Vec::new(),
             v => v
                 .list_iter()
-                .ok_or_else(|| IrError::BadValue { key: "entries", detail: format!("{v}") })?
+                .ok_or_else(|| IrError::BadValue {
+                    key: "entries",
+                    detail: format!("{v}"),
+                })?
                 .map(SagaLogEntry::from_value)
                 .collect::<Result<Vec<_>, IrError>>()?,
         };
-        Ok(SagaLog { saga_id: require_str(list.require("saga-id")?, "saga-id")?.to_string(), entries })
+        Ok(SagaLog {
+            saga_id: require_str(list.require("saga-id")?, "saga-id")?.to_string(),
+            entries,
+        })
     }
 }

@@ -99,8 +99,8 @@
 //! the same process's map, never through two real replicas running side
 //! by side.
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use dashmap::DashMap;
@@ -122,7 +122,7 @@ const MAX_AGE_MS: u64 = 10 * 60 * 1_000; // 10 minutes
 /// A bundle entry in the log.
 #[derive(Clone)]
 struct Entry {
-    seq:    i64,
+    seq: i64,
     bundle: SagaBundle,
     /// Wall-clock milliseconds at append time, for TTL-based compaction.
     created_ms: u64,
@@ -136,11 +136,11 @@ struct Entry {
 /// a `std::sync::Mutex` is appropriate over a `tokio::sync::Mutex`. We never
 /// hold the lock across an await point.
 struct LocalReflector {
-    log:      Vec<Entry>,
+    log: Vec<Entry>,
     next_seq: i64,
     /// Incremented by `compact`.  Stale cursors (epoch mismatch) trigger full
     /// replay rather than a silent delta replay over a pruned window.
-    epoch:    u32,
+    epoch: u32,
 }
 
 /// This process's identity within the reflector cluster.
@@ -154,8 +154,8 @@ struct LocalReflector {
 /// membership transition (not just "another replica exists somewhere") is
 /// unbuilt, same honest-seam posture as `compact`'s missing forward path.
 struct ReplicationManager {
-    replica_id:      String,
-    view:            AtomicU32,
+    replica_id: String,
+    view: AtomicU32,
     is_sole_replica: AtomicBool,
 }
 
@@ -167,7 +167,7 @@ impl ReplicationManager {
     fn new(replica_id: String) -> Self {
         Self {
             replica_id,
-            view:            AtomicU32::new(0),
+            view: AtomicU32::new(0),
             // Optimistic default until the first heartbeat tick actually
             // checks: a brand-new process with no prior directory state has
             // no way to know otherwise, and "assume sole" matches today's
@@ -223,9 +223,9 @@ pub enum DispatchOutcome {
 /// Clone-cheap: the `Arc` is implicit inside the `broadcast::Sender`; the
 /// log itself is behind a `Mutex`.  Pass `Arc<Reflector>` across tasks.
 pub struct Reflector {
-    local:       Mutex<LocalReflector>,
-    tx:          broadcast::Sender<(ReflectorCursor, SagaBundle)>,
-    leases:      LeaseManager,
+    local: Mutex<LocalReflector>,
+    tx: broadcast::Sender<(ReflectorCursor, SagaBundle)>,
+    leases: LeaseManager,
     replication: ReplicationManager,
     /// `None` for `Reflector::new()` (tests, or any caller that doesn't
     /// need durable cross-replica forwarding). `dispatch`'s `Forward`
@@ -265,9 +265,13 @@ impl Reflector {
     fn new_inner(replica_id: String, pool: Option<PgPool>) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         Self {
-            local:       Mutex::new(LocalReflector { log: Vec::new(), next_seq: 1, epoch: 0 }),
+            local: Mutex::new(LocalReflector {
+                log: Vec::new(),
+                next_seq: 1,
+                epoch: 0,
+            }),
             tx,
-            leases:      LeaseManager::new(),
+            leases: LeaseManager::new(),
             replication: ReplicationManager::new(replica_id),
             pool,
         }
@@ -295,8 +299,16 @@ impl Reflector {
             let mut guard = self.local.lock().unwrap();
             let seq = guard.next_seq;
             guard.next_seq += 1;
-            guard.log.push(Entry { seq, bundle: bundle.clone(), created_ms: now_ms() });
-            ReflectorCursor { seq, epoch: guard.epoch, view: self.replication.view() }
+            guard.log.push(Entry {
+                seq,
+                bundle: bundle.clone(),
+                created_ms: now_ms(),
+            });
+            ReflectorCursor {
+                seq,
+                epoch: guard.epoch,
+                view: self.replication.view(),
+            }
         };
         // Broadcast outside the lock. `send` is cheap and non-blocking.
         let _ = self.tx.send((cursor, bundle));
@@ -382,15 +394,13 @@ impl Reflector {
                 }
             }
 
-            Plan::Forward(owner_replica) => {
-                self.forward(bundle, owner_replica).await
-            }
+            Plan::Forward(owner_replica) => self.forward(bundle, owner_replica).await,
         };
 
         let outcome_label = match &outcome {
             DispatchOutcome::Committed(_) => "committed",
-            DispatchOutcome::Forwarded    => "forwarded",
-            DispatchOutcome::Retry        => "retry",
+            DispatchOutcome::Forwarded => "forwarded",
+            DispatchOutcome::Retry => "retry",
         };
         metrics::counter!("reflector_dispatch_total", "outcome" => outcome_label).increment(1);
 
@@ -404,7 +414,11 @@ impl Reflector {
     /// Returns the first such owner found, or `None` if every session
     /// claim is either unclaimed, stale, ours, or there's no pool to check
     /// against at all.
-    async fn durable_session_owner_conflict(&self, claims: &[ConflictClass], replica: &str) -> Option<String> {
+    async fn durable_session_owner_conflict(
+        &self,
+        claims: &[ConflictClass],
+        replica: &str,
+    ) -> Option<String> {
         let pool = self.pool.as_ref()?;
         for class in claims {
             if let ConflictClass::Session(session_id) = class {
@@ -487,10 +501,25 @@ impl Reflector {
             );
         }
 
-        let from_seq = if from.epoch == guard.epoch { from.seq } else { 0 };
-        guard.log.iter()
+        let from_seq = if from.epoch == guard.epoch {
+            from.seq
+        } else {
+            0
+        };
+        guard
+            .log
+            .iter()
             .filter(|e| e.seq > from_seq && e.bundle.ttl_ms >= now)
-            .map(|e| (ReflectorCursor { seq: e.seq, epoch: guard.epoch, view: self.replication.view() }, e.bundle.clone()))
+            .map(|e| {
+                (
+                    ReflectorCursor {
+                        seq: e.seq,
+                        epoch: guard.epoch,
+                        view: self.replication.view(),
+                    },
+                    e.bundle.clone(),
+                )
+            })
             .collect()
     }
 
@@ -516,7 +545,10 @@ impl Reflector {
     pub fn compact(&self) -> usize {
         let replica = self.replication.replica_id();
 
-        let Some(_epoch_lease) = self.leases.try_acquire(ConflictClass::ReflectorEpoch, replica) else {
+        let Some(_epoch_lease) = self
+            .leases
+            .try_acquire(ConflictClass::ReflectorEpoch, replica)
+        else {
             tracing::debug!("reflector compact: epoch lease held elsewhere, skipping this cycle");
             return 0;
         };
@@ -588,9 +620,9 @@ pub(crate) const PLACEMENT_TTL_SECS: i32 = 30;
 /// Spawns its own background task; fire-and-forget from the caller's side,
 /// same shape as `notifier::spawn_event_notifier` and `gc::spawn_gc_tasks`.
 pub fn spawn_placement_heartbeat<V: Send + Sync + 'static>(
-    pool:      PgPool,
+    pool: PgPool,
     reflector: Arc<Reflector>,
-    sessions:  Arc<DashMap<String, V>>,
+    sessions: Arc<DashMap<String, V>>,
 ) {
     let replica_id = reflector.replica_id().to_string();
     tokio::spawn(async move {
@@ -600,7 +632,9 @@ pub fn spawn_placement_heartbeat<V: Send + Sync + 'static>(
 
             let ids: Vec<String> = sessions.iter().map(|e| e.key().clone()).collect();
             for id in ids {
-                match db::session_placements::claim(&pool, &id, &replica_id, PLACEMENT_TTL_SECS).await {
+                match db::session_placements::claim(&pool, &id, &replica_id, PLACEMENT_TTL_SECS)
+                    .await
+                {
                     Ok(Some(_)) => {}
                     Ok(None) => tracing::warn!(
                         session_id = %id,
@@ -643,28 +677,34 @@ mod tests {
 
     fn make_bundle(from: &str, to: &str, saga_id: &str, step_idx: usize) -> SagaBundle {
         SagaBundle {
-            bundle_id:    Ulid::new().to_string(),
-            saga_id:      saga_id.to_string(),
+            bundle_id: Ulid::new().to_string(),
+            saga_id: saga_id.to_string(),
             step_idx,
             from_session: from.to_string(),
-            to_session:   to.to_string(),
-            kind:         BundleKind::Step {
-                message:      serde_json::json!({"action": "greet"}),
+            to_session: to.to_string(),
+            kind: BundleKind::Step {
+                message: serde_json::json!({"action": "greet"}),
                 compensation: serde_json::json!({"action": "undo_greet"}),
             },
-            ttl_ms:       now_ms() + 30_000,
+            ttl_ms: now_ms() + 30_000,
         }
     }
 
     #[test]
     fn append_assigns_monotonic_seq() {
-        let r  = Reflector::new();
+        let r = Reflector::new();
         let c1 = r.append(make_bundle("a", "b", "s1", 0));
         let c2 = r.append(make_bundle("a", "b", "s1", 1));
         assert_eq!(c1.seq, 1);
         assert_eq!(c2.seq, 2);
-        assert_eq!(c1.epoch, c2.epoch, "epoch must be stable within a single compact cycle");
-        assert_eq!(c1.view, c2.view, "view must be stable with no membership change");
+        assert_eq!(
+            c1.epoch, c2.epoch,
+            "epoch must be stable within a single compact cycle"
+        );
+        assert_eq!(
+            c1.view, c2.view,
+            "view must be stable with no membership change"
+        );
     }
 
     #[test]
@@ -678,7 +718,7 @@ mod tests {
 
     #[test]
     fn replay_cursor_skips_seen() {
-        let r      = Reflector::new();
+        let r = Reflector::new();
         r.append(make_bundle("a", "b", "s1", 0));
         let cursor = r.append(make_bundle("a", "b", "s1", 1));
         r.append(make_bundle("a", "b", "s1", 2));
@@ -706,7 +746,9 @@ mod tests {
         let cursor = r.append(make_bundle("a", "b", "s1", 1));
         r.append(make_bundle("a", "b", "s1", 2));
         // Force-age the first entry and compact (advances epoch).
-        { r.local.lock().unwrap().log[0].created_ms = 0; }
+        {
+            r.local.lock().unwrap().log[0].created_ms = 0;
+        }
         r.compact();
         // cursor.epoch is now stale. replay should return everything still live.
         let entries = r.replay(cursor);
@@ -717,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_receives_appended_bundle() {
-        let r      = Reflector::new();
+        let r = Reflector::new();
         let mut rx = r.subscribe();
         let bundle = make_bundle("a", "b", "s1", 0);
         let cursor = r.append(bundle.clone());
@@ -740,7 +782,11 @@ mod tests {
         let epoch_after = r.local.lock().unwrap().epoch;
         assert_eq!(pruned, 1);
         assert_eq!(r.len(), 1);
-        assert_eq!(epoch_after, epoch_before + 1, "compact must advance epoch when entries are pruned");
+        assert_eq!(
+            epoch_after,
+            epoch_before + 1,
+            "compact must advance epoch when entries are pruned"
+        );
     }
 
     #[test]
@@ -751,9 +797,15 @@ mod tests {
             let mut guard = r.local.lock().unwrap();
             guard.log[0].created_ms = 0;
         }
-        let _held = r.leases.try_acquire(ConflictClass::ReflectorEpoch, "some-other-replica").unwrap();
+        let _held = r
+            .leases
+            .try_acquire(ConflictClass::ReflectorEpoch, "some-other-replica")
+            .unwrap();
         let pruned = r.compact();
-        assert_eq!(pruned, 0, "compact must not run while another replica holds the epoch lease");
+        assert_eq!(
+            pruned, 0,
+            "compact must not run while another replica holds the epoch lease"
+        );
         assert_eq!(r.len(), 1, "log must be untouched when compact is skipped");
     }
 
@@ -769,7 +821,9 @@ mod tests {
     async fn dispatch_acquires_free_claims_then_commits() {
         let r = Reflector::new();
         let claims = [ConflictClass::Session("s1".to_string())];
-        let outcome = r.dispatch(make_bundle("a", "s1", "saga1", 0), &claims).await;
+        let outcome = r
+            .dispatch(make_bundle("a", "s1", "saga1", 0), &claims)
+            .await;
         assert!(matches!(outcome, DispatchOutcome::Committed(_)));
         assert_eq!(r.len(), 1);
         // The lease was released after the append, not held indefinitely.
@@ -785,8 +839,13 @@ mod tests {
         // doc for why that fallback exists and reports the outcome this way.
         let r = Reflector::new();
         let claim = ConflictClass::Session("s1".to_string());
-        let _held = r.leases.try_acquire(claim.clone(), "some-other-replica").unwrap();
-        let outcome = r.dispatch(make_bundle("a", "s1", "saga1", 0), &[claim]).await;
+        let _held = r
+            .leases
+            .try_acquire(claim.clone(), "some-other-replica")
+            .unwrap();
+        let outcome = r
+            .dispatch(make_bundle("a", "s1", "saga1", 0), &[claim])
+            .await;
         assert_eq!(outcome, DispatchOutcome::Forwarded);
         // Fallback append still lands in the log when no pool is configured.
         assert_eq!(r.len(), 1);
@@ -812,59 +871,86 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live Postgres (DATABASE_URL) with migrations 035/036 applied"]
     async fn cross_replica_forward_and_claim_end_to_end() {
-        let database_url = std::env::var("DATABASE_URL")
-            .expect("DATABASE_URL must be set to run this test");
-        let pool = sqlx::PgPool::connect(&database_url).await
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
             .expect("failed to connect to DATABASE_URL");
 
         let actor_id = Ulid::new().to_string();
-        db::actors::ensure_human(&pool, &actor_id, "cross-replica-test-actor").await
+        db::actors::ensure_human(&pool, &actor_id, "cross-replica-test-actor")
+            .await
             .expect("failed to seed test actor");
 
-        let created = db::sessions::create(&pool, db::sessions::CreateSession {
-            name: "cross-replica-test-session".to_string(),
-            description: None,
-            created_by: actor_id.clone(),
-            approval_policy: None,
-        }).await.expect("failed to seed test session");
+        let created = db::sessions::create(
+            &pool,
+            db::sessions::CreateSession {
+                name: "cross-replica-test-session".to_string(),
+                description: None,
+                created_by: actor_id.clone(),
+                approval_policy: None,
+            },
+        )
+        .await
+        .expect("failed to seed test session");
         let session_id = created.session.id.clone();
 
         // replica-b durably claims the session, simulating its own
         // session task having spawned there.
-        db::session_placements::claim(&pool, &session_id, "test-replica-b", 30).await
+        db::session_placements::claim(&pool, &session_id, "test-replica-b", 30)
+            .await
             .expect("claim query failed")
             .expect("replica-b's claim should succeed -- nothing else holds this fresh session");
 
         // replica-a's Reflector dispatches a bundle addressed to that session.
         let reflector_a = Reflector::with_replica_id("test-replica-a".to_string(), pool.clone());
-        let bundle = make_bundle("test-replica-a-origin", &session_id, "cross-replica-saga", 0);
+        let bundle = make_bundle(
+            "test-replica-a-origin",
+            &session_id,
+            "cross-replica-saga",
+            0,
+        );
         let claims = [ConflictClass::Session(session_id.clone())];
         let outcome = reflector_a.dispatch(bundle.clone(), &claims).await;
 
         assert_eq!(
-            outcome, DispatchOutcome::Forwarded,
+            outcome,
+            DispatchOutcome::Forwarded,
             "replica-a must forward, not commit locally, for a session replica-b owns",
         );
         assert_eq!(
-            reflector_a.len(), 0,
+            reflector_a.len(),
+            0,
             "replica-a's own log must stay empty -- the bundle belongs to replica-b, not here",
         );
 
         // replica-b claims its pending forwarded bundles and appends them locally.
-        let claimed = db::reflector_forwarding::claim_pending::<SagaBundle>(&pool, "test-replica-b").await
-            .expect("claim_pending query failed");
-        assert_eq!(claimed.len(), 1, "exactly one bundle should be pending for replica-b");
+        let claimed =
+            db::reflector_forwarding::claim_pending::<SagaBundle>(&pool, "test-replica-b")
+                .await
+                .expect("claim_pending query failed");
+        assert_eq!(
+            claimed.len(),
+            1,
+            "exactly one bundle should be pending for replica-b"
+        );
         assert_eq!(claimed[0].1.bundle_id, bundle.bundle_id);
 
         let reflector_b = Reflector::with_replica_id("test-replica-b".to_string(), pool.clone());
         reflector_b.append(claimed.into_iter().next().unwrap().1);
         assert_eq!(
-            reflector_b.len(), 1,
+            reflector_b.len(),
+            1,
             "replica-b's own log now has the bundle, appended from the durable handoff",
         );
 
-        let claimed_again = db::reflector_forwarding::claim_pending::<SagaBundle>(&pool, "test-replica-b").await
-            .expect("second claim_pending query failed");
-        assert!(claimed_again.is_empty(), "a bundle must not be claimable twice");
+        let claimed_again =
+            db::reflector_forwarding::claim_pending::<SagaBundle>(&pool, "test-replica-b")
+                .await
+                .expect("second claim_pending query failed");
+        assert!(
+            claimed_again.is_empty(),
+            "a bundle must not be claimable twice"
+        );
     }
 }

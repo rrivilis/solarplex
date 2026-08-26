@@ -5,7 +5,11 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde_json::Value;
 
-use crate::{client::Client, config::{self, Ctx, FileConfig}, output::*};
+use crate::{
+    client::Client,
+    config::{self, Ctx, FileConfig},
+    output::*,
+};
 
 #[derive(Args)]
 pub struct SessionArgs {
@@ -134,9 +138,7 @@ pub enum RemoteCmd {
         remote_id: String,
     },
     /// Remove a remote
-    Rm {
-        remote_id: String,
-    },
+    Rm { remote_id: String },
 }
 
 pub async fn run(args: SessionArgs, ctx: &Ctx) -> Result<()> {
@@ -144,10 +146,10 @@ pub async fn run(args: SessionArgs, ctx: &Ctx) -> Result<()> {
     // Enter used to live here too, but resolving the actor from the logged-in
     // identity (see `enter`'s doc comment) needs a network round-trip now.
     match &args.cmd {
-        SessionCmd::Attach { session_id }  => return attach(ctx, session_id),
-        SessionCmd::Detach                 => return detach(),
-        SessionCmd::Env { shell }          => return env(ctx, *shell),
-        SessionCmd::NewPane { id, split }  => return new_pane(ctx, id.as_deref(), split),
+        SessionCmd::Attach { session_id } => return attach(ctx, session_id),
+        SessionCmd::Detach => return detach(),
+        SessionCmd::Env { shell } => return env(ctx, *shell),
+        SessionCmd::NewPane { id, split } => return new_pane(ctx, id.as_deref(), split),
         _ => {}
     }
 
@@ -155,21 +157,23 @@ pub async fn run(args: SessionArgs, ctx: &Ctx) -> Result<()> {
     let client = Client::new(ctx)?;
     match args.cmd {
         SessionCmd::Ls { all } => ls(&client, ctx, all).await,
-        SessionCmd::New { name, description, policy } => {
-            new_session(&client, ctx, &name, description.as_deref(), &policy).await
-        }
-        SessionCmd::Inspect { id }   => inspect(&client, ctx, id.as_deref()).await,
-        SessionCmd::Feed    { id }   => feed(&client, ctx, id.as_deref()).await,
+        SessionCmd::New {
+            name,
+            description,
+            policy,
+        } => new_session(&client, ctx, &name, description.as_deref(), &policy).await,
+        SessionCmd::Inspect { id } => inspect(&client, ctx, id.as_deref()).await,
+        SessionCmd::Feed { id } => feed(&client, ctx, id.as_deref()).await,
         SessionCmd::Handoff { to, from } => handoff(&client, ctx, &to, from.as_deref()).await,
         SessionCmd::Workspace { id, panes } => workspace(&client, ctx, id.as_deref(), &panes).await,
-        SessionCmd::Epoch   { id }   => epoch(&client, ctx, id.as_deref()).await,
-        SessionCmd::Remote  { cmd }  => remote(&client, ctx, cmd).await,
-        SessionCmd::Enter   { id, shell } => enter(&client, ctx, &id, shell).await,
+        SessionCmd::Epoch { id } => epoch(&client, ctx, id.as_deref()).await,
+        SessionCmd::Remote { cmd } => remote(&client, ctx, cmd).await,
+        SessionCmd::Enter { id, shell } => enter(&client, ctx, &id, shell).await,
         // Already handled above — unreachable, but keeps the compiler happy.
-        SessionCmd::Attach { session_id }  => attach(ctx, &session_id),
-        SessionCmd::Detach                 => detach(),
-        SessionCmd::Env { shell }          => env(ctx, shell),
-        SessionCmd::NewPane { id, split }  => new_pane(ctx, id.as_deref(), &split),
+        SessionCmd::Attach { session_id } => attach(ctx, &session_id),
+        SessionCmd::Detach => detach(),
+        SessionCmd::Env { shell } => env(ctx, shell),
+        SessionCmd::NewPane { id, split } => new_pane(ctx, id.as_deref(), &split),
     }
 }
 
@@ -193,24 +197,28 @@ pub async fn ls(client: &Client, ctx: &Ctx, all: bool) -> Result<()> {
     );
 
     for s in &arr {
-        let id     = s["id"].as_str().unwrap_or("?");                        // ULID — safe
-        let name   = sanitize_terminal(s["name"].as_str().unwrap_or("?")); // FOREIGN
+        let id = s["id"].as_str().unwrap_or("?"); // ULID — safe
+        let name = sanitize_terminal(s["name"].as_str().unwrap_or("?")); // FOREIGN
         let status = s["status"].as_str().unwrap_or("active");
 
         let current = ctx.session_id.as_deref() == Some(id);
-        let prefix = if current { cyan("▶") } else { " ".to_string() };
+        let prefix = if current {
+            cyan("▶")
+        } else {
+            " ".to_string()
+        };
 
         let link = entity_link("session", id, id, &ctx.ui);
         // name is already sanitized; status_col derives from a server enum — safe
         let status_col = match status {
-            "active"    => green(status),
-            "archived"  => dim(status),
+            "active" => green(status),
+            "archived" => dim(status),
             "suspended" => yellow(status),
-            _           => status.to_string(),
+            _ => status.to_string(),
         };
 
         let enter_link = link_action("session", id, "enter", "enter");
-        let ws_link    = link_action("session", id, "workspace", "ws");
+        let ws_link = link_action("session", id, "workspace", "ws");
 
         println!(
             "{} {}  {}  {}  {} {}",
@@ -234,10 +242,12 @@ pub async fn new_session(
 ) -> Result<()> {
     let actor = ctx.require_actor()?;
 
-    let session = client.create_session(name, description, policy, actor).await?;
-    let id       = session["id"].as_str().unwrap_or("?");
-    let token    = session["join_token"].as_str().unwrap_or("");
-    let link     = entity_link("session", id, id, &ctx.ui);
+    let session = client
+        .create_session(name, description, policy, actor)
+        .await?;
+    let id = session["id"].as_str().unwrap_or("?");
+    let token = session["join_token"].as_str().unwrap_or("");
+    let link = entity_link("session", id, id, &ctx.ui);
 
     println!("{} Created session {}", green("✓"), link);
     println!("  name:   {}", bold(name));
@@ -247,7 +257,10 @@ pub async fn new_session(
     }
     println!();
     println!("Attach to it now?");
-    println!("  {}", cyan(&format!("sp --actor {actor} session attach {id}")));
+    println!(
+        "  {}",
+        cyan(&format!("sp --actor {actor} session attach {id}"))
+    );
     Ok(())
 }
 
@@ -255,16 +268,19 @@ fn attach(ctx: &Ctx, session_id: &str) -> Result<()> {
     let actor = ctx.require_actor()?;
 
     let cfg = FileConfig {
-        server:     Some(ctx.server.clone()),
+        server: Some(ctx.server.clone()),
         session_id: Some(session_id.to_string()),
-        actor_id:   Some(actor.to_string()),
-        ui:         Some(ctx.ui.clone()),
+        actor_id: Some(actor.to_string()),
+        ui: Some(ctx.ui.clone()),
     };
     config::save(&cfg)?;
 
-    println!("{} Attached to {} as {}", green("✓"),
+    println!(
+        "{} Attached to {} as {}",
+        green("✓"),
         entity_link("session", session_id, session_id, &ctx.ui),
-        bold(actor));
+        bold(actor)
+    );
     println!();
     println!("Reload in current shell:");
     println!("  {}", cyan("source (sp session env | psub)"));
@@ -300,22 +316,31 @@ pub async fn resolve_session_id(client: &Client, token: &str) -> Result<String> 
     let arr = sessions.as_array().cloned().unwrap_or_default();
     let upper = token.to_uppercase();
     // prefer prefix match on ID, then exact name match
-    let found = arr.iter()
-        .find(|s| s["id"].as_str().map(|id| id.to_uppercase().starts_with(&upper)).unwrap_or(false))
+    let found = arr
+        .iter()
+        .find(|s| {
+            s["id"]
+                .as_str()
+                .map(|id| id.to_uppercase().starts_with(&upper))
+                .unwrap_or(false)
+        })
         .or_else(|| arr.iter().find(|s| s["name"].as_str() == Some(token)));
     found
         .and_then(|s| s["id"].as_str().map(|s| s.to_string()))
-        .ok_or_else(|| anyhow::anyhow!(
-            "No session matching {token:?} among sessions your current identity is a member \
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No session matching {token:?} among sessions your current identity is a member \
              of. If this session belongs to a different actor, check `sp login` (wrong \
              sp_token identity) or `--actor`/SOLARPLEX_ACTOR_ID (wrong self-asserted actor \
              for message/context posting) — they're independent and can point at different \
              identities."
-        ))
+            )
+        })
 }
 
 async fn inspect(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
-    let raw = id.or(ctx.session_id.as_deref())
+    let raw = id
+        .or(ctx.session_id.as_deref())
         .ok_or_else(|| anyhow::anyhow!("No session. Pass <id> or attach first."))?;
     let session_id = resolve_session_id(client, raw).await?;
     let session_id = session_id.as_str();
@@ -349,7 +374,8 @@ async fn inspect(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
 async fn feed(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
     use std::io::{self, BufRead, Write};
 
-    let raw = id.or(ctx.session_id.as_deref())
+    let raw = id
+        .or(ctx.session_id.as_deref())
         .ok_or_else(|| anyhow::anyhow!("No session. Pass <id> or attach first."))?;
     let session_id = resolve_session_id(client, raw).await?;
     let session_id = session_id.as_str();
@@ -358,18 +384,23 @@ async fn feed(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
 
     // ── Startup: show session header + recent events ──────────────────────────
     let s = client.get_session(session_id).await.ok();
-    let name = s.as_ref().and_then(|v| v["name"].as_str()).unwrap_or(session_id);
+    let name = s
+        .as_ref()
+        .and_then(|v| v["name"].as_str())
+        .unwrap_or(session_id);
 
     // actor_id -> display name, resolved once from the session snapshot's
     // members list — same principle as the frontend's actorNames map.
     // Events store the raw actor_id forever; this is purely a render-time
     // lookup so a rename shows up retroactively without touching history.
-    let actor_names: HashMap<String, String> = s.as_ref()
+    let actor_names: HashMap<String, String> = s
+        .as_ref()
         .and_then(|v| v["members"].as_array())
         .map(|members| {
-            members.iter()
+            members
+                .iter()
                 .filter_map(|m| {
-                    let id   = m["actor_id"].as_str()?;
+                    let id = m["actor_id"].as_str()?;
                     let name = m["name"].as_str().filter(|n| !n.is_empty())?;
                     Some((id.to_string(), name.to_string()))
                 })
@@ -378,8 +409,12 @@ async fn feed(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
         .unwrap_or_default();
 
     println!();
-    println!("  {} {}  {}", bold(name), dim(&format!("session/{}", &session_id[..8])),
-             dim("(type a message, Enter to poll, /quit to exit)"));
+    println!(
+        "  {} {}  {}",
+        bold(name),
+        dim(&format!("session/{}", &session_id[..8])),
+        dim("(type a message, Enter to poll, /quit to exit)")
+    );
     println!("  {}", "─".repeat(56));
 
     // Fetch and display recent events
@@ -407,7 +442,7 @@ async fn feed(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
 
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
-            Ok(0) => break,        // EOF (Ctrl-D)
+            Ok(0) => break, // EOF (Ctrl-D)
             Err(_) => break,
             Ok(_) => {}
         }
@@ -434,7 +469,10 @@ async fn feed(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
                 "  {} that looks like a pasted `sp` command, not a chat message — not posting it.",
                 yellow("⚠"),
             );
-            eprintln!("  {}", dim("If you really meant to send this text, prefix it with /say."));
+            eprintln!(
+                "  {}",
+                dim("If you really meant to send this text, prefix it with /say.")
+            );
         } else if !msg.is_empty() {
             if let Err(e) = client.post_message(session_id, actor_id, msg).await {
                 eprintln!("  {} {}", red("✗"), e);
@@ -470,7 +508,7 @@ async fn feed(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
 /// ULID into the middle of a chat line.
 fn artifact_message_ref(content: &str) -> Option<(String, String)> {
     static VOICE_RE: OnceLock<regex::Regex> = OnceLock::new();
-    static FILE_RE:  OnceLock<regex::Regex> = OnceLock::new();
+    static FILE_RE: OnceLock<regex::Regex> = OnceLock::new();
 
     let voice_re = VOICE_RE.get_or_init(|| {
         regex::Regex::new(r"^🎙️ Voice memo · ([\d:]+) \[artifact:([A-Z0-9]+)\]$").unwrap()
@@ -479,9 +517,8 @@ fn artifact_message_ref(content: &str) -> Option<(String, String)> {
         return Some((format!("🎙️ Voice memo · {}", &caps[1]), caps[2].to_string()));
     }
 
-    let file_re = FILE_RE.get_or_init(|| {
-        regex::Regex::new(r"^📎 (.+?) \[artifact:([A-Z0-9]+)\]$").unwrap()
-    });
+    let file_re =
+        FILE_RE.get_or_init(|| regex::Regex::new(r"^📎 (.+?) \[artifact:([A-Z0-9]+)\]$").unwrap());
     if let Some(caps) = file_re.captures(content) {
         return Some((format!("📎 {}", &caps[1]), caps[2].to_string()));
     }
@@ -502,10 +539,13 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
     // display name is actor-chosen — FOREIGN, sanitize after lookup.
     let raw_actor_id = e["actor_id"].as_str().unwrap_or("?");
     let actor = sanitize_terminal(
-        actor_names.get(raw_actor_id).map(|s| s.as_str()).unwrap_or(raw_actor_id),
+        actor_names
+            .get(raw_actor_id)
+            .map(|s| s.as_str())
+            .unwrap_or(raw_actor_id),
     );
-    let etype  = e["type"].as_str().unwrap_or(""); // system-defined, safe
-    let inner  = &e["payload"]["payload"];
+    let etype = e["type"].as_str().unwrap_or(""); // system-defined, safe
+    let inner = &e["payload"]["payload"];
 
     match etype {
         t if t.contains("message.posted") => {
@@ -514,7 +554,12 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
             if !content.is_empty() {
                 if let Some((label, artifact_id)) = artifact_message_ref(&content) {
                     let alink = entity_link("artifact", &artifact_id, "", "");
-                    println!("  {}  {}  {}", bold(&pad_right(&actor, 16)), label, dim(&alink));
+                    println!(
+                        "  {}  {}  {}",
+                        bold(&pad_right(&actor, 16)),
+                        label,
+                        dim(&alink)
+                    );
                 } else {
                     println!("  {}  {}", bold(&pad_right(&actor, 16)), content);
                 }
@@ -522,16 +567,18 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
         }
         t if t.contains("context.entry.added") => {
             let event_id = e["id"].as_str().unwrap_or("?"); // ULID, safe
-            // FOREIGN: both content and kind are actor-supplied.
-            let content  = sanitize_terminal(inner["content"].as_str().unwrap_or(""));
-            let kind     = sanitize_terminal(inner["kind"].as_str().unwrap_or("note"));
+                                                            // FOREIGN: both content and kind are actor-supplied.
+            let content = sanitize_terminal(inner["content"].as_str().unwrap_or(""));
+            let kind = sanitize_terminal(inner["kind"].as_str().unwrap_or("note"));
             if !content.is_empty() {
                 let clink = entity_link("context", event_id, "", "");
-                println!("  {}  {} {}  {}",
+                println!(
+                    "  {}  {} {}  {}",
                     cyan(&pad_right(&actor, 16)),
                     dim(&format!("[{kind}]")),
                     content,
-                    dim(&clink));
+                    dim(&clink)
+                );
             }
         }
         t if t.contains("actor.joined") => {
@@ -544,17 +591,34 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
         t if t.contains("approval.requested") => {
             // FOREIGN: tool_name is agent-supplied.
             let tool = sanitize_terminal(inner["tool_name"].as_str().unwrap_or("?"));
-            println!("  {}", yellow(&format!("⚑  {actor} requested approval: {tool}")));
+            println!(
+                "  {}",
+                yellow(&format!("⚑  {actor} requested approval: {tool}"))
+            );
         }
         t if t.contains("approval.granted") || t.contains("approval.denied") => {
-            let decision = if t.contains("granted") { "granted" } else { "denied" };
-            println!("  {}", dim(&format!("── approval {decision} by {actor} ──")));
+            let decision = if t.contains("granted") {
+                "granted"
+            } else {
+                "denied"
+            };
+            println!(
+                "  {}",
+                dim(&format!("── approval {decision} by {actor} ──"))
+            );
         }
         t if t.contains("artifact.created") || t.contains("artifact.updated") => {
             // FOREIGN: artifact name is actor-supplied.
-            let aname  = sanitize_terminal(inner["name"].as_str().unwrap_or("?"));
-            let action = if t.contains("created") { "saved" } else { "updated" };
-            println!("  {}", dim(&format!("── {actor} {action} artifact: {aname} ──")));
+            let aname = sanitize_terminal(inner["name"].as_str().unwrap_or("?"));
+            let action = if t.contains("created") {
+                "saved"
+            } else {
+                "updated"
+            };
+            println!(
+                "  {}",
+                dim(&format!("── {actor} {action} artifact: {aname} ──"))
+            );
         }
         t if t.contains("shell.command.started") => {
             // SANITIZATION AUDIT — shell.command.started:
@@ -562,7 +626,7 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
             //        name their binary anything) — sanitize.
             // command: only present when tracked=true and seatbelt clear. FOREIGN.
             // redacted: bool set by client seatbelt — controls rendering label.
-            let argv0    = sanitize_terminal(inner["argv0"].as_str().unwrap_or("?"));
+            let argv0 = sanitize_terminal(inner["argv0"].as_str().unwrap_or("?"));
 
             // Filter sp navigation events from the chat feed.
             // `sp ask`, `sp act`, `sp session`, etc. are session management,
@@ -573,12 +637,16 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
                 return;
             }
 
-            let tracked  = inner["tracked"].as_bool().unwrap_or(false);
+            let tracked = inner["tracked"].as_bool().unwrap_or(false);
             let redacted = inner["redacted"].as_bool().unwrap_or(false);
 
             let label = if redacted {
                 // Seatbelt fired: credential detected, full argv suppressed.
-                format!("{} {}", argv0, yellow("[credential detected — argv suppressed]"))
+                format!(
+                    "{} {}",
+                    argv0,
+                    yellow("[credential detected — argv suppressed]")
+                )
             } else if tracked {
                 // Full tracking opted in and seatbelt cleared.
                 let cmd = sanitize_terminal(inner["command"].as_str().unwrap_or(&argv0));
@@ -591,7 +659,7 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
         }
         t if t.contains("shell.command.completed") => {
             let exit = inner["exit_code"].as_i64().unwrap_or(0);
-            let ms   = inner["duration_ms"].as_u64().unwrap_or(0);
+            let ms = inner["duration_ms"].as_u64().unwrap_or(0);
             if exit != 0 {
                 println!("  {}", dim(&format!("  ↳ exit {exit}  ({ms}ms)")));
             }
@@ -603,8 +671,11 @@ fn print_feed_event(e: &Value, actor_names: &HashMap<String, String>) {
 
 /// Right-pad a string to `width` visible chars (no ANSI).
 fn pad_right(s: &str, width: usize) -> String {
-    if s.len() >= width { s.to_string() }
-    else { format!("{}{}", s, " ".repeat(width - s.len())) }
+    if s.len() >= width {
+        s.to_string()
+    } else {
+        format!("{}{}", s, " ".repeat(width - s.len()))
+    }
 }
 
 /// SANITIZATION AUDIT — print_session_full
@@ -616,18 +687,24 @@ fn print_session_full(
     s: &Value,
     artifacts: Option<&Value>,
     approvals: Option<&Value>,
-    events:    Option<&Value>,
+    events: Option<&Value>,
     ctx: &Ctx,
 ) {
-    let id     = s["id"].as_str().unwrap_or("?");               // ULID — safe
-    let name   = sanitize_terminal(s["name"].as_str().unwrap_or("?"));     // FOREIGN
-    let status = s["status"].as_str().unwrap_or("active");      // server enum — sanitized below
-    let policy = s["approval_policy"].as_str().unwrap_or("single_vote");   // server enum
-    let link   = entity_link("session", id, id, &ctx.ui);
+    let id = s["id"].as_str().unwrap_or("?"); // ULID — safe
+    let name = sanitize_terminal(s["name"].as_str().unwrap_or("?")); // FOREIGN
+    let status = s["status"].as_str().unwrap_or("active"); // server enum — sanitized below
+    let policy = s["approval_policy"].as_str().unwrap_or("single_vote"); // server enum
+    let link = entity_link("session", id, id, &ctx.ui);
     let current_actor = ctx.actor_id.as_deref().unwrap_or("");
 
     // ── Header ────────────────────────────────────────────────────────────────
-    println!("{} {}  {} {}", bold(&name), link, status_icon(status), dim(policy));
+    println!(
+        "{} {}  {} {}",
+        bold(&name),
+        link,
+        status_icon(status),
+        dim(policy)
+    );
     println!("{}", dim(&"─".repeat(50)));
 
     // ── Members ───────────────────────────────────────────────────────────────
@@ -635,24 +712,40 @@ fn print_session_full(
         println!("{}", bold("MEMBERS"));
         for m in members {
             let actor = sanitize_terminal(m["actor_id"].as_str().unwrap_or("?")); // FOREIGN
-            let name  = sanitize_terminal(m["name"].as_str().unwrap_or(""));      // FOREIGN
-            let role  = sanitize_terminal(m["role"].as_str().unwrap_or("?"));     // FOREIGN
-            let marker = if actor == current_actor { cyan("▶") } else { " ".into() };
-            println!("  {} {}  {}", marker, pad(&actor_link_named(&actor, &name), 28), dim(&role));
+            let name = sanitize_terminal(m["name"].as_str().unwrap_or("")); // FOREIGN
+            let role = sanitize_terminal(m["role"].as_str().unwrap_or("?")); // FOREIGN
+            let marker = if actor == current_actor {
+                cyan("▶")
+            } else {
+                " ".into()
+            };
+            println!(
+                "  {} {}  {}",
+                marker,
+                pad(&actor_link_named(&actor, &name), 28),
+                dim(&role)
+            );
         }
         println!();
     }
 
     // ── Artifacts ─────────────────────────────────────────────────────────────
-    let arts = artifacts.and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let arts = artifacts
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     if arts.is_empty() {
         println!("{}", dim("ARTIFACTS  (none)"));
     } else {
-        println!("{} {}", bold("ARTIFACTS"), dim(&format!("({})", arts.len())));
+        println!(
+            "{} {}",
+            bold("ARTIFACTS"),
+            dim(&format!("({})", arts.len()))
+        );
         for a in arts.iter().rev().take(8) {
-            let aid  = a["id"].as_str().unwrap_or("?");                         // ULID — safe
-            let name = sanitize_terminal(a["name"].as_str().unwrap_or("?"));    // FOREIGN
-            let by   = sanitize_terminal(a["created_by"].as_str().unwrap_or("?")); // FOREIGN
+            let aid = a["id"].as_str().unwrap_or("?"); // ULID — safe
+            let name = sanitize_terminal(a["name"].as_str().unwrap_or("?")); // FOREIGN
+            let by = sanitize_terminal(a["created_by"].as_str().unwrap_or("?")); // FOREIGN
             let link = entity_link("artifact", aid, id, &ctx.ui);
             println!("  {}  {}  {}", pad(&link, 14), pad(&name, 30), dim(&by));
         }
@@ -660,13 +753,20 @@ fn print_session_full(
     println!();
 
     // ── Pending approvals ─────────────────────────────────────────────────────
-    let appr = approvals.and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let appr = approvals
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     if !appr.is_empty() {
-        println!("{} {}", bold(&yellow("APPROVALS")), yellow(&format!("({} pending)", appr.len())));
+        println!(
+            "{} {}",
+            bold(&yellow("APPROVALS")),
+            yellow(&format!("({} pending)", appr.len()))
+        );
         for a in &appr {
-            let aid  = a["id"].as_str().unwrap_or("?");                          // ULID — safe
+            let aid = a["id"].as_str().unwrap_or("?"); // ULID — safe
             let tool = sanitize_terminal(a["tool_name"].as_str().unwrap_or("?")); // FOREIGN
-            let by   = sanitize_terminal(a["actor_id"].as_str().unwrap_or("?"));  // FOREIGN
+            let by = sanitize_terminal(a["actor_id"].as_str().unwrap_or("?")); // FOREIGN
             let link = entity_link("approval", aid, id, &ctx.ui);
             println!("  {}  {}  {}", pad(&link, 14), pad(&tool, 28), dim(&by));
         }
@@ -674,21 +774,26 @@ fn print_session_full(
     }
 
     // ── Recent activity ───────────────────────────────────────────────────────
-    let evts = events.and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let evts = events
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     if evts.is_empty() {
         println!("{}", dim("ACTIVITY   (none yet)"));
     } else {
         println!("{}", bold("ACTIVITY"));
         for e in &evts {
-            let actor      = sanitize_terminal(e["actor_id"].as_str().unwrap_or("?")); // FOREIGN
-            let etype      = e["type"].as_str().unwrap_or("?"); // system-defined
-            let payload    = &e["payload"];
-            let summary    = sanitize_terminal(&event_summary(etype, payload));  // FOREIGN content
+            let actor = sanitize_terminal(e["actor_id"].as_str().unwrap_or("?")); // FOREIGN
+            let etype = e["type"].as_str().unwrap_or("?"); // system-defined
+            let payload = &e["payload"];
+            let summary = sanitize_terminal(&event_summary(etype, payload)); // FOREIGN content
             let short_type = etype.split('.').last().unwrap_or(etype);
-            println!("  {}  {}  {}",
+            println!(
+                "  {}  {}  {}",
                 pad(&dim(&actor_link(&actor).to_string()), 22),
                 pad(short_type, 16),
-                dim(&summary));
+                dim(&summary)
+            );
         }
     }
 }
@@ -710,7 +815,11 @@ fn event_summary(event_type: &str, payload: &Value) -> String {
         }
         if let Some(cmd) = inner["command"].as_str() {
             let v = cmd.trim();
-            return if v.len() > 48 { format!("{}…", &v[..47]) } else { v.to_string() };
+            return if v.len() > 48 {
+                format!("{}…", &v[..47])
+            } else {
+                v.to_string()
+            };
         }
         if let Some(argv0) = inner["argv0"].as_str() {
             return argv0.to_string();
@@ -719,26 +828,34 @@ fn event_summary(event_type: &str, payload: &Value) -> String {
     }
 
     let candidates: &[&str] = match event_type {
-        t if t.contains("shell")    => &["command", "argv0", "content"],
+        t if t.contains("shell") => &["command", "argv0", "content"],
         t if t.contains("artifact") => &["name", "artifact_id"],
-        t if t.contains("context")  => &["content"],
-        t if t.contains("message")  => &["content"],
+        t if t.contains("context") => &["content"],
+        t if t.contains("message") => &["content"],
         t if t.contains("approval") => &["tool_name", "content"],
-        _                           => &["content", "command", "name", "status"],
+        _ => &["content", "command", "name", "status"],
     };
 
     // Check inner (variant-specific) payload first.
     for field in candidates {
         if let Some(v) = inner[field].as_str() {
             let v = v.trim();
-            return if v.len() > 48 { format!("{}…", &v[..47]) } else { v.to_string() };
+            return if v.len() > 48 {
+                format!("{}…", &v[..47])
+            } else {
+                v.to_string()
+            };
         }
     }
     // Fallback: some events store fields directly on the outer payload.
     for field in candidates {
         if let Some(v) = payload[field].as_str() {
             let v = v.trim();
-            return if v.len() > 48 { format!("{}…", &v[..47]) } else { v.to_string() };
+            return if v.len() > 48 {
+                format!("{}…", &v[..47])
+            } else {
+                v.to_string()
+            };
         }
     }
     String::new()
@@ -747,17 +864,23 @@ fn event_summary(event_type: &str, payload: &Value) -> String {
 #[allow(dead_code)]
 fn print_session(s: &Value, ctx: &Ctx) {
     // Compact version used by session ls detail fallback.
-    let id     = s["id"].as_str().unwrap_or("?");
-    let name   = s["name"].as_str().unwrap_or("?");
+    let id = s["id"].as_str().unwrap_or("?");
+    let name = s["name"].as_str().unwrap_or("?");
     let status = s["status"].as_str().unwrap_or("active");
     let policy = s["approval_policy"].as_str().unwrap_or("single_vote");
-    let link   = entity_link("session", id, id, &ctx.ui);
-    println!("{} {}  {} {}", bold(name), link, status_icon(status), dim(policy));
+    let link = entity_link("session", id, id, &ctx.ui);
+    println!(
+        "{} {}  {} {}",
+        bold(name),
+        link,
+        status_icon(status),
+        dim(policy)
+    );
     if let Some(members) = s["members"].as_array() {
         println!("  members:");
         for m in members {
             let actor = m["actor_id"].as_str().unwrap_or("?");
-            let role  = m["role"].as_str().unwrap_or("?");
+            let role = m["role"].as_str().unwrap_or("?");
             println!("    {}  {}", pad(&actor_link(actor), 28), dim(role));
         }
     }
@@ -782,7 +905,10 @@ fn env(ctx: &Ctx, shell: ShellKind) -> Result<()> {
             println!("set -gx SOLARPLEX_UI {:?}", ctx.ui);
         }
         ShellKind::Posix => {
-            println!("export SOLARPLEX_SERVER={}", config::posix_quote(&ctx.server));
+            println!(
+                "export SOLARPLEX_SERVER={}",
+                config::posix_quote(&ctx.server)
+            );
             if let Some(ref sid) = ctx.session_id {
                 println!("export SOLARPLEX_SESSION_ID={}", config::posix_quote(sid));
             }
@@ -822,7 +948,10 @@ async fn enter(client: &Client, ctx: &Ctx, session_id: &str, shell: ShellKind) -
         Some(explicit)
     } else if ctx.token.is_some() {
         match client.me().await {
-            Ok(me) => me["id"].as_str().map(String::from).or_else(|| ctx.actor_id.clone()),
+            Ok(me) => me["id"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| ctx.actor_id.clone()),
             Err(_) => ctx.actor_id.clone(), // network hiccup — don't block entering over it
         }
     } else {
@@ -830,10 +959,10 @@ async fn enter(client: &Client, ctx: &Ctx, session_id: &str, shell: ShellKind) -
     };
 
     let cfg = FileConfig {
-        server:     Some(ctx.server.clone()),
+        server: Some(ctx.server.clone()),
         session_id: Some(session_id.to_string()),
         actor_id,
-        ui:         Some(ctx.ui.clone()),
+        ui: Some(ctx.ui.clone()),
     };
     config::save(&cfg)?;
     // Stdout is piped to `source` in the calling shell — this one line is
@@ -842,7 +971,7 @@ async fn enter(client: &Client, ctx: &Ctx, session_id: &str, shell: ShellKind) -
     // one the caller actually wants), so this just has to point at the
     // right one.
     match shell {
-        ShellKind::Fish  => println!("source ~/.config/solarplex/session.fish"),
+        ShellKind::Fish => println!("source ~/.config/solarplex/session.fish"),
         ShellKind::Posix => println!("source ~/.config/solarplex/session.sh"),
     }
     Ok(())
@@ -862,15 +991,17 @@ async fn enter(client: &Client, ctx: &Ctx, session_id: &str, shell: ShellKind) -
 /// Each actor pane shows `sp actor show` then drops into an interactive fish
 /// shell already attached to the session, so you can work in it immediately.
 async fn workspace(client: &Client, ctx: &Ctx, id: Option<&str>, panes: &str) -> Result<()> {
-    let raw = id.or(ctx.session_id.as_deref())
+    let raw = id
+        .or(ctx.session_id.as_deref())
         .ok_or_else(|| anyhow::anyhow!("No session. Pass <id> or attach first."))?;
     let session_id_owned = resolve_session_id(client, raw).await?;
     let session_id = session_id_owned.as_str();
     let s = client.get_session(session_id).await?;
 
-    let name    = s["name"].as_str().unwrap_or(session_id).to_string();
+    let name = s["name"].as_str().unwrap_or(session_id).to_string();
     let members = s["members"].as_array().cloned().unwrap_or_default();
-    let actors: Vec<String> = members.iter()
+    let actors: Vec<String> = members
+        .iter()
         .filter_map(|m| m["actor_id"].as_str().map(String::from))
         .collect();
 
@@ -879,7 +1010,11 @@ async fn workspace(client: &Client, ctx: &Ctx, id: Option<&str>, panes: &str) ->
 
     // $WEZTERM_PANE is injected by WezTerm per-pane; requires WSLENV in WSL.
     let anchor_env = std::env::var("WEZTERM_PANE").unwrap_or_default();
-    let anchor: Option<&str> = if anchor_env.is_empty() { None } else { Some(&anchor_env) };
+    let anchor: Option<&str> = if anchor_env.is_empty() {
+        None
+    } else {
+        Some(&anchor_env)
+    };
 
     // Build a WSL-safe path to the sp binary.
     // current_exe() returns a Windows path (C:\...\sp.exe). In WSL fish we need
@@ -931,7 +1066,10 @@ async fn workspace(client: &Client, ctx: &Ctx, id: Option<&str>, panes: &str) ->
             "{sp_fish} session enter '{session_id}' | source; {sp_fish} session feed '{session_id}'\r"
         );
         feed_pane = wezterm_split_run(&bin, anchor, "--right", Some("60"), &feed_cmd)?;
-        println!("{} feed    → pane {feed_pane} (live IRC feed + post messages)", green("✓"));
+        println!(
+            "{} feed    → pane {feed_pane} (live IRC feed + post messages)",
+            green("✓")
+        );
     }
 
     // ── 2. INSPECT pane — bottom split from anchor ────────────────────────────
@@ -943,18 +1081,21 @@ async fn workspace(client: &Client, ctx: &Ctx, id: Option<&str>, panes: &str) ->
             "while true; printf \"\\033[H\\033[J\"; {sp_fish} session inspect '{session_id}'; sleep 10; end\r"
         );
         let inspect_pane = wezterm_split_run(&bin, anchor, "--bottom", Some("35"), &inspect_cmd)?;
-        println!("{} inspect → pane {inspect_pane} (auto-refresh 10s)", green("✓"));
+        println!(
+            "{} inspect → pane {inspect_pane} (auto-refresh 10s)",
+            green("✓")
+        );
     }
 
     // ── 3. ACTORS pane — bottom split from feed pane ─────────────────────────
     if want.contains(&"actors") && !feed_pane.is_empty() {
-        let actor_cmds: Vec<String> = actors.iter()
+        let actor_cmds: Vec<String> = actors
+            .iter()
             .map(|a| format!("{sp_fish} actor show '{}'", a.replace('\'', "'\\''")))
             .collect();
         let actors_body = actor_cmds.join("; echo \"\"; ");
-        let actors_cmd = format!(
-            "while true; printf \"\\033[H\\033[J\"; {actors_body}; sleep 15; end\r"
-        );
+        let actors_cmd =
+            format!("while true; printf \"\\033[H\\033[J\"; {actors_body}; sleep 15; end\r");
         let pane = wezterm_split_run(&bin, Some(&feed_pane), "--bottom", Some("35"), &actors_cmd)?;
         println!("{} actors  → pane {pane}", green("✓"));
     }
@@ -978,7 +1119,7 @@ async fn workspace(client: &Client, ctx: &Ctx, id: Option<&str>, panes: &str) ->
     }
 
     println!();
-    println!("  Panes open: {}",  dim(&want.join(",")));
+    println!("  Panes open: {}", dim(&want.join(",")));
     println!("  Available:  --panes inspect,feed,actors,artifacts,context");
     Ok(())
 }
@@ -992,11 +1133,11 @@ async fn workspace(client: &Client, ctx: &Ctx, id: Option<&str>, panes: &str) ->
 /// This avoids the "domain local" problem: specifying `-- fish -c "..."` makes
 /// WezTerm look for `fish.exe` on Windows, which doesn't exist.
 fn wezterm_split_run(
-    bin:      &str,
-    pane_id:  Option<&str>,
+    bin: &str,
+    pane_id: Option<&str>,
     direction: &str,
-    percent:  Option<&str>,
-    command:  &str,
+    percent: Option<&str>,
+    command: &str,
 ) -> Result<String> {
     // 1. Create the pane with the default shell.
     let mut cmd = std::process::Command::new(bin);
@@ -1008,7 +1149,8 @@ fn wezterm_split_run(
         cmd.args(["--percent", pct]);
     }
     // No `-- PROG`: WezTerm inherits the WSL default_prog.
-    let out = cmd.output()
+    let out = cmd
+        .output()
         .map_err(|e| anyhow::anyhow!("{bin}: {e}\n  Is WezTerm installed?"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -1022,7 +1164,14 @@ fn wezterm_split_run(
 
     if !command.is_empty() && !new_pane.is_empty() {
         let send = std::process::Command::new(bin)
-            .args(["cli", "send-text", "--no-paste", "--pane-id", &new_pane, command])
+            .args([
+                "cli",
+                "send-text",
+                "--no-paste",
+                "--pane-id",
+                &new_pane,
+                command,
+            ])
             .output()
             .map_err(|e| anyhow::anyhow!("{bin}: {e}"))?;
         if !send.status.success() {
@@ -1082,8 +1231,12 @@ fn wezterm_bin() -> String {
 
 fn run_wezterm(args: &[&str]) -> Result<()> {
     let bin = wezterm_bin();
-    let status = std::process::Command::new(&bin).args(args).status()
-        .map_err(|e| anyhow::anyhow!("{bin} not found: {e}\n  hint: ensure WezTerm is installed"))?;
+    let status = std::process::Command::new(&bin)
+        .args(args)
+        .status()
+        .map_err(|e| {
+            anyhow::anyhow!("{bin} not found: {e}\n  hint: ensure WezTerm is installed")
+        })?;
     if !status.success() {
         anyhow::bail!("{bin} exited {}", status.code().unwrap_or(-1));
     }
@@ -1093,29 +1246,39 @@ fn run_wezterm(args: &[&str]) -> Result<()> {
 #[allow(dead_code)]
 fn run_wezterm_output(args: &[&str]) -> Result<String> {
     let bin = wezterm_bin();
-    let out = std::process::Command::new(&bin).args(args).output()
+    let out = std::process::Command::new(&bin)
+        .args(args)
+        .output()
         .map_err(|e| anyhow::anyhow!("{bin} not found: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Spawn a new pane already attached to the given session.
 fn new_pane(ctx: &Ctx, id: Option<&str>, split: &str) -> Result<()> {
-    let session_id = id.or(ctx.session_id.as_deref())
+    let session_id = id
+        .or(ctx.session_id.as_deref())
         .ok_or_else(|| anyhow::anyhow!("No session attached."))?;
     let anchor = std::env::var("WEZTERM_PANE").ok().filter(|s| !s.is_empty());
     let sp_bin = std::env::current_exe()?.to_string_lossy().to_string();
     let sp_fish = format!("'{}'", sp_bin.replace('\'', "'\\''"));
     let bin = wezterm_bin();
 
-    let direction = if split == "vertical" { "--bottom" } else { "--right" };
+    let direction = if split == "vertical" {
+        "--bottom"
+    } else {
+        "--right"
+    };
 
     // Enter the session in the new pane, then leave it interactive.
     let cmd = format!("{sp_fish} session enter '{session_id}' | source\r");
 
     let pane_id = wezterm_split_run(&bin, anchor.as_deref(), direction, None, &cmd)?;
-    println!("{} New pane {} attached to {}",
-        green("✓"), dim(&pane_id),
-        entity_link("session", session_id, session_id, &ctx.ui));
+    println!(
+        "{} New pane {} attached to {}",
+        green("✓"),
+        dim(&pane_id),
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     Ok(())
 }
 
@@ -1125,12 +1288,17 @@ fn new_pane(ctx: &Ctx, id: Option<&str>, split: &str) -> Result<()> {
 pub async fn set_status(client: &Client, ctx: &Ctx, session_id: &str, status: &str) -> Result<()> {
     let verb = match status {
         "suspended" => "Paused",
-        "active"    => "Resumed",
-        "archived"  => "Archived",
-        other       => other,
+        "active" => "Resumed",
+        "archived" => "Archived",
+        other => other,
     };
     client.update_session_status(session_id, status).await?;
-    println!("{} {} {}", green("✓"), verb, entity_link("session", session_id, session_id, &ctx.ui));
+    println!(
+        "{} {} {}",
+        green("✓"),
+        verb,
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     Ok(())
 }
 
@@ -1141,7 +1309,12 @@ pub async fn handoff(client: &Client, ctx: &Ctx, to: &str, from: Option<&str>) -
         .ok_or_else(|| anyhow::anyhow!("--from required (or set SOLARPLEX_ACTOR_ID)"))?;
 
     client.transfer_ownership(session_id, from, to).await?;
-    println!("{} Ownership transferred from {} → {}", green("✓"), bold(from), bold(to));
+    println!(
+        "{} Ownership transferred from {} → {}",
+        green("✓"),
+        bold(from),
+        bold(to)
+    );
     Ok(())
 }
 
@@ -1156,17 +1329,28 @@ pub async fn digest(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> 
 
     let data = client.get_digest(session_id).await?;
 
-    let name       = sanitize_terminal(data["session_name"].as_str().unwrap_or(session_id));
+    let name = sanitize_terminal(data["session_name"].as_str().unwrap_or(session_id));
     let events_24h = data["recent_event_count"].as_i64().unwrap_or(0);
-    let open_appr  = data["open_approvals"].as_i64().unwrap_or(0);
-    let artifacts  = data["artifacts_count"].as_i64().unwrap_or(0);
-    let last_at    = data["last_activity_at"].as_str();
+    let open_appr = data["open_approvals"].as_i64().unwrap_or(0);
+    let artifacts = data["artifacts_count"].as_i64().unwrap_or(0);
+    let last_at = data["last_activity_at"].as_str();
 
-    println!("{} {}", bold("digest"), entity_link("session", session_id, session_id, &ctx.ui));
+    println!(
+        "{} {}",
+        bold("digest"),
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     println!("  {}", dim(&name));
     println!();
     println!("  events (24h)     {}", bold(&events_24h.to_string()));
-    println!("  open approvals   {}", if open_appr > 0 { yellow(&open_appr.to_string()) } else { dim("0") });
+    println!(
+        "  open approvals   {}",
+        if open_appr > 0 {
+            yellow(&open_appr.to_string())
+        } else {
+            dim("0")
+        }
+    );
     println!("  artifacts        {}", bold(&artifacts.to_string()));
     println!("  last activity    {}", dim(last_at.unwrap_or("(none)")));
     Ok(())
@@ -1175,13 +1359,14 @@ pub async fn digest(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> 
 // ── Remotes ─────────────────────────────────────────────────────────────────
 
 async fn remote(client: &Client, ctx: &Ctx, cmd: RemoteCmd) -> Result<()> {
-    let local_id = ctx.session_id.as_deref()
-        .ok_or_else(|| anyhow::anyhow!("No attached session. Run `sp session attach <id>` first."))?;
+    let local_id = ctx.session_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("No attached session. Run `sp session attach <id>` first.")
+    })?;
     match cmd {
         RemoteCmd::Add { remote } => remote_add(client, local_id, &remote).await,
-        RemoteCmd::Ls             => remote_ls(client, ctx, local_id).await,
+        RemoteCmd::Ls => remote_ls(client, ctx, local_id).await,
         RemoteCmd::Fetch { remote_id } => remote_fetch(client, local_id, &remote_id).await,
-        RemoteCmd::Rm    { remote_id } => remote_rm(client, local_id, &remote_id).await,
+        RemoteCmd::Rm { remote_id } => remote_rm(client, local_id, &remote_id).await,
     }
 }
 
@@ -1189,7 +1374,12 @@ async fn remote_add(client: &Client, local_id: &str, remote_ref: &str) -> Result
     let remote_id = resolve_session_id(client, remote_ref).await?;
     let data = client.add_remote(local_id, &remote_id).await?;
     let id = data["id"].as_str().unwrap_or("?");
-    println!("{} remote {} added ({})", green("✓"), bold(&remote_id), dim(id));
+    println!(
+        "{} remote {} added ({})",
+        green("✓"),
+        bold(&remote_id),
+        dim(id)
+    );
     Ok(())
 }
 
@@ -1201,17 +1391,23 @@ async fn remote_ls(client: &Client, ctx: &Ctx, local_id: &str) -> Result<()> {
         return Ok(());
     }
     println!("{}", bold("Remotes"));
-    println!("  {:<28}  {:<20}  {:<10}  {}",
-        dim("id"), dim("remote"), dim("watermark"), dim("last fetched"));
+    println!(
+        "  {:<28}  {:<20}  {:<10}  {}",
+        dim("id"),
+        dim("remote"),
+        dim("watermark"),
+        dim("last fetched")
+    );
     for r in remotes {
         // Full id printed, not short_id()'d — fetch/rm need it verbatim and
         // there's no clickable link carrying the full value the way entity
         // refs elsewhere in this CLI do (remotes aren't an EntityHandle kind).
-        let id       = r["id"].as_str().unwrap_or("?");
+        let id = r["id"].as_str().unwrap_or("?");
         let remote_s = r["remote_session_id"].as_str().unwrap_or("?");
-        let wm       = r["last_fetched_seq"].as_i64().unwrap_or(0);
-        let last_at  = r["last_fetched_at"].as_str().unwrap_or("never");
-        println!("  {:<28}  {}  {:<10}  {}",
+        let wm = r["last_fetched_seq"].as_i64().unwrap_or(0);
+        let last_at = r["last_fetched_at"].as_str().unwrap_or("never");
+        println!(
+            "  {:<28}  {}  {:<10}  {}",
             dim(id),
             entity_link("session", remote_s, remote_s, &ctx.ui),
             wm,
@@ -1223,17 +1419,25 @@ async fn remote_ls(client: &Client, ctx: &Ctx, local_id: &str) -> Result<()> {
 
 async fn remote_fetch(client: &Client, local_id: &str, remote_id: &str) -> Result<()> {
     let data = client.fetch_remote(local_id, remote_id).await?;
-    let events = data["events"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let events = data["events"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     let new_wm = data["remote"]["last_fetched_seq"].as_i64().unwrap_or(0);
     if events.is_empty() {
         println!("{}", dim("Already up to date."));
         return Ok(());
     }
-    println!("{} {} new event(s) — watermark now {}", green("✓"), events.len(), bold(&new_wm.to_string()));
+    println!(
+        "{} {} new event(s) — watermark now {}",
+        green("✓"),
+        events.len(),
+        bold(&new_wm.to_string())
+    );
     for e in events {
-        let ty   = e["type"].as_str().unwrap_or("?");
-        let seq  = e["seq"].as_i64().unwrap_or(0);
-        let ts   = e["timestamp"].as_str().unwrap_or("?");
+        let ty = e["type"].as_str().unwrap_or("?");
+        let seq = e["seq"].as_i64().unwrap_or(0);
+        let ts = e["timestamp"].as_str().unwrap_or("?");
         println!("  {:<6}  {:<24}  {}", dim(&seq.to_string()), ty, dim(ts));
     }
     Ok(())
@@ -1253,29 +1457,43 @@ pub async fn epoch(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
     let data = client.session_epoch(session_id).await?;
 
     let current_epoch = data["epoch"].as_i64().unwrap_or(0);
-    println!("{} {}", bold("session epoch"), entity_link("session", session_id, session_id, &ctx.ui));
+    println!(
+        "{} {}",
+        bold("session epoch"),
+        entity_link("session", session_id, session_id, &ctx.ui)
+    );
     println!("  current epoch  {}", bold(&current_epoch.to_string()));
     println!();
 
-    let revocations = data["revocations"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    let revocations = data["revocations"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     if revocations.is_empty() {
         println!("{}", dim("No revocations in this session."));
         return Ok(());
     }
 
     println!("{} ({})", bold("Revocation history"), revocations.len());
-    println!("  {:<4}  {:<9}  {:<10}  {:<8}  {:<25}  {}",
-        dim("epoch"), dim("strategy"), dim("revoked"), dim("drain_seq"), dim("deadline"), dim("by"));
+    println!(
+        "  {:<4}  {:<9}  {:<10}  {:<8}  {:<25}  {}",
+        dim("epoch"),
+        dim("strategy"),
+        dim("revoked"),
+        dim("drain_seq"),
+        dim("deadline"),
+        dim("by")
+    );
     println!("  {}", dim(&"─".repeat(78)));
 
     for rev in revocations {
-        let closed  = rev["closed_epoch"].as_i64().unwrap_or(0);
-        let new_e   = rev["new_epoch"].as_i64().unwrap_or(0);
-        let strat   = rev["strategy"].as_str().unwrap_or("?");
-        let by      = rev["revoked_by"].as_str().unwrap_or("?");
-        let at      = rev["revoked_at"].as_str().unwrap_or("?");
-        let d_seq   = rev["drain_seq"].as_i64().unwrap_or(0);
-        let d_dead  = rev["drain_deadline"].as_str().unwrap_or("?");
+        let closed = rev["closed_epoch"].as_i64().unwrap_or(0);
+        let new_e = rev["new_epoch"].as_i64().unwrap_or(0);
+        let strat = rev["strategy"].as_str().unwrap_or("?");
+        let by = rev["revoked_by"].as_str().unwrap_or("?");
+        let at = rev["revoked_at"].as_str().unwrap_or("?");
+        let d_seq = rev["drain_seq"].as_i64().unwrap_or(0);
+        let d_dead = rev["drain_deadline"].as_str().unwrap_or("?");
 
         // Format target column
         let target = if let Some(cap) = rev["target_cap_id"].as_str() {
@@ -1287,7 +1505,8 @@ pub async fn epoch(client: &Client, ctx: &Ctx, id: Option<&str>) -> Result<()> {
         };
 
         let epoch_label = format!("{closed}→{new_e}");
-        println!("  {:<4}  {:<9}  {:<10}  {:<8}  {:<25}  {} ({})",
+        println!(
+            "  {:<4}  {:<9}  {:<10}  {:<8}  {:<25}  {} ({})",
             cyan(&epoch_label),
             strat,
             dim(&target),

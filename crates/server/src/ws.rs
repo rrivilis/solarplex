@@ -19,16 +19,15 @@ use protocol::messages::{
     EffectRateLimitedPayload, WsMessage, WsPayload,
 };
 use protocol::types::{
-    ApprovalPolicy, ApprovalState, ArtifactSummary, ContextEntry, ContextEntryKind,
-    MemberRole, PendingApproval, SessionSnapshot, SessionStatus, Vote,
+    ApprovalPolicy, ApprovalState, ArtifactSummary, ContextEntry, ContextEntryKind, MemberRole,
+    PendingApproval, SessionSnapshot, SessionStatus, Vote,
 };
 use session::rate_limit::{Admission, RateLimitKey};
 
 use crate::session_task::{
-    task_actor_connected, task_actor_disconnected,
-    task_approval_cancel, task_approval_claim, task_approval_create, task_approval_delegate,
-    task_approval_dispute, task_context_add, task_context_resolve, task_message_post,
-    task_saga_ack, task_vote_cast,
+    task_actor_connected, task_actor_disconnected, task_approval_cancel, task_approval_claim,
+    task_approval_create, task_approval_delegate, task_approval_dispute, task_context_add,
+    task_context_resolve, task_message_post, task_saga_ack, task_vote_cast,
 };
 use crate::state::{AppState, LiveSnapshot, SessionHub};
 
@@ -69,7 +68,10 @@ pub async fn handler(
             }
             Err(e) => {
                 tracing::warn!(session_id, error = %e, "WS rejected: invalid sp_token");
-                return (axum::http::StatusCode::UNAUTHORIZED, "invalid or expired session token")
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "invalid or expired session token",
+                )
                     .into_response();
             }
         }
@@ -82,18 +84,22 @@ pub async fn handler(
         Some(id) => id,
         None => {
             tracing::warn!(session_id, "WS rejected: no auth credentials");
-            return (axum::http::StatusCode::BAD_REQUEST, "actor_id or sp_token required")
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                "actor_id or sp_token required",
+            )
                 .into_response();
         }
     };
     if query.token.is_none() {
         tracing::warn!(session_id, actor_id, "WS rejected: join_token required");
-        return (axum::http::StatusCode::UNAUTHORIZED, "join_token required for agent connections")
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "join_token required for agent connections",
+        )
             .into_response();
     }
-    ws.on_upgrade(move |socket| {
-        handle_ws(socket, state, session_id, actor_id, query.token)
-    })
+    ws.on_upgrade(move |socket| handle_ws(socket, state, session_id, actor_id, query.token))
 }
 
 // ── Connection lifecycle ──────────────────────────────────────────────────────
@@ -119,10 +125,12 @@ async fn handle_ws(
                 Err(_) => {
                     tracing::warn!(session_id, "WS rejected: session not found");
                     let (mut sink, _) = socket.split();
-                    let _ = sink.send(Message::Close(Some(CloseFrame {
-                        code: 4404,
-                        reason: "session_not_found".into(),
-                    }))).await;
+                    let _ = sink
+                        .send(Message::Close(Some(CloseFrame {
+                            code: 4404,
+                            reason: "session_not_found".into(),
+                        })))
+                        .await;
                     return;
                 }
             };
@@ -135,10 +143,12 @@ async fn handle_ws(
                 // re-mint instead of retrying the same dead token forever.
                 tracing::warn!(session_id, actor_id, "WS rejected: invalid token");
                 let (mut sink, _) = socket.split();
-                let _ = sink.send(Message::Close(Some(CloseFrame {
-                    code: 4405,
-                    reason: "invalid_token".into(),
-                }))).await;
+                let _ = sink
+                    .send(Message::Close(Some(CloseFrame {
+                        code: 4405,
+                        reason: "invalid_token".into(),
+                    })))
+                    .await;
                 return;
             }
             match sessions::get_membership(&state.db, &session_id, &actor_id).await {
@@ -155,17 +165,24 @@ async fn handle_ws(
                     // the session's legitimate-join budget.
                     match db::human_sessions::exists_for_actor(&state.db, &actor_id).await {
                         Ok(true) => {
-                            tracing::warn!(session_id, actor_id, "WS rejected: actor_id reserved by an OIDC identity");
+                            tracing::warn!(
+                                session_id,
+                                actor_id,
+                                "WS rejected: actor_id reserved by an OIDC identity"
+                            );
                             let (mut sink, _) = socket.split();
-                            let _ = sink.send(Message::Close(Some(CloseFrame {
-                                code: 4406,
-                                reason: "actor_id_reserved".into(),
-                            }))).await;
+                            let _ = sink
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: 4406,
+                                    reason: "actor_id_reserved".into(),
+                                })))
+                                .await;
                             return;
                         }
                         Ok(false) => {}
                         Err(e) => {
-                            tracing::error!(session_id, actor_id, "exists_for_actor: {e}"); return;
+                            tracing::error!(session_id, actor_id, "exists_for_actor: {e}");
+                            return;
                         }
                     }
 
@@ -177,28 +194,47 @@ async fn handle_ws(
                     // `EffectRateLimited` event attributed to `actor_id`,
                     // which doesn't fit here — this actor was never a member
                     // and, on denial, still won't be.
-                    let (admission, policy) = state.session_rate_limits.check(&session_id, RateLimitKey::AnonymousJoin);
+                    let (admission, policy) = state
+                        .session_rate_limits
+                        .check(&session_id, RateLimitKey::AnonymousJoin);
                     if !matches!(admission, Admission::Allowed) {
                         tracing::warn!(
-                            session_id, actor_id,
+                            session_id,
+                            actor_id,
                             policy = policy.map(|p| p.describe()).unwrap_or_default(),
                             "WS rejected: too many new anonymous identities for this session",
                         );
                         let (mut sink, _) = socket.split();
-                        let _ = sink.send(Message::Close(Some(CloseFrame {
-                            code: 4429,
-                            reason: "too_many_new_joins".into(),
-                        }))).await;
+                        let _ = sink
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 4429,
+                                reason: "too_many_new_joins".into(),
+                            })))
+                            .await;
                         return;
                     }
 
                     is_new_membership = true;
-                    if let Err(e) = db::actors::ensure_human(&state.db, &actor_id, &actor_id).await {
-                        tracing::error!(session_id, actor_id, "upsert actor: {e}"); return;
+                    if let Err(e) = db::actors::ensure_human(&state.db, &actor_id, &actor_id).await
+                    {
+                        tracing::error!(session_id, actor_id, "upsert actor: {e}");
+                        return;
                     }
-                    match sessions::add_member(&state.db, &session_id, &actor_id, "collaborator", None, None).await {
+                    match sessions::add_member(
+                        &state.db,
+                        &session_id,
+                        &actor_id,
+                        "collaborator",
+                        None,
+                        None,
+                    )
+                    .await
+                    {
                         Ok(m) => m,
-                        Err(e) => { tracing::error!(session_id, actor_id, "add_member: {e}"); return; }
+                        Err(e) => {
+                            tracing::error!(session_id, actor_id, "add_member: {e}");
+                            return;
+                        }
                     }
                 }
             }
@@ -211,18 +247,25 @@ async fn handle_ws(
         // exist, or grants only transient linked-session access), so
         // is_new_membership is never set true here.
         None => match sessions::require_membership_or_linked_access(
-            &state.db, &session_id, &actor_id, MemberRole::Observer,
-        ).await {
+            &state.db,
+            &session_id,
+            &actor_id,
+            MemberRole::Observer,
+        )
+        .await
+        {
             Ok(m) => m,
             Err(_) => {
                 tracing::warn!(session_id, actor_id, "WS rejected: not a member");
                 // Send a custom close frame so the client can distinguish
                 // "not a member" from a network drop and show a proper error.
                 let (mut sink, _) = socket.split();
-                let _ = sink.send(Message::Close(Some(CloseFrame {
-                    code: 4403,
-                    reason: "not_member".into(),
-                }))).await;
+                let _ = sink
+                    .send(Message::Close(Some(CloseFrame {
+                        code: 4403,
+                        reason: "not_member".into(),
+                    })))
+                    .await;
                 return;
             }
         },
@@ -252,7 +295,10 @@ async fn handle_ws(
                         elapsed_ms = %t0.elapsed().as_millis(),
                         "attach: cold DB load",
                     );
-                    hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: snap.clone() })));
+                    hub.snapshot.store(Arc::new(Some(LiveSnapshot {
+                        seq,
+                        state: snap.clone(),
+                    })));
                     make_snapshot_msg(&state.db, &session_id, seq, &snap).await
                 }
                 Err(e) => {
@@ -272,32 +318,48 @@ async fn handle_ws(
             // reference) and `Utf8Bytes` clones are O(1) refcount bumps —
             // no `.clone()` needed here at all, unlike the old `Arc<String>`
             // dereference-then-clone this replaced.
-            if ws_sink.send(Message::Text(msg)).await.is_err() { break; }
+            if ws_sink.send(Message::Text(msg)).await.is_err() {
+                break;
+            }
         }
     });
     let bcast_task = tokio::spawn(async move {
         while let Ok(msg) = broadcast_rx.recv().await {
-            if write_tx_bcast.send(msg).is_err() { break; }
+            if write_tx_bcast.send(msg).is_err() {
+                break;
+            }
         }
     });
 
     // Include the membership role so the snapshot is updated with the correct role
     // even when the in-memory snapshot already has a stale value from a prior session.
     let actor_role = match membership.role.as_str() {
-        "owner"        => Some(MemberRole::Owner),
+        "owner" => Some(MemberRole::Owner),
         "collaborator" => Some(MemberRole::Collaborator),
-        "observer"     => Some(MemberRole::Observer),
-        "agent"        => Some(MemberRole::Agent),
-        _              => None,
+        "observer" => Some(MemberRole::Observer),
+        "agent" => Some(MemberRole::Agent),
+        _ => None,
     };
     if is_new_membership {
-        let joiner_name = db::actors::get(&state.db, &actor_id).await.ok().map(|a| a.name);
-        commit_event(&state, &hub, &session_id, &actor_id,
+        let joiner_name = db::actors::get(&state.db, &actor_id)
+            .await
+            .ok()
+            .map(|a| a.name);
+        commit_event(
+            &state,
+            &hub,
+            &session_id,
+            &actor_id,
             make_event(WsPayload::ActorJoined {
-                session_id: session_id.clone(), actor: actor_id.clone(),
-                timestamp: Utc::now(), seq: 0, role: actor_role, name: joiner_name,
+                session_id: session_id.clone(),
+                actor: actor_id.clone(),
+                timestamp: Utc::now(),
+                seq: 0,
+                role: actor_role,
+                name: joiner_name,
             }),
-        ).await;
+        )
+        .await;
     } else {
         broadcast_presence(&hub, &session_id, &actor_id, true, actor_role);
     }
@@ -305,27 +367,36 @@ async fn handle_ws(
 
     // ── Session task: feed ActorConnected ────────────────────────────────────
     {
-        let owner_id = hub.snapshot.load_full()
+        let owner_id = hub
+            .snapshot
+            .load_full()
             .as_ref()
             .as_ref()
             .map(|s| s.state.owner.clone())
             .unwrap_or_else(|| actor_id.clone());
-        let task    = state.get_or_create_session_task(&session_id, &owner_id, Arc::clone(&hub));
+        let task = state.get_or_create_session_task(&session_id, &owner_id, Arc::clone(&hub));
         let conn_id = format!("ws-{actor_id}");
         task_actor_connected(&task, actor_id.clone(), conn_id).await;
     }
 
     // Agents get an immediate Idle status so the minimap shows them as online.
     if membership.role == "agent" {
-        commit_event(&state, &hub, &session_id, &actor_id,
+        commit_event(
+            &state,
+            &hub,
+            &session_id,
+            &actor_id,
             make_event(WsPayload::AgentStatusChanged {
-                session_id: session_id.clone(), actor: actor_id.clone(),
-                timestamp: Utc::now(), seq: 0,
+                session_id: session_id.clone(),
+                actor: actor_id.clone(),
+                timestamp: Utc::now(),
+                seq: 0,
                 payload: protocol::messages::AgentStatusPayload {
                     status: protocol::types::AgentStatus::Idle,
                 },
             }),
-        ).await;
+        )
+        .await;
     }
 
     while let Some(Ok(msg)) = ws_stream.next().await {
@@ -351,7 +422,15 @@ async fn handle_ws(
                     break;
                 }
                 if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                    dispatch(&state, &hub, &session_id, &actor_id, &membership.role, ws_msg).await;
+                    dispatch(
+                        &state,
+                        &hub,
+                        &session_id,
+                        &actor_id,
+                        &membership.role,
+                        ws_msg,
+                    )
+                    .await;
                 }
             }
             Message::Close(_) => break,
@@ -364,7 +443,8 @@ async fn handle_ws(
     bcast_task.abort();
 
     broadcast_presence(&hub, &session_id, &actor_id, false, None);
-    let _ = db::session_connections::record(&state.db, &session_id, &actor_id, "disconnected").await;
+    let _ =
+        db::session_connections::record(&state.db, &session_id, &actor_id, "disconnected").await;
 
     // ── Session task: feed ActorDisconnected ─────────────────────────────────
     if let Some(task) = state.sessions.get(&session_id).map(|e| e.value().clone()) {
@@ -392,7 +472,9 @@ async fn dispatch(
     // ── Session lifecycle gating ─────────────────────────────────────────────
     // Archived sessions are fully read-only — no commands accepted.
     // Suspended sessions only allow approval resolution (in-flight work can finish).
-    let session_status = current_snap(hub).map(|s| s.status).unwrap_or(SessionStatus::Active);
+    let session_status = current_snap(hub)
+        .map(|s| s.status)
+        .unwrap_or(SessionStatus::Active);
 
     match session_status {
         SessionStatus::Archived => return, // all commands blocked
@@ -412,32 +494,85 @@ async fn dispatch(
     }
 
     match msg.payload {
-        WsPayload::ApprovalRequest { approval_id, tool_call, expires_at, .. } =>
-            handle_approval_request(state, hub, session_id, actor_id, approval_id, tool_call, expires_at).await,
-        WsPayload::ApprovalClaim { approval_id, .. } =>
-            handle_approval_claim(state, hub, session_id, actor_id, &approval_id).await,
-        WsPayload::ApprovalGrant { approval_id, .. } if can_vote(role) =>
-            handle_vote(state, hub, session_id, actor_id, &approval_id, Vote::Approve).await,
-        WsPayload::ApprovalDeny { approval_id, .. } if can_vote(role) =>
-            handle_vote(state, hub, session_id, actor_id, &approval_id, Vote::Deny).await,
-        WsPayload::ApprovalCancel { approval_id, .. } =>
-            handle_approval_cancel(state, hub, session_id, actor_id, &approval_id).await,
-        WsPayload::ApprovalDelegate { approval_id, to, .. } =>
-            handle_approval_delegate(state, hub, session_id, actor_id, &approval_id, &to).await,
-        WsPayload::ApprovalDispute { approval_id, reason, .. } =>
-            handle_approval_dispute(state, hub, session_id, actor_id, &approval_id, &reason).await,
-        WsPayload::OwnershipTransfer { from, to, .. } if role == "owner" =>
-            handle_ownership_transfer(state, hub, session_id, &from, &to).await,
-        WsPayload::MessagePost { content, .. } =>
-            handle_message_post(state, hub, session_id, actor_id, &content).await,
-        WsPayload::AgentStatusUpdate { status, .. } =>
-            handle_agent_status(state, hub, session_id, actor_id, status.clone()).await,
-        WsPayload::ContextEntryAdd { kind, content, .. } =>
-            handle_context_add(state, hub, session_id, actor_id, kind.clone(), content.clone()).await,
-        WsPayload::ContextEntryResolve { entry_id, note, .. } =>
-            handle_context_resolve(state, hub, session_id, actor_id, entry_id.clone(), note.clone()).await,
-        WsPayload::PresenceFocusSet { tab, .. } =>
-            broadcast_presence_focus(hub, session_id, actor_id, tab.clone()),
+        WsPayload::ApprovalRequest {
+            approval_id,
+            tool_call,
+            expires_at,
+            ..
+        } => {
+            handle_approval_request(
+                state,
+                hub,
+                session_id,
+                actor_id,
+                approval_id,
+                tool_call,
+                expires_at,
+            )
+            .await
+        }
+        WsPayload::ApprovalClaim { approval_id, .. } => {
+            handle_approval_claim(state, hub, session_id, actor_id, &approval_id).await
+        }
+        WsPayload::ApprovalGrant { approval_id, .. } if can_vote(role) => {
+            handle_vote(
+                state,
+                hub,
+                session_id,
+                actor_id,
+                &approval_id,
+                Vote::Approve,
+            )
+            .await
+        }
+        WsPayload::ApprovalDeny { approval_id, .. } if can_vote(role) => {
+            handle_vote(state, hub, session_id, actor_id, &approval_id, Vote::Deny).await
+        }
+        WsPayload::ApprovalCancel { approval_id, .. } => {
+            handle_approval_cancel(state, hub, session_id, actor_id, &approval_id).await
+        }
+        WsPayload::ApprovalDelegate {
+            approval_id, to, ..
+        } => handle_approval_delegate(state, hub, session_id, actor_id, &approval_id, &to).await,
+        WsPayload::ApprovalDispute {
+            approval_id,
+            reason,
+            ..
+        } => handle_approval_dispute(state, hub, session_id, actor_id, &approval_id, &reason).await,
+        WsPayload::OwnershipTransfer { from, to, .. } if role == "owner" => {
+            handle_ownership_transfer(state, hub, session_id, &from, &to).await
+        }
+        WsPayload::MessagePost { content, .. } => {
+            handle_message_post(state, hub, session_id, actor_id, &content).await
+        }
+        WsPayload::AgentStatusUpdate { status, .. } => {
+            handle_agent_status(state, hub, session_id, actor_id, status.clone()).await
+        }
+        WsPayload::ContextEntryAdd { kind, content, .. } => {
+            handle_context_add(
+                state,
+                hub,
+                session_id,
+                actor_id,
+                kind.clone(),
+                content.clone(),
+            )
+            .await
+        }
+        WsPayload::ContextEntryResolve { entry_id, note, .. } => {
+            handle_context_resolve(
+                state,
+                hub,
+                session_id,
+                actor_id,
+                entry_id.clone(),
+                note.clone(),
+            )
+            .await
+        }
+        WsPayload::PresenceFocusSet { tab, .. } => {
+            broadcast_presence_focus(hub, session_id, actor_id, tab.clone())
+        }
         _ => {}
     }
 }
@@ -454,36 +589,74 @@ async fn handle_approval_request(
     expires_at: Option<chrono::DateTime<Utc>>,
 ) {
     if !check_rate_limit(
-        state, hub, session_id, actor_id,
-        RateLimitKey::ApprovalRequest { actor_id: actor_id.to_string() },
-    ).await {
+        state,
+        hub,
+        session_id,
+        actor_id,
+        RateLimitKey::ApprovalRequest {
+            actor_id: actor_id.to_string(),
+        },
+    )
+    .await
+    {
         return;
     }
     let event = make_event(WsPayload::ApprovalRequested {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
+        session_id: session_id.to_string(),
+        actor: actor_id.to_string(),
+        timestamp: Utc::now(),
+        seq: 0,
         payload: protocol::messages::ApprovalRequestedPayload {
-            approval_id: approval_id.clone(), tool: tool_call.tool.clone(),
+            approval_id: approval_id.clone(),
+            tool: tool_call.tool.clone(),
             summary: format!("{actor_id} wants to call {}", tool_call.tool),
-            requested_by: actor_id.to_string(), expires_at,
+            requested_by: actor_id.to_string(),
+            expires_at,
             arguments: tool_call.args.clone(),
         },
     });
 
     let snap_ref = warm_snap(state, hub, session_id).await;
     let mut tx = match state.db.begin().await {
-        Ok(t) => t, Err(e) => { tracing::error!(session_id, "begin tx: {e}"); return; }
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(session_id, "begin tx: {e}");
+            return;
+        }
     };
     if let Err(e) = approvals::insert_in_tx(
-        &mut tx, &approval_id, session_id, actor_id,
-        &tool_call.tool, &tool_call.args, expires_at,
-    ).await {
-        tracing::error!(session_id, "insert_in_tx: {e}"); return;
+        &mut tx,
+        &approval_id,
+        session_id,
+        actor_id,
+        &tool_call.tool,
+        &tool_call.args,
+        expires_at,
+    )
+    .await
+    {
+        tracing::error!(session_id, "insert_in_tx: {e}");
+        return;
     }
-    let (seq, new_snap, stamped) = match stamp_append_snapshot(&mut tx, snap_ref.as_ref(), session_id, actor_id, event).await {
-        Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
+    let (seq, new_snap, stamped) = match stamp_append_snapshot(
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(session_id, "stamp_append_snapshot: {e}");
+            return;
+        }
     };
-    if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
+    if let Err(e) = tx.commit().await {
+        tracing::error!(session_id, "commit: {e}");
+        return;
+    }
     store_and_broadcast(hub, seq, new_snap, &stamped).await;
 
     // ── Session task: feed ApprovalCreate (after durable commit) ─────────────
@@ -493,9 +666,14 @@ async fn handle_approval_request(
     if let Some(task) = state.sessions.get(session_id).map(|e| e.value().clone()) {
         let expires_ms = expires_at.map(|e| (e - Utc::now()).num_milliseconds().max(0) as u64);
         task_approval_create(
-            &task, approval_id.clone(), actor_id.to_string(), tool_call.tool.clone(),
-            tool_call.args.clone(), expires_ms,
-        ).await;
+            &task,
+            approval_id.clone(),
+            actor_id.to_string(),
+            tool_call.tool.clone(),
+            tool_call.args.clone(),
+            expires_ms,
+        )
+        .await;
     }
 }
 
@@ -507,22 +685,46 @@ async fn handle_approval_claim(
     approval_id: &str,
 ) {
     let event = make_event(WsPayload::ApprovalClaimed {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: ApprovalEventPayload { approval_id: approval_id.to_string() },
+        session_id: session_id.to_string(),
+        actor: actor_id.to_string(),
+        timestamp: Utc::now(),
+        seq: 0,
+        payload: ApprovalEventPayload {
+            approval_id: approval_id.to_string(),
+        },
     });
     let snap_ref = warm_snap(state, hub, session_id).await;
     let mut tx = match state.db.begin().await {
-        Ok(t) => t, Err(e) => { tracing::error!(session_id, "begin tx: {e}"); return; }
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(session_id, "begin tx: {e}");
+            return;
+        }
     };
     // CAS: only succeeds if state is currently 'Pending'
     if let Err(e) = approvals::claim_if_pending_in_tx(&mut tx, approval_id, actor_id).await {
-        tracing::warn!(session_id, approval_id, "claim_if_pending: {e}"); return;
+        tracing::warn!(session_id, approval_id, "claim_if_pending: {e}");
+        return;
     }
-    let (seq, new_snap, stamped) = match stamp_append_snapshot(&mut tx, snap_ref.as_ref(), session_id, actor_id, event).await {
-        Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
+    let (seq, new_snap, stamped) = match stamp_append_snapshot(
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(session_id, "stamp_append_snapshot: {e}");
+            return;
+        }
     };
-    if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
+    if let Err(e) = tx.commit().await {
+        tracing::error!(session_id, "commit: {e}");
+        return;
+    }
     store_and_broadcast(hub, seq, new_snap, &stamped).await;
 
     // ── Session task: feed ApprovalClaim (after durable commit, shadow-
@@ -541,7 +743,10 @@ async fn handle_vote(
     vote: Vote,
 ) {
     let t0 = std::time::Instant::now();
-    let vote_str = match vote { Vote::Approve => "approve", Vote::Deny => "deny" };
+    let vote_str = match vote {
+        Vote::Approve => "approve",
+        Vote::Deny => "deny",
+    };
 
     // Read policy from warm snapshot (zero DB queries on hot path)
     let (policy, eligible) = {
@@ -549,11 +754,14 @@ async fn handle_vote(
         match arc.as_ref() {
             Some(live) => {
                 let p = match live.state.approval_policy.as_str() {
-                    "majority"  => ApprovalPolicy::Majority,
+                    "majority" => ApprovalPolicy::Majority,
                     "unanimous" => ApprovalPolicy::Unanimous,
-                    _           => ApprovalPolicy::SingleVote,
+                    _ => ApprovalPolicy::SingleVote,
                 };
-                let e = live.state.members.iter()
+                let e = live
+                    .state
+                    .members
+                    .iter()
                     .filter(|m| matches!(m.role, MemberRole::Owner | MemberRole::Collaborator))
                     .count();
                 (p, e)
@@ -566,11 +774,20 @@ async fn handle_vote(
     let snap_ref = warm_snap(state, hub, session_id).await;
 
     let mut tx = match state.db.begin().await {
-        Ok(t) => t, Err(e) => { tracing::error!(session_id, "vote begin tx: {e}"); return; }
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(session_id, "vote begin tx: {e}");
+            return;
+        }
     };
 
-    let updated = match approvals::record_vote_in_tx(&mut tx, approval_id, actor_id, vote_str).await {
-        Ok(r) => r, Err(e) => { tracing::error!(session_id, "record_vote_in_tx: {e}"); return; }
+    let updated = match approvals::record_vote_in_tx(&mut tx, approval_id, actor_id, vote_str).await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(session_id, "record_vote_in_tx: {e}");
+            return;
+        }
     };
 
     let votes: HashMap<String, Vote> =
@@ -587,26 +804,35 @@ async fn handle_vote(
         ApprovalState::Approved => {
             let _ = approvals::resolve_in_tx(&mut tx, approval_id, "Approved", actor_id).await;
             Some(make_event(WsPayload::ApprovalGranted {
-                session_id: session_id.to_string(), actor: actor_id.to_string(),
-                timestamp: Utc::now(), seq: 0,
-                payload: ApprovalEventPayload { approval_id: approval_id.to_string() },
+                session_id: session_id.to_string(),
+                actor: actor_id.to_string(),
+                timestamp: Utc::now(),
+                seq: 0,
+                payload: ApprovalEventPayload {
+                    approval_id: approval_id.to_string(),
+                },
             }))
         }
         ApprovalState::Denied => {
             let _ = approvals::resolve_in_tx(&mut tx, approval_id, "Denied", actor_id).await;
             Some(make_event(WsPayload::ApprovalDenied {
-                session_id: session_id.to_string(), actor: actor_id.to_string(),
-                timestamp: Utc::now(), seq: 0,
+                session_id: session_id.to_string(),
+                actor: actor_id.to_string(),
+                timestamp: Utc::now(),
+                seq: 0,
                 payload: protocol::messages::ApprovalDeniedPayload {
-                    approval_id: approval_id.to_string(), reason: None,
+                    approval_id: approval_id.to_string(),
+                    reason: None,
                 },
             }))
         }
         ApprovalState::Contested => {
             let _ = approvals::set_state_in_tx(&mut tx, approval_id, "Contested").await;
             Some(make_event(WsPayload::ApprovalContested {
-                session_id: session_id.to_string(), actor: "system".to_string(),
-                timestamp: Utc::now(), seq: 0,
+                session_id: session_id.to_string(),
+                actor: "system".to_string(),
+                timestamp: Utc::now(),
+                seq: 0,
                 payload: protocol::messages::ApprovalContestedPayload {
                     approval_id: approval_id.to_string(),
                     votes: votes.clone(),
@@ -618,11 +844,13 @@ async fn handle_vote(
     };
 
     // Append event + snapshot in the same tx, then commit
-    let broadcast_event: Option<(i64, SessionSnapshot, WsMessage)> = if let Some(ev) = outcome_event {
+    let broadcast_event: Option<(i64, SessionSnapshot, WsMessage)> = if let Some(ev) = outcome_event
+    {
         match stamp_append_snapshot(&mut tx, snap_ref.as_ref(), session_id, actor_id, ev).await {
             Ok((seq, new_snap, stamped)) => Some((seq, new_snap, stamped)),
             Err(e) => {
-                tracing::error!(session_id, "vote stamp_append_snapshot: {e}"); return;
+                tracing::error!(session_id, "vote stamp_append_snapshot: {e}");
+                return;
             }
         }
     } else {
@@ -630,7 +858,8 @@ async fn handle_vote(
     };
 
     if let Err(e) = tx.commit().await {
-        tracing::error!(session_id, "vote commit: {e}"); return;
+        tracing::error!(session_id, "vote commit: {e}");
+        return;
     }
 
     // Post-commit: update ArcSwap + broadcast + send_resolved (after durable commit)
@@ -641,13 +870,19 @@ async fn handle_vote(
     // ── Session task: feed VoteCast (after durable commit) ───────────────────
     if let Some(task) = state.sessions.get(session_id).map(|e| e.value().clone()) {
         let approve = vote == Vote::Approve;
-        task_vote_cast(&task, approval_id.to_string(), actor_id.to_string(), approve).await;
+        task_vote_cast(
+            &task,
+            approval_id.to_string(),
+            actor_id.to_string(),
+            approve,
+        )
+        .await;
     }
 
     let resolution = match &new_state {
         ApprovalState::Approved => Some((updated.actor_id.clone(), ApprovalDecision::Granted)),
-        ApprovalState::Denied   => Some((updated.actor_id.clone(), ApprovalDecision::Denied)),
-        _                       => None,
+        ApprovalState::Denied => Some((updated.actor_id.clone(), ApprovalDecision::Denied)),
+        _ => None,
     };
 
     // ── Cross-session delegation: if this approval was created on B's side
@@ -661,9 +896,15 @@ async fn handle_vote(
                 let outcome = if matches!(new_state, ApprovalState::Approved) {
                     session::SagaOutcome::Committed
                 } else {
-                    session::SagaOutcome::Rejected { reason: "denied by delegated session".to_string() }
+                    session::SagaOutcome::Rejected {
+                        reason: "denied by delegated session".to_string(),
+                    }
                 };
-                if let Some(source_task) = state.sessions.get(&delegation.source_session_id).map(|e| e.value().clone()) {
+                if let Some(source_task) = state
+                    .sessions
+                    .get(&delegation.source_session_id)
+                    .map(|e| e.value().clone())
+                {
                     task_saga_ack(&source_task, delegation.saga_id, 0, outcome).await;
                 } else {
                     tracing::warn!(
@@ -674,7 +915,11 @@ async fn handle_vote(
                 }
             }
             Ok(None) => {}
-            Err(e) => tracing::warn!(session_id, approval_id, "cross-session delegation lookup: {e}"),
+            Err(e) => tracing::warn!(
+                session_id,
+                approval_id,
+                "cross-session delegation lookup: {e}"
+            ),
         }
     }
 
@@ -682,14 +927,15 @@ async fn handle_vote(
     // Fires after commit — sidecar only proceeds on durable state.
     if let Some((_, ref decision)) = resolution {
         let decision_str = match decision {
-            ApprovalDecision::Granted  => "granted",
-            ApprovalDecision::Denied   => "denied",
+            ApprovalDecision::Granted => "granted",
+            ApprovalDecision::Denied => "denied",
             ApprovalDecision::TimedOut => "timed_out",
         };
         let notify_json = serde_json::json!({
             "approval_id": approval_id,
             "decision": decision_str,
-        }).to_string();
+        })
+        .to_string();
         if let Err(e) = sqlx::query("SELECT pg_notify('approval_resolved', $1)")
             .bind(&notify_json)
             .execute(&state.db)
@@ -713,19 +959,42 @@ async fn handle_approval_cancel(
     approval_id: &str,
 ) {
     let event = make_event(WsPayload::ApprovalCancelled {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: ApprovalEventPayload { approval_id: approval_id.to_string() },
+        session_id: session_id.to_string(),
+        actor: actor_id.to_string(),
+        timestamp: Utc::now(),
+        seq: 0,
+        payload: ApprovalEventPayload {
+            approval_id: approval_id.to_string(),
+        },
     });
     let snap_ref = warm_snap(state, hub, session_id).await;
     let mut tx = match state.db.begin().await {
-        Ok(t) => t, Err(e) => { tracing::error!(session_id, "begin tx: {e}"); return; }
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(session_id, "begin tx: {e}");
+            return;
+        }
     };
     let _ = approvals::set_state_in_tx(&mut tx, approval_id, "Expired").await;
-    let (seq, new_snap, stamped) = match stamp_append_snapshot(&mut tx, snap_ref.as_ref(), session_id, actor_id, event).await {
-        Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
+    let (seq, new_snap, stamped) = match stamp_append_snapshot(
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(session_id, "stamp_append_snapshot: {e}");
+            return;
+        }
     };
-    if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
+    if let Err(e) = tx.commit().await {
+        tracing::error!(session_id, "commit: {e}");
+        return;
+    }
     store_and_broadcast(hub, seq, new_snap, &stamped).await;
 
     // ── Session task: feed ApprovalCancel (after durable commit, shadow-
@@ -736,70 +1005,143 @@ async fn handle_approval_cancel(
 }
 
 async fn handle_approval_delegate(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, actor_id: &str, approval_id: &str, to: &str,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    approval_id: &str,
+    to: &str,
 ) {
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::ApprovalDelegated {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: protocol::messages::ApprovalDelegatedPayload {
-            approval_id: approval_id.to_string(),
-            from: actor_id.to_string(), to: to.to_string(),
-        },
-    })).await;
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::ApprovalDelegated {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::ApprovalDelegatedPayload {
+                approval_id: approval_id.to_string(),
+                from: actor_id.to_string(),
+                to: to.to_string(),
+            },
+        }),
+    )
+    .await;
 
     // ── Session task: feed ApprovalDelegate (after durable commit, shadow-
     // persisted) ──────────────────────────────────────────────────────────
     if let Some(task) = state.sessions.get(session_id).map(|e| e.value().clone()) {
-        task_approval_delegate(&task, approval_id.to_string(), actor_id.to_string(), to.to_string()).await;
+        task_approval_delegate(
+            &task,
+            approval_id.to_string(),
+            actor_id.to_string(),
+            to.to_string(),
+        )
+        .await;
     }
 }
 
 async fn handle_approval_dispute(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, actor_id: &str, approval_id: &str, reason: &str,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    approval_id: &str,
+    reason: &str,
 ) {
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::ApprovalDisputed {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: protocol::messages::ApprovalDisputedPayload {
-            approval_id: approval_id.to_string(), reason: reason.to_string(),
-        },
-    })).await;
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::ApprovalDisputed {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::ApprovalDisputedPayload {
+                approval_id: approval_id.to_string(),
+                reason: reason.to_string(),
+            },
+        }),
+    )
+    .await;
 
     // ── Session task: feed ApprovalDispute (after durable commit, shadow-
     // persisted) ──────────────────────────────────────────────────────────
     if let Some(task) = state.sessions.get(session_id).map(|e| e.value().clone()) {
-        task_approval_dispute(&task, approval_id.to_string(), actor_id.to_string(), reason.to_string()).await;
+        task_approval_dispute(
+            &task,
+            approval_id.to_string(),
+            actor_id.to_string(),
+            reason.to_string(),
+        )
+        .await;
     }
 }
 
 async fn handle_agent_status(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, actor_id: &str, status: protocol::types::AgentStatus,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    status: protocol::types::AgentStatus,
 ) {
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::AgentStatusChanged {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: protocol::messages::AgentStatusPayload { status },
-    })).await;
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::AgentStatusChanged {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::AgentStatusPayload { status },
+        }),
+    )
+    .await;
 }
 
 async fn handle_message_post(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, actor_id: &str, content: &str,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    content: &str,
 ) {
     if !check_rate_limit(
-        state, hub, session_id, actor_id,
-        RateLimitKey::MessagePost { actor_id: actor_id.to_string() },
-    ).await {
+        state,
+        hub,
+        session_id,
+        actor_id,
+        RateLimitKey::MessagePost {
+            actor_id: actor_id.to_string(),
+        },
+    )
+    .await
+    {
         return;
     }
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::MessagePosted {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: protocol::messages::MessagePostedPayload { content: content.to_string() },
-    })).await;
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::MessagePosted {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::MessagePostedPayload {
+                content: content.to_string(),
+            },
+        }),
+    )
+    .await;
 
     // ── Session task: feed MessagePost (after durable commit, shadow-
     // persisted — see task_message_post's doc comment) ───────────────────────
@@ -809,21 +1151,46 @@ async fn handle_message_post(
 }
 
 async fn handle_context_add(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, actor_id: &str, kind: ContextEntryKind, content: String,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    kind: ContextEntryKind,
+    content: String,
 ) {
     if !check_rate_limit(
-        state, hub, session_id, actor_id,
-        RateLimitKey::ContextAdd { actor_id: actor_id.to_string() },
-    ).await {
+        state,
+        hub,
+        session_id,
+        actor_id,
+        RateLimitKey::ContextAdd {
+            actor_id: actor_id.to_string(),
+        },
+    )
+    .await
+    {
         return;
     }
     let entry_id = ulid::Ulid::new().to_string();
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::ContextEntryAdded {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: ContextEntryAddedPayload { entry_id: entry_id.clone(), kind: kind.clone(), content: content.clone(), authored_by: None },
-    })).await;
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::ContextEntryAdded {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: ContextEntryAddedPayload {
+                entry_id: entry_id.clone(),
+                kind: kind.clone(),
+                content: content.clone(),
+                authored_by: None,
+            },
+        }),
+    )
+    .await;
 
     // ── Session task: feed ContextAdd (after durable commit, shadow-
     // persisted) ──────────────────────────────────────────────────────────
@@ -833,14 +1200,31 @@ async fn handle_context_add(
 }
 
 async fn handle_context_resolve(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, actor_id: &str, entry_id: String, note: Option<String>,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    entry_id: String,
+    note: Option<String>,
 ) {
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::ContextEntryResolved {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: ContextEntryResolvedPayload { entry_id: entry_id.clone(), resolved_by: actor_id.to_string(), note: note.clone() },
-    })).await;
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::ContextEntryResolved {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: ContextEntryResolvedPayload {
+                entry_id: entry_id.clone(),
+                resolved_by: actor_id.to_string(),
+                note: note.clone(),
+            },
+        }),
+    )
+    .await;
 
     // ── Session task: feed ContextResolve (after durable commit, shadow-
     // persisted) ──────────────────────────────────────────────────────────
@@ -850,28 +1234,54 @@ async fn handle_context_resolve(
 }
 
 async fn handle_ownership_transfer(
-    state: &Arc<AppState>, hub: &Arc<SessionHub>,
-    session_id: &str, from: &str, to: &str,
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    from: &str,
+    to: &str,
 ) {
-    if !check_rate_limit(state, hub, session_id, from, RateLimitKey::OwnershipTransfer).await {
+    if !check_rate_limit(
+        state,
+        hub,
+        session_id,
+        from,
+        RateLimitKey::OwnershipTransfer,
+    )
+    .await
+    {
         return;
     }
     let event = make_event(WsPayload::OwnershipTransferred {
-        session_id: session_id.to_string(), actor: from.to_string(),
-        timestamp: Utc::now(), seq: 0,
+        session_id: session_id.to_string(),
+        actor: from.to_string(),
+        timestamp: Utc::now(),
+        seq: 0,
         payload: protocol::messages::OwnershipTransferredPayload {
-            from: from.to_string(), to: to.to_string(),
+            from: from.to_string(),
+            to: to.to_string(),
         },
     });
     let snap_ref = warm_snap(state, hub, session_id).await;
     let mut tx = match state.db.begin().await {
-        Ok(t) => t, Err(e) => { tracing::error!(session_id, "begin tx: {e}"); return; }
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(session_id, "begin tx: {e}");
+            return;
+        }
     };
     let _ = sessions::transfer_ownership_in_tx(&mut tx, session_id, from, to).await;
-    let (seq, new_snap, stamped) = match stamp_append_snapshot(&mut tx, snap_ref.as_ref(), session_id, from, event).await {
-        Ok(r) => r, Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
-    };
-    if let Err(e) = tx.commit().await { tracing::error!(session_id, "commit: {e}"); return; }
+    let (seq, new_snap, stamped) =
+        match stamp_append_snapshot(&mut tx, snap_ref.as_ref(), session_id, from, event).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(session_id, "stamp_append_snapshot: {e}");
+                return;
+            }
+        };
+    if let Err(e) = tx.commit().await {
+        tracing::error!(session_id, "commit: {e}");
+        return;
+    }
     store_and_broadcast(hub, seq, new_snap, &stamped).await;
 }
 
@@ -903,14 +1313,31 @@ async fn check_rate_limit(
     };
     let policy_desc = policy.map(|p| p.describe()).unwrap_or_default();
     let retry_after_secs = retry_after.as_secs();
-    tracing::warn!(session_id, actor_id, key = key_label, policy = policy_desc, "rate limited");
-    commit_event(state, hub, session_id, actor_id, make_event(WsPayload::EffectRateLimited {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), seq: 0,
-        payload: EffectRateLimitedPayload {
-            key_label: key_label.to_string(), policy: policy_desc, retry_after_secs,
-        },
-    })).await;
+    tracing::warn!(
+        session_id,
+        actor_id,
+        key = key_label,
+        policy = policy_desc,
+        "rate limited"
+    );
+    commit_event(
+        state,
+        hub,
+        session_id,
+        actor_id,
+        make_event(WsPayload::EffectRateLimited {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: EffectRateLimitedPayload {
+                key_label: key_label.to_string(),
+                policy: policy_desc,
+                retry_after_secs,
+            },
+        }),
+    )
+    .await;
     false
 }
 
@@ -927,16 +1354,29 @@ async fn commit_event(
     let snap_ref = warm_snap(state, hub, session_id).await;
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
-        Err(e) => { tracing::error!(session_id, event = event.payload.type_name(), "begin: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id, event = event.payload.type_name(), "begin: {e}");
+            return;
+        }
     };
     let (seq, new_snap, stamped) = match stamp_append_snapshot(
-        &mut tx, snap_ref.as_ref(), session_id, actor_id, event,
-    ).await {
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => { tracing::error!(session_id, "stamp_append_snapshot: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id, "stamp_append_snapshot: {e}");
+            return;
+        }
     };
     if let Err(e) = tx.commit().await {
-        tracing::error!(session_id, "commit_event commit: {e}"); return;
+        tracing::error!(session_id, "commit_event commit: {e}");
+        return;
     }
     store_and_broadcast(hub, seq, new_snap, &stamped).await;
 }
@@ -957,7 +1397,7 @@ pub(crate) async fn create_approval_for_session(
     timeout_secs: u64,
 ) -> Option<(String, chrono::DateTime<Utc>)> {
     let approval_id = Ulid::new().to_string();
-    let expires_at  = Utc::now() + chrono::Duration::seconds(timeout_secs as i64);
+    let expires_at = Utc::now() + chrono::Duration::seconds(timeout_secs as i64);
 
     let event = make_event(WsPayload::ApprovalRequested {
         session_id: session_id.to_string(),
@@ -982,7 +1422,10 @@ pub(crate) async fn create_approval_for_session(
         match load_snapshot_from_db(state, session_id).await {
             Ok((_, snap)) => Some(snap),
             Err(e) => {
-                tracing::warn!(session_id, "create_approval_for_session: snapshot load: {e}");
+                tracing::warn!(
+                    session_id,
+                    "create_approval_for_session: snapshot load: {e}"
+                );
                 None
             }
         }
@@ -996,15 +1439,28 @@ pub(crate) async fn create_approval_for_session(
         }
     };
     if let Err(e) = approvals::insert_in_tx(
-        &mut tx, &approval_id, session_id, actor_id,
-        tool_name, arguments, Some(expires_at),
-    ).await {
+        &mut tx,
+        &approval_id,
+        session_id,
+        actor_id,
+        tool_name,
+        arguments,
+        Some(expires_at),
+    )
+    .await
+    {
         tracing::error!(session_id, "create_approval_for_session: insert_in_tx: {e}");
         return None;
     }
     let (seq, new_snap, stamped) = match stamp_append_snapshot(
-        &mut tx, snap_ref.as_ref(), session_id, actor_id, event,
-    ).await {
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(session_id, "create_approval_for_session: stamp: {e}");
@@ -1023,9 +1479,7 @@ pub(crate) async fn create_approval_for_session(
     // ── Session task: arm per-approval expiry timer ───────────────────────────
     // Done after hub commit so the task and hub are always in the same DB state.
     if let Some(task) = state.sessions.get(session_id).map(|e| e.value().clone()) {
-        let expires_ms = Some(
-            (expires_at - Utc::now()).num_milliseconds().max(0) as u64
-        );
+        let expires_ms = Some((expires_at - Utc::now()).num_milliseconds().max(0) as u64);
         task_approval_create(
             &task,
             approval_id.clone(),
@@ -1033,7 +1487,8 @@ pub(crate) async fn create_approval_for_session(
             tool_name.to_string(),
             arguments.clone(),
             expires_ms,
-        ).await;
+        )
+        .await;
     }
 
     Some((approval_id, expires_at))
@@ -1060,7 +1515,8 @@ pub(crate) async fn vote_on_approval(
     // If the hub has no warm snapshot, prime it from the DB so policy reads work.
     if hub.snapshot.load_full().as_ref().is_none() {
         if let Ok((seq, snap)) = load_snapshot_from_db(state, session_id).await {
-            hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: snap })));
+            hub.snapshot
+                .store(Arc::new(Some(LiveSnapshot { seq, state: snap })));
         }
     }
 
@@ -1096,20 +1552,34 @@ pub(crate) async fn emit_to_session(
 
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
-        Err(e) => { tracing::error!(session_id, "emit_to_session: begin tx: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id, "emit_to_session: begin tx: {e}");
+            return;
+        }
     };
     let (seq, new_snap, stamped) = match stamp_append_snapshot(
-        &mut tx, snap_ref.as_ref(), session_id, actor_id, event,
-    ).await {
+        &mut tx,
+        snap_ref.as_ref(),
+        session_id,
+        actor_id,
+        event,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => { tracing::error!(session_id, "emit_to_session: stamp: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id, "emit_to_session: stamp: {e}");
+            return;
+        }
     };
     if let Err(e) = tx.commit().await {
-        tracing::error!(session_id, "emit_to_session: commit: {e}"); return;
+        tracing::error!(session_id, "emit_to_session: commit: {e}");
+        return;
     }
 
     // Tier-1 wakeup: notify observers (best-effort).
-    let _ = db::events::notify_session(&state.db, session_id, seq, state.reflector.replica_id()).await;
+    let _ =
+        db::events::notify_session(&state.db, session_id, seq, state.reflector.replica_id()).await;
 
     if let Some(hub) = hub_opt {
         store_and_broadcast(&hub, seq, new_snap, &stamped).await;
@@ -1136,13 +1606,19 @@ pub(crate) async fn stamp_append_snapshot(
     actor_id: &str,
     event: WsMessage,
 ) -> anyhow::Result<(i64, SessionSnapshot, WsMessage)> {
-    let seq     = db::events::alloc_seq_block_in_tx(tx, session_id, 1).await?;
+    let seq = db::events::alloc_seq_block_in_tx(tx, session_id, 1).await?;
     let stamped = stamp_seq(&event, seq);
     let payload = serde_json::to_value(&stamped)?;
 
     db::events::append_in_tx(
-        tx, session_id, actor_id, stamped.payload.type_name(), &payload, seq,
-    ).await?;
+        tx,
+        session_id,
+        actor_id,
+        stamped.payload.type_name(),
+        &payload,
+        seq,
+    )
+    .await?;
 
     let new_snap = match current {
         Some(s) => apply_event(s, &stamped),
@@ -1154,16 +1630,15 @@ pub(crate) async fn stamp_append_snapshot(
             // persisted here becomes the new canonical row and silently
             // blanks the session's displayed title until something else
             // happens to reload it from scratch.
-            let row: Option<(String, String)> = sqlx::query_as(
-                "SELECT name, approval_policy FROM sessions WHERE id = $1",
-            )
-            .bind(session_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .ok()
-            .flatten();
-            let (name, approval_policy) = row
-                .unwrap_or_else(|| (String::new(), "single_vote".to_string()));
+            let row: Option<(String, String)> =
+                sqlx::query_as("SELECT name, approval_policy FROM sessions WHERE id = $1")
+                    .bind(session_id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .ok()
+                    .flatten();
+            let (name, approval_policy) =
+                row.unwrap_or_else(|| (String::new(), "single_vote".to_string()));
             SessionSnapshot {
                 owner: actor_id.to_string(),
                 owner_name: String::new(), // enriched in make_snapshot_msg
@@ -1188,7 +1663,11 @@ pub(crate) async fn stamp_append_snapshot(
 /// Read the current in-memory snapshot (if warm) before opening a transaction.
 /// Calling this before `db.begin()` avoids any borrow conflict with the tx.
 pub(crate) fn current_snap(hub: &Arc<SessionHub>) -> Option<SessionSnapshot> {
-    hub.snapshot.load_full().as_ref().as_ref().map(|l| l.state.clone())
+    hub.snapshot
+        .load_full()
+        .as_ref()
+        .as_ref()
+        .map(|l| l.state.clone())
 }
 
 /// Snapshot for a write: warm from the hub's ArcSwap if present, else a cold
@@ -1207,13 +1686,20 @@ pub(crate) fn current_snap(hub: &Arc<SessionHub>) -> Option<SessionSnapshot> {
 /// removed from the event log. This closes the gap the same way
 /// `create_approval_for_session`/`emit_to_session` already did for their
 /// REST-reachable callers.
-pub(crate) async fn warm_snap(state: &Arc<AppState>, hub: &Arc<SessionHub>, session_id: &str) -> Option<SessionSnapshot> {
+pub(crate) async fn warm_snap(
+    state: &Arc<AppState>,
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+) -> Option<SessionSnapshot> {
     if let Some(s) = current_snap(hub) {
         return Some(s);
     }
     match load_snapshot_from_db(state, session_id).await {
         Ok((seq, snap)) => {
-            hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: snap.clone() })));
+            hub.snapshot.store(Arc::new(Some(LiveSnapshot {
+                seq,
+                state: snap.clone(),
+            })));
             Some(snap)
         }
         Err(e) => {
@@ -1227,9 +1713,19 @@ pub(crate) async fn warm_snap(state: &Arc<AppState>, hub: &Arc<SessionHub>, sess
 /// (or, from `notifier.rs`, after replaying an already-committed event onto
 /// a different replica's hub — same invariant, the durable write already
 /// happened, this just needs to be reflected locally).
-pub(crate) async fn store_and_broadcast(hub: &Arc<SessionHub>, seq: i64, new_snap: SessionSnapshot, event: &WsMessage) {
-    hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq, state: new_snap })));
-    let Ok(json) = serde_json::to_string(event) else { return };
+pub(crate) async fn store_and_broadcast(
+    hub: &Arc<SessionHub>,
+    seq: i64,
+    new_snap: SessionSnapshot,
+    event: &WsMessage,
+) {
+    hub.snapshot.store(Arc::new(Some(LiveSnapshot {
+        seq,
+        state: new_snap,
+    })));
+    let Ok(json) = serde_json::to_string(event) else {
+        return;
+    };
     match crate::event_visibility::min_role(&event.payload) {
         // Unrestricted — exactly today's behavior, zero added cost.
         None => hub.broadcast(Utf8Bytes::from(json)),
@@ -1240,7 +1736,8 @@ pub(crate) async fn store_and_broadcast(hub: &Arc<SessionHub>, seq: i64, new_sna
             let redacted = crate::event_visibility::redact(event)
                 .and_then(|m| serde_json::to_string(&m).ok())
                 .map(Utf8Bytes::from);
-            hub.broadcast_gated(min_role, Utf8Bytes::from(json), redacted).await;
+            hub.broadcast_gated(min_role, Utf8Bytes::from(json), redacted)
+                .await;
         }
     }
 }
@@ -1252,20 +1749,37 @@ pub(crate) async fn store_and_broadcast(hub: &Arc<SessionHub>, seq: i64, new_sna
 /// network blip never allocates a seq or lands in the event log — see
 /// `PresenceChanged`'s doc comment. Durable `session_connections` audit
 /// rows are recorded separately by the caller regardless of this.
-fn broadcast_presence(hub: &Arc<SessionHub>, session_id: &str, actor_id: &str, attached: bool, role: Option<MemberRole>) {
+fn broadcast_presence(
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    attached: bool,
+    role: Option<MemberRole>,
+) {
     let current = hub.snapshot.load_full();
     if let Some(live) = current.as_ref().as_ref() {
         let mut snap = live.state.clone();
         if let Some(m) = snap.members.iter_mut().find(|m| m.actor_id == actor_id) {
             m.attached = attached;
-            if let Some(ref r) = role { m.role = r.clone(); }
+            if let Some(ref r) = role {
+                m.role = r.clone();
+            }
         }
-        hub.snapshot.store(Arc::new(Some(LiveSnapshot { seq: live.seq, state: snap })));
+        hub.snapshot.store(Arc::new(Some(LiveSnapshot {
+            seq: live.seq,
+            state: snap,
+        })));
     }
-    let msg = WsMessage::new(Ulid::new().to_string(), WsPayload::PresenceChanged {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), attached, role,
-    });
+    let msg = WsMessage::new(
+        Ulid::new().to_string(),
+        WsPayload::PresenceChanged {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            attached,
+            role,
+        },
+    );
     if let Ok(json) = serde_json::to_string(&msg) {
         hub.broadcast(Utf8Bytes::from(json));
     }
@@ -1278,11 +1792,21 @@ fn broadcast_presence(hub: &Arc<SessionHub>, session_id: &str, actor_id: &str, a
 /// direct hub broadcast so every other connected client (including a
 /// linked-session viewer via `session_links`'s auto-granted access to the
 /// same hub) sees it live.
-fn broadcast_presence_focus(hub: &Arc<SessionHub>, session_id: &str, actor_id: &str, tab: Option<String>) {
-    let msg = WsMessage::new(Ulid::new().to_string(), WsPayload::PresenceFocus {
-        session_id: session_id.to_string(), actor: actor_id.to_string(),
-        timestamp: Utc::now(), tab,
-    });
+fn broadcast_presence_focus(
+    hub: &Arc<SessionHub>,
+    session_id: &str,
+    actor_id: &str,
+    tab: Option<String>,
+) {
+    let msg = WsMessage::new(
+        Ulid::new().to_string(),
+        WsPayload::PresenceFocus {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            tab,
+        },
+    );
     if let Ok(json) = serde_json::to_string(&msg) {
         hub.broadcast(Utf8Bytes::from(json));
     }
@@ -1304,7 +1828,10 @@ async fn load_snapshot_from_db(
         Err(db::DbError::NotFound) => {
             // Row missing — session was created before migration 010 or seeding
             // failed. Fall back to table scan; result will be seeded next event.
-            tracing::warn!(session_id, "session_snapshots row missing — falling back to table scan");
+            tracing::warn!(
+                session_id,
+                "session_snapshots row missing — falling back to table scan"
+            );
             return build_snapshot_from_tables(state, session_id).await;
         }
         Err(e) => return Err(e.into()),
@@ -1324,7 +1851,10 @@ async fn load_snapshot_from_db(
         // Persist the clean version so subsequent cold-attaches skip recompute.
         if let Err(e) = db::snapshots::insert_clean(&state.db, session_id, seq, &snap_json).await {
             // Non-fatal: the snapshot is already computed; just log and continue.
-            tracing::warn!(session_id, "could not persist clean snapshot after recompute: {e}");
+            tracing::warn!(
+                session_id,
+                "could not persist clean snapshot after recompute: {e}"
+            );
         }
         return Ok((seq, snap));
     }
@@ -1370,81 +1900,109 @@ async fn build_snapshot_from_tables(
         .bind(session_id)
         .fetch_optional(&state.db),
     );
-    let session     = session_res?;
+    let session = session_res?;
     let memberships = memberships_res?;
-    let pending     = pending_res?;
-    let context     = fold_context_from_events(&events_res?);
-    let artifacts   = artifacts_res?;
-    let seq: i64    = seq_res.ok().flatten().unwrap_or(0);
+    let pending = pending_res?;
+    let context = fold_context_from_events(&events_res?);
+    let artifacts = artifacts_res?;
+    let seq: i64 = seq_res.ok().flatten().unwrap_or(0);
 
     let hub = state.hubs.get(session_id);
-    let members: Vec<_> = memberships.iter().map(|m| {
-        let role = match m.role.as_str() {
-            "owner"        => MemberRole::Owner,
-            "collaborator" => MemberRole::Collaborator,
-            "agent"        => MemberRole::Agent,
-            _              => MemberRole::Observer,
-        };
-        // Agents never hold a WS connection to `/stream` (only human
-        // browsers do -- see `sweep_stale_agents`'s doc comment a bit
-        // further down this file), so `actor_senders` can never reflect
-        // their liveness. Checking it unconditionally for every role meant
-        // a cold-rebuilt snapshot (session_snapshots row missing/dirty)
-        // showed every agent as permanently unattached regardless of real
-        // status -- the live incremental path (`apply_event` on a real
-        // `ActorJoined`/heartbeat) was correct, only this from-scratch
-        // rebuild path had the wrong signal. Mirrors the same
-        // heartbeat-plus-staleness-threshold check `sweep_stale_agents`
-        // itself uses to decide when an agent is actually gone.
-        let attached = match role {
-            MemberRole::Agent => hub.as_ref().map_or(false, |h| {
-                h.agent_heartbeats.get(&m.actor_id)
-                    .map_or(false, |t| t.elapsed() < Duration::from_secs(AGENT_STALE_THRESHOLD_SECS))
-            }),
-            _ => hub.as_ref().map_or(false, |h| h.actor_senders.contains_key(&m.actor_id)),
-        };
-        protocol::types::SessionMember {
-            actor_id: m.actor_id.clone(),
-            name: String::new(), // enriched in make_snapshot_msg
-            role,
-            attached, status: None,
-        }
-    }).collect();
+    let members: Vec<_> = memberships
+        .iter()
+        .map(|m| {
+            let role = match m.role.as_str() {
+                "owner" => MemberRole::Owner,
+                "collaborator" => MemberRole::Collaborator,
+                "agent" => MemberRole::Agent,
+                _ => MemberRole::Observer,
+            };
+            // Agents never hold a WS connection to `/stream` (only human
+            // browsers do -- see `sweep_stale_agents`'s doc comment a bit
+            // further down this file), so `actor_senders` can never reflect
+            // their liveness. Checking it unconditionally for every role meant
+            // a cold-rebuilt snapshot (session_snapshots row missing/dirty)
+            // showed every agent as permanently unattached regardless of real
+            // status -- the live incremental path (`apply_event` on a real
+            // `ActorJoined`/heartbeat) was correct, only this from-scratch
+            // rebuild path had the wrong signal. Mirrors the same
+            // heartbeat-plus-staleness-threshold check `sweep_stale_agents`
+            // itself uses to decide when an agent is actually gone.
+            let attached = match role {
+                MemberRole::Agent => hub.as_ref().map_or(false, |h| {
+                    h.agent_heartbeats.get(&m.actor_id).map_or(false, |t| {
+                        t.elapsed() < Duration::from_secs(AGENT_STALE_THRESHOLD_SECS)
+                    })
+                }),
+                _ => hub
+                    .as_ref()
+                    .map_or(false, |h| h.actor_senders.contains_key(&m.actor_id)),
+            };
+            protocol::types::SessionMember {
+                actor_id: m.actor_id.clone(),
+                name: String::new(), // enriched in make_snapshot_msg
+                role,
+                attached,
+                status: None,
+            }
+        })
+        .collect();
 
-    let pending_approvals: Vec<_> = pending.iter().map(|a| {
-        let votes: HashMap<String, Vote> = serde_json::from_value(a.votes.clone()).unwrap_or_default();
-        PendingApproval {
-            approval_id: a.id.clone(), tool: a.tool_name.clone(),
-            requested_by: a.actor_id.clone(),
-            state: match a.state.as_str() {
-                "Claimed"   => ApprovalState::Claimed,
-                "Contested" => ApprovalState::Contested,
-                _           => ApprovalState::Pending,
-            },
-            votes, claimed_by: None, expires_at: a.timeout_at,
-            arguments: a.arguments.clone(),
-        }
-    }).collect();
+    let pending_approvals: Vec<_> = pending
+        .iter()
+        .map(|a| {
+            let votes: HashMap<String, Vote> =
+                serde_json::from_value(a.votes.clone()).unwrap_or_default();
+            PendingApproval {
+                approval_id: a.id.clone(),
+                tool: a.tool_name.clone(),
+                requested_by: a.actor_id.clone(),
+                state: match a.state.as_str() {
+                    "Claimed" => ApprovalState::Claimed,
+                    "Contested" => ApprovalState::Contested,
+                    _ => ApprovalState::Pending,
+                },
+                votes,
+                claimed_by: None,
+                expires_at: a.timeout_at,
+                arguments: a.arguments.clone(),
+            }
+        })
+        .collect();
 
-    let artifact_summaries: Vec<_> = artifacts.iter().map(|a| ArtifactSummary {
-        id: a.id.clone(), name: a.name.clone(), artifact_type: a.r#type.clone(),
-    }).collect();
+    let artifact_summaries: Vec<_> = artifacts
+        .iter()
+        .map(|a| ArtifactSummary {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            artifact_type: a.r#type.clone(),
+        })
+        .collect();
 
-    let owner = memberships.iter()
+    let owner = memberships
+        .iter()
         .find(|m| m.role == "owner")
         .map(|m| m.actor_id.clone())
         .unwrap_or_default();
 
-    Ok((seq, SessionSnapshot {
-        owner, owner_name: String::new(), // enriched in make_snapshot_msg
-        name: session.name, approval_policy: session.approval_policy,
-        status: match session.status.as_str() {
-            "suspended" => SessionStatus::Suspended,
-            "archived"  => SessionStatus::Archived,
-            _           => SessionStatus::Active,
+    Ok((
+        seq,
+        SessionSnapshot {
+            owner,
+            owner_name: String::new(), // enriched in make_snapshot_msg
+            name: session.name,
+            approval_policy: session.approval_policy,
+            status: match session.status.as_str() {
+                "suspended" => SessionStatus::Suspended,
+                "archived" => SessionStatus::Archived,
+                _ => SessionStatus::Active,
+            },
+            members,
+            pending_approvals,
+            artifacts: artifact_summaries,
+            context,
         },
-        members, pending_approvals, artifacts: artifact_summaries, context,
-    }))
+    ))
 }
 
 /// Replay `ContextEntryAdded`/`ContextEntryResolved` out of raw event rows.
@@ -1459,7 +2017,13 @@ fn fold_context_from_events(rows: &[db::events::EventRow]) -> Vec<ContextEntry> 
             Err(_) => continue, // not a WsMessage-shaped row (e.g. a session-crate SessionEvent) — skip
         };
         match msg.payload {
-            WsPayload::ContextEntryAdded { actor, timestamp, seq, payload, .. } => {
+            WsPayload::ContextEntryAdded {
+                actor,
+                timestamp,
+                seq,
+                payload,
+                ..
+            } => {
                 context.push(ContextEntry {
                     id: payload.entry_id.clone(),
                     kind: payload.kind.clone(),
@@ -1491,11 +2055,19 @@ pub(crate) fn apply_event(snap: &SessionSnapshot, msg: &WsMessage) -> SessionSna
     let mut s = snap.clone();
     match &msg.payload {
         WsPayload::ApprovalRequested { payload, .. } => {
-            if !s.pending_approvals.iter().any(|a| a.approval_id == payload.approval_id) {
+            if !s
+                .pending_approvals
+                .iter()
+                .any(|a| a.approval_id == payload.approval_id)
+            {
                 s.pending_approvals.push(PendingApproval {
-                    approval_id: payload.approval_id.clone(), tool: payload.tool.clone(),
-                    requested_by: payload.requested_by.clone(), state: ApprovalState::Pending,
-                    votes: HashMap::new(), claimed_by: None, expires_at: payload.expires_at,
+                    approval_id: payload.approval_id.clone(),
+                    tool: payload.tool.clone(),
+                    requested_by: payload.requested_by.clone(),
+                    state: ApprovalState::Pending,
+                    votes: HashMap::new(),
+                    claimed_by: None,
+                    expires_at: payload.expires_at,
                     arguments: payload.arguments.clone(),
                 });
             }
@@ -1517,25 +2089,34 @@ pub(crate) fn apply_event(snap: &SessionSnapshot, msg: &WsMessage) -> SessionSna
             }
         }
         WsPayload::ApprovalGranted { payload, .. } => {
-            s.pending_approvals.retain(|a| a.approval_id != payload.approval_id);
+            s.pending_approvals
+                .retain(|a| a.approval_id != payload.approval_id);
         }
         WsPayload::ApprovalDenied { payload, .. } => {
-            s.pending_approvals.retain(|a| a.approval_id != payload.approval_id);
+            s.pending_approvals
+                .retain(|a| a.approval_id != payload.approval_id);
         }
         WsPayload::ApprovalTimedOut { payload, .. } => {
-            s.pending_approvals.retain(|a| a.approval_id != payload.approval_id);
+            s.pending_approvals
+                .retain(|a| a.approval_id != payload.approval_id);
         }
         WsPayload::ApprovalCancelled { payload, .. } => {
-            s.pending_approvals.retain(|a| a.approval_id != payload.approval_id);
+            s.pending_approvals
+                .retain(|a| a.approval_id != payload.approval_id);
         }
         WsPayload::OwnershipTransferred { payload, .. } => {
             s.owner = payload.to.clone();
             for m in &mut s.members {
-                if m.actor_id == payload.from      { m.role = MemberRole::Collaborator; }
-                else if m.actor_id == payload.to   { m.role = MemberRole::Owner; }
+                if m.actor_id == payload.from {
+                    m.role = MemberRole::Collaborator;
+                } else if m.actor_id == payload.to {
+                    m.role = MemberRole::Owner;
+                }
             }
         }
-        WsPayload::ActorJoined { actor, role, name, .. } => {
+        WsPayload::ActorJoined {
+            actor, role, name, ..
+        } => {
             let effective_role = role.clone().unwrap_or(MemberRole::Collaborator);
             // db::sessions::add_member demotes whoever currently holds owner
             // at the DB level the moment this role is granted (see its own
@@ -1552,20 +2133,29 @@ pub(crate) fn apply_event(snap: &SessionSnapshot, msg: &WsMessage) -> SessionSna
                     }
                 }
                 s.owner = actor.clone();
-                if let Some(n) = name { if !n.is_empty() { s.owner_name = n.clone(); } }
+                if let Some(n) = name {
+                    if !n.is_empty() {
+                        s.owner_name = n.clone();
+                    }
+                }
             }
             if let Some(m) = s.members.iter_mut().find(|m| m.actor_id == *actor) {
                 m.attached = true;
                 m.role = effective_role;
                 // A resolved name arriving on a re-join is real data, worth
                 // taking; never downgrade an already-known name back to blank.
-                if let Some(n) = name { if !n.is_empty() { m.name = n.clone(); } }
+                if let Some(n) = name {
+                    if !n.is_empty() {
+                        m.name = n.clone();
+                    }
+                }
             } else {
                 s.members.push(protocol::types::SessionMember {
                     actor_id: actor.clone(),
                     name: name.clone().unwrap_or_else(|| actor.clone()),
                     role: effective_role,
-                    attached: true, status: None,
+                    attached: true,
+                    status: None,
                 });
             }
         }
@@ -1577,8 +2167,12 @@ pub(crate) fn apply_event(snap: &SessionSnapshot, msg: &WsMessage) -> SessionSna
         WsPayload::ArtifactCreated { payload, .. } => {
             if !s.artifacts.iter().any(|a| a.id == payload.artifact_id) {
                 s.artifacts.push(ArtifactSummary {
-                    id: payload.artifact_id.clone(), name: payload.name.clone(),
-                    artifact_type: payload.artifact_type.clone().unwrap_or_else(|| "other".to_string()),
+                    id: payload.artifact_id.clone(),
+                    name: payload.name.clone(),
+                    artifact_type: payload
+                        .artifact_type
+                        .clone()
+                        .unwrap_or_else(|| "other".to_string()),
                 });
             }
         }
@@ -1598,11 +2192,17 @@ pub(crate) fn apply_event(snap: &SessionSnapshot, msg: &WsMessage) -> SessionSna
         WsPayload::SessionStatusChanged { payload, .. } => {
             s.status = match payload.status.as_str() {
                 "suspended" => SessionStatus::Suspended,
-                "archived"  => SessionStatus::Archived,
-                _           => SessionStatus::Active,
+                "archived" => SessionStatus::Archived,
+                _ => SessionStatus::Active,
             };
         }
-        WsPayload::ContextEntryAdded { actor, timestamp, seq, payload, .. } => {
+        WsPayload::ContextEntryAdded {
+            actor,
+            timestamp,
+            seq,
+            payload,
+            ..
+        } => {
             s.context.push(ContextEntry {
                 id: payload.entry_id.clone(),
                 kind: payload.kind.clone(),
@@ -1636,36 +2236,38 @@ fn make_event(payload: WsPayload) -> WsMessage {
 fn stamp_seq(msg: &WsMessage, seq: i64) -> WsMessage {
     let mut m = msg.clone();
     match &mut m.payload {
-        WsPayload::ToolCallRequested    { seq: s, .. } |
-        WsPayload::ToolCallExecuted     { seq: s, .. } |
-        WsPayload::ToolCallBlocked      { seq: s, .. } |
-        WsPayload::ApprovalRequested    { seq: s, .. } |
-        WsPayload::ApprovalGranted      { seq: s, .. } |
-        WsPayload::ApprovalContested    { seq: s, .. } |
-        WsPayload::ApprovalClaimed      { seq: s, .. } |
-        WsPayload::ApprovalCancelled    { seq: s, .. } |
-        WsPayload::ApprovalDelegated    { seq: s, .. } |
-        WsPayload::ApprovalDisputed     { seq: s, .. } |
-        WsPayload::ApprovalTimedOut     { seq: s, .. } |
-        WsPayload::ActorJoined          { seq: s, .. } |
-        WsPayload::ActorDetached        { seq: s, .. } |
-        WsPayload::OwnershipTransferred { seq: s, .. } |
-        WsPayload::ArtifactCreated      { seq: s, .. } |
-        WsPayload::ArtifactUpdated      { seq: s, .. } |
-        WsPayload::ArtifactDeleted      { seq: s, .. } |
-        WsPayload::AgentStatusChanged   { seq: s, .. } |
-        WsPayload::SessionStatusChanged { seq: s, .. } |
-        WsPayload::MessagePosted        { seq: s, .. } |
-        WsPayload::ContextEntryAdded      { seq: s, .. } |
-        WsPayload::ContextEntryResolved   { seq: s, .. } |
-        WsPayload::ShellCommandStarted    { seq: s, .. } |
-        WsPayload::ShellCommandCompleted  { seq: s, .. } |
-        WsPayload::EffectRateLimited      { seq: s, .. } => *s = seq,
+        WsPayload::ToolCallRequested { seq: s, .. }
+        | WsPayload::ToolCallExecuted { seq: s, .. }
+        | WsPayload::ToolCallBlocked { seq: s, .. }
+        | WsPayload::ApprovalRequested { seq: s, .. }
+        | WsPayload::ApprovalGranted { seq: s, .. }
+        | WsPayload::ApprovalContested { seq: s, .. }
+        | WsPayload::ApprovalClaimed { seq: s, .. }
+        | WsPayload::ApprovalCancelled { seq: s, .. }
+        | WsPayload::ApprovalDelegated { seq: s, .. }
+        | WsPayload::ApprovalDisputed { seq: s, .. }
+        | WsPayload::ApprovalTimedOut { seq: s, .. }
+        | WsPayload::ActorJoined { seq: s, .. }
+        | WsPayload::ActorDetached { seq: s, .. }
+        | WsPayload::OwnershipTransferred { seq: s, .. }
+        | WsPayload::ArtifactCreated { seq: s, .. }
+        | WsPayload::ArtifactUpdated { seq: s, .. }
+        | WsPayload::ArtifactDeleted { seq: s, .. }
+        | WsPayload::AgentStatusChanged { seq: s, .. }
+        | WsPayload::SessionStatusChanged { seq: s, .. }
+        | WsPayload::MessagePosted { seq: s, .. }
+        | WsPayload::ContextEntryAdded { seq: s, .. }
+        | WsPayload::ContextEntryResolved { seq: s, .. }
+        | WsPayload::ShellCommandStarted { seq: s, .. }
+        | WsPayload::ShellCommandCompleted { seq: s, .. }
+        | WsPayload::EffectRateLimited { seq: s, .. } => *s = seq,
         // ApprovalDenied has a different payload type than the others; handle separately
         _ => {}
     }
     // ApprovalDenied doesn't participate in the `|` chain above due to payload type
-    if let WsPayload::ApprovalDenied { seq: s, .. } = &mut m.payload { *s = seq; }
+    if let WsPayload::ApprovalDenied { seq: s, .. } = &mut m.payload {
+        *s = seq;
+    }
     m
 }
 
@@ -1674,32 +2276,49 @@ fn stamp_seq(msg: &WsMessage, seq: i64) -> WsMessage {
 /// module's cold DB rebuild produce snapshots with empty `name`/`owner_name`
 /// (neither has actor-lookup access), so every snapshot funnels through
 /// here on its way to a client regardless of which path produced it.
-async fn make_snapshot_msg(db: &sqlx::PgPool, session_id: &str, seq: i64, snap: &SessionSnapshot) -> WsMessage {
+async fn make_snapshot_msg(
+    db: &sqlx::PgPool,
+    session_id: &str,
+    seq: i64,
+    snap: &SessionSnapshot,
+) -> WsMessage {
     let mut enriched = snap.clone();
 
-    let mut ids: Vec<String> = enriched.members.iter().map(|m| m.actor_id.clone()).collect();
+    let mut ids: Vec<String> = enriched
+        .members
+        .iter()
+        .map(|m| m.actor_id.clone())
+        .collect();
     ids.push(enriched.owner.clone());
     ids.sort();
     ids.dedup();
 
     let names = db::actors::get_many(db, &ids).await.unwrap_or_default();
 
-    enriched.owner_name = names.get(&enriched.owner)
+    enriched.owner_name = names
+        .get(&enriched.owner)
         .map(|a| a.name.clone())
         .unwrap_or_else(|| enriched.owner.clone());
     for m in &mut enriched.members {
-        m.name = names.get(&m.actor_id)
+        m.name = names
+            .get(&m.actor_id)
             .map(|a| a.name.clone())
             .unwrap_or_else(|| m.actor_id.clone());
     }
 
     WsMessage::new(
         Ulid::new().to_string(),
-        WsPayload::SessionSnapshot { session_id: session_id.to_string(), seq, state: enriched },
+        WsPayload::SessionSnapshot {
+            session_id: session_id.to_string(),
+            seq,
+            state: enriched,
+        },
     )
 }
 
-fn can_vote(role: &str) -> bool { role == "owner" || role == "collaborator" }
+fn can_vote(role: &str) -> bool {
+    role == "owner" || role == "collaborator"
+}
 
 async fn send_resolved(
     hub: &Arc<SessionHub>,
@@ -1735,7 +2354,8 @@ pub async fn sweep_expired_approvals(state: Arc<AppState>) {
                     let notify_json = serde_json::json!({
                         "approval_id": &approval_id,
                         "decision": "timed_out",
-                    }).to_string();
+                    })
+                    .to_string();
                     if let Err(e) = sqlx::query("SELECT pg_notify('approval_resolved', $1)")
                         .bind(&notify_json)
                         .execute(&state.db)
@@ -1747,19 +2367,27 @@ pub async fn sweep_expired_approvals(state: Arc<AppState>) {
                     if let Ok(approval) = db::approvals::get(&state.db, &approval_id).await {
                         if let Some(hub) = state.hubs.get(&approval.session_id) {
                             send_resolved(
-                                &hub, &approval.actor_id, &approval_id,
-                                ApprovalDecision::TimedOut, None,
-                            ).await;
+                                &hub,
+                                &approval.actor_id,
+                                &approval_id,
+                                ApprovalDecision::TimedOut,
+                                None,
+                            )
+                            .await;
                             // Use the requesting actor, not "system" — events.actor_id has a
                             // FK → actors(id) and "system" is not seeded in that table.
                             let event_actor = approval.actor_id.clone();
                             let event = make_event(WsPayload::ApprovalTimedOut {
                                 session_id: approval.session_id.clone(),
                                 actor: event_actor.clone(),
-                                timestamp: Utc::now(), seq: 0,
-                                payload: ApprovalEventPayload { approval_id: approval_id.clone() },
+                                timestamp: Utc::now(),
+                                seq: 0,
+                                payload: ApprovalEventPayload {
+                                    approval_id: approval_id.clone(),
+                                },
                             });
-                            commit_event(&state, &hub, &approval.session_id, &event_actor, event).await;
+                            commit_event(&state, &hub, &approval.session_id, &event_actor, event)
+                                .await;
                         }
                     }
                 }
@@ -1834,13 +2462,19 @@ async fn fire_scheduled_transfer(state: &Arc<AppState>, artifact: db::artifacts:
     }
 
     // Capture snapshot BEFORE opening the tx (same pattern as handle_ownership_transfer).
-    let hub_opt: Option<Arc<SessionHub>> = state.hubs.get(&artifact.session_id).map(|e| e.value().clone());
+    let hub_opt: Option<Arc<SessionHub>> = state
+        .hubs
+        .get(&artifact.session_id)
+        .map(|e| e.value().clone());
     let snap_ref: Option<SessionSnapshot> = if let Some(ref hub) = hub_opt {
         current_snap(hub)
     } else {
         match load_snapshot_from_db(state, &artifact.session_id).await {
             Ok((_, snap)) => Some(snap),
-            Err(e) => { tracing::warn!(session_id = %artifact.session_id, "fire_scheduled_transfer: snapshot load: {e}"); None }
+            Err(e) => {
+                tracing::warn!(session_id = %artifact.session_id, "fire_scheduled_transfer: snapshot load: {e}");
+                None
+            }
         }
     };
 
@@ -1859,19 +2493,33 @@ async fn fire_scheduled_transfer(state: &Arc<AppState>, artifact: db::artifacts:
     // Mirrors handle_ownership_transfer exactly so the same code path is exercised.
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
-        Err(e) => { tracing::error!("fire_scheduled_transfer: begin tx: {e}"); return; }
+        Err(e) => {
+            tracing::error!("fire_scheduled_transfer: begin tx: {e}");
+            return;
+        }
     };
 
-    if let Err(e) = sessions::transfer_ownership_in_tx(&mut tx, &artifact.session_id, &from, &data.to).await {
+    if let Err(e) =
+        sessions::transfer_ownership_in_tx(&mut tx, &artifact.session_id, &from, &data.to).await
+    {
         tracing::error!(session_id = %artifact.session_id, "fire_scheduled_transfer: transfer_ownership_in_tx: {e}");
         return;
     }
 
     let (seq, new_snap, stamped) = match stamp_append_snapshot(
-        &mut tx, snap_ref.as_ref(), &artifact.session_id, &from, event,
-    ).await {
+        &mut tx,
+        snap_ref.as_ref(),
+        &artifact.session_id,
+        &from,
+        event,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => { tracing::error!(session_id = %artifact.session_id, "fire_scheduled_transfer: stamp_append_snapshot: {e}"); return; }
+        Err(e) => {
+            tracing::error!(session_id = %artifact.session_id, "fire_scheduled_transfer: stamp_append_snapshot: {e}");
+            return;
+        }
     };
 
     if let Err(e) = sqlx::query("DELETE FROM artifacts WHERE id = $1")
@@ -1934,13 +2582,15 @@ pub async fn sweep_stale_agents(state: Arc<AppState>) {
 
         // Snapshot (session_id, hub) pairs first — avoid holding a DashMap
         // iterator guard across the `.await` calls in the loop below.
-        let hubs: Vec<(String, Arc<SessionHub>)> = state.hubs
+        let hubs: Vec<(String, Arc<SessionHub>)> = state
+            .hubs
             .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
             .collect();
 
         for (session_id, hub) in hubs {
-            let stale: Vec<String> = hub.agent_heartbeats
+            let stale: Vec<String> = hub
+                .agent_heartbeats
                 .iter()
                 .filter(|e| e.value().elapsed() > threshold)
                 .map(|e| e.key().clone())
@@ -1949,11 +2599,18 @@ pub async fn sweep_stale_agents(state: Arc<AppState>) {
             for actor_id in stale {
                 hub.agent_heartbeats.remove(&actor_id);
                 tracing::info!(
-                    session_id, actor_id,
+                    session_id,
+                    actor_id,
                     "sweep_stale_agents: no heartbeat within threshold — marking detached",
                 );
                 broadcast_presence(&hub, &session_id, &actor_id, false, None);
-                let _ = db::session_connections::record(&state.db, &session_id, &actor_id, "disconnected").await;
+                let _ = db::session_connections::record(
+                    &state.db,
+                    &session_id,
+                    &actor_id,
+                    "disconnected",
+                )
+                .await;
             }
         }
     }
@@ -1967,39 +2624,56 @@ mod tests {
 
     fn base_snap() -> SessionSnapshot {
         SessionSnapshot {
-            owner: "alice".to_string(), owner_name: "Alice".to_string(), name: "Test".to_string(),
-            approval_policy: "single_vote".to_string(), status: SessionStatus::Active,
+            owner: "alice".to_string(),
+            owner_name: "Alice".to_string(),
+            name: "Test".to_string(),
+            approval_policy: "single_vote".to_string(),
+            status: SessionStatus::Active,
             members: vec![
                 protocol::types::SessionMember {
-                    actor_id: "alice".to_string(), name: "Alice".to_string(), role: MemberRole::Owner,
-                    attached: true, status: None,
+                    actor_id: "alice".to_string(),
+                    name: "Alice".to_string(),
+                    role: MemberRole::Owner,
+                    attached: true,
+                    status: None,
                 },
                 protocol::types::SessionMember {
-                    actor_id: "bob".to_string(), name: "Bob".to_string(), role: MemberRole::Collaborator,
-                    attached: false, status: None,
+                    actor_id: "bob".to_string(),
+                    name: "Bob".to_string(),
+                    role: MemberRole::Collaborator,
+                    attached: false,
+                    status: None,
                 },
             ],
-            pending_approvals: vec![], artifacts: vec![], context: vec![],
+            pending_approvals: vec![],
+            artifacts: vec![],
+            context: vec![],
         }
     }
 
-    fn ev(payload: WsPayload) -> WsMessage { WsMessage::new("t".to_string(), payload) }
+    fn ev(payload: WsPayload) -> WsMessage {
+        WsMessage::new("t".to_string(), payload)
+    }
 
     fn extract_seq(m: &WsMessage) -> Option<i64> {
         match &m.payload {
-            WsPayload::ActorJoined          { seq, .. } |
-            WsPayload::ActorDetached        { seq, .. } |
-            WsPayload::OwnershipTransferred { seq, .. } |
-            WsPayload::MessagePosted        { seq, .. } => Some(*seq),
+            WsPayload::ActorJoined { seq, .. }
+            | WsPayload::ActorDetached { seq, .. }
+            | WsPayload::OwnershipTransferred { seq, .. }
+            | WsPayload::MessagePosted { seq, .. } => Some(*seq),
             _ => None,
         }
     }
 
     fn pending(id: &str) -> PendingApproval {
         PendingApproval {
-            approval_id: id.to_string(), tool: "bash".to_string(),
-            requested_by: "agent".to_string(), state: ApprovalState::Pending,
-            votes: HashMap::new(), claimed_by: None, expires_at: None,
+            approval_id: id.to_string(),
+            tool: "bash".to_string(),
+            requested_by: "agent".to_string(),
+            state: ApprovalState::Pending,
+            votes: HashMap::new(),
+            claimed_by: None,
+            expires_at: None,
             arguments: serde_json::Value::Null,
         }
     }
@@ -2008,14 +2682,20 @@ mod tests {
     fn approval_requested_adds_and_is_idempotent() {
         let snap = base_snap();
         let event = ev(WsPayload::ApprovalRequested {
-            session_id: "s".into(), actor: "a".into(), timestamp: Utc::now(), seq: 1,
+            session_id: "s".into(),
+            actor: "a".into(),
+            timestamp: Utc::now(),
+            seq: 1,
             payload: protocol::messages::ApprovalRequestedPayload {
-                approval_id: "x".into(), tool: "bash".into(),
-                summary: "".into(), requested_by: "a".into(), expires_at: None,
+                approval_id: "x".into(),
+                tool: "bash".into(),
+                summary: "".into(),
+                requested_by: "a".into(),
+                expires_at: None,
                 arguments: serde_json::Value::Null,
             },
         });
-        let once  = apply_event(&snap, &event);
+        let once = apply_event(&snap, &event);
         let twice = apply_event(&once, &event);
         assert_eq!(once.pending_approvals.len(), 1);
         assert_eq!(twice.pending_approvals.len(), 1, "idempotent");
@@ -2026,22 +2706,38 @@ mod tests {
         let mut snap = base_snap();
         snap.pending_approvals.push(pending("x"));
         let event = ev(WsPayload::ApprovalClaimed {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 2,
-            payload: ApprovalEventPayload { approval_id: "x".into() },
+            session_id: "s".into(),
+            actor: "alice".into(),
+            timestamp: Utc::now(),
+            seq: 2,
+            payload: ApprovalEventPayload {
+                approval_id: "x".into(),
+            },
         });
         let next = apply_event(&snap, &event);
         assert_eq!(next.pending_approvals[0].state, ApprovalState::Claimed);
-        assert_eq!(next.pending_approvals[0].claimed_by.as_deref(), Some("alice"));
+        assert_eq!(
+            next.pending_approvals[0].claimed_by.as_deref(),
+            Some("alice")
+        );
     }
 
     #[test]
     fn approval_granted_removes() {
         let mut snap = base_snap();
         snap.pending_approvals.push(pending("x"));
-        let next = apply_event(&snap, &ev(WsPayload::ApprovalGranted {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 3,
-            payload: ApprovalEventPayload { approval_id: "x".into() },
-        }));
+        let next = apply_event(
+            &snap,
+            &ev(WsPayload::ApprovalGranted {
+                session_id: "s".into(),
+                actor: "alice".into(),
+                timestamp: Utc::now(),
+                seq: 3,
+                payload: ApprovalEventPayload {
+                    approval_id: "x".into(),
+                },
+            }),
+        );
         assert!(next.pending_approvals.is_empty());
     }
 
@@ -2049,41 +2745,96 @@ mod tests {
     fn approval_denied_removes() {
         let mut snap = base_snap();
         snap.pending_approvals.push(pending("x"));
-        let next = apply_event(&snap, &ev(WsPayload::ApprovalDenied {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 3,
-            payload: protocol::messages::ApprovalDeniedPayload {
-                approval_id: "x".into(), reason: None,
-            },
-        }));
+        let next = apply_event(
+            &snap,
+            &ev(WsPayload::ApprovalDenied {
+                session_id: "s".into(),
+                actor: "alice".into(),
+                timestamp: Utc::now(),
+                seq: 3,
+                payload: protocol::messages::ApprovalDeniedPayload {
+                    approval_id: "x".into(),
+                    reason: None,
+                },
+            }),
+        );
         assert!(next.pending_approvals.is_empty());
     }
 
     #[test]
     fn ownership_transfer() {
         let snap = base_snap();
-        let next = apply_event(&snap, &ev(WsPayload::OwnershipTransferred {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 4,
-            payload: protocol::messages::OwnershipTransferredPayload {
-                from: "alice".into(), to: "bob".into(),
-            },
-        }));
+        let next = apply_event(
+            &snap,
+            &ev(WsPayload::OwnershipTransferred {
+                session_id: "s".into(),
+                actor: "alice".into(),
+                timestamp: Utc::now(),
+                seq: 4,
+                payload: protocol::messages::OwnershipTransferredPayload {
+                    from: "alice".into(),
+                    to: "bob".into(),
+                },
+            }),
+        );
         assert_eq!(next.owner, "bob");
-        assert_eq!(next.members.iter().find(|m| m.actor_id == "alice").unwrap().role, MemberRole::Collaborator);
-        assert_eq!(next.members.iter().find(|m| m.actor_id == "bob").unwrap().role,   MemberRole::Owner);
+        assert_eq!(
+            next.members
+                .iter()
+                .find(|m| m.actor_id == "alice")
+                .unwrap()
+                .role,
+            MemberRole::Collaborator
+        );
+        assert_eq!(
+            next.members
+                .iter()
+                .find(|m| m.actor_id == "bob")
+                .unwrap()
+                .role,
+            MemberRole::Owner
+        );
     }
 
     #[test]
     fn actor_joined_sets_attached_and_adds_new() {
         let snap = base_snap();
-        let bob_joined = apply_event(&snap, &ev(WsPayload::ActorJoined {
-            session_id: "s".into(), actor: "bob".into(), timestamp: Utc::now(), seq: 5, role: None, name: None,
-        }));
-        assert!(bob_joined.members.iter().find(|m| m.actor_id == "bob").unwrap().attached);
+        let bob_joined = apply_event(
+            &snap,
+            &ev(WsPayload::ActorJoined {
+                session_id: "s".into(),
+                actor: "bob".into(),
+                timestamp: Utc::now(),
+                seq: 5,
+                role: None,
+                name: None,
+            }),
+        );
+        assert!(
+            bob_joined
+                .members
+                .iter()
+                .find(|m| m.actor_id == "bob")
+                .unwrap()
+                .attached
+        );
 
-        let carol_joined = apply_event(&snap, &ev(WsPayload::ActorJoined {
-            session_id: "s".into(), actor: "carol".into(), timestamp: Utc::now(), seq: 5, role: None, name: None,
-        }));
-        let carol = carol_joined.members.iter().find(|m| m.actor_id == "carol").unwrap();
+        let carol_joined = apply_event(
+            &snap,
+            &ev(WsPayload::ActorJoined {
+                session_id: "s".into(),
+                actor: "carol".into(),
+                timestamp: Utc::now(),
+                seq: 5,
+                role: None,
+                name: None,
+            }),
+        );
+        let carol = carol_joined
+            .members
+            .iter()
+            .find(|m| m.actor_id == "carol")
+            .unwrap();
         assert_eq!(carol.role, MemberRole::Collaborator);
         assert!(carol.attached);
     }
@@ -2091,49 +2842,92 @@ mod tests {
     #[test]
     fn actor_detached_clears_attached() {
         let snap = base_snap();
-        let next = apply_event(&snap, &ev(WsPayload::ActorDetached {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 6,
-        }));
-        assert!(!next.members.iter().find(|m| m.actor_id == "alice").unwrap().attached);
+        let next = apply_event(
+            &snap,
+            &ev(WsPayload::ActorDetached {
+                session_id: "s".into(),
+                actor: "alice".into(),
+                timestamp: Utc::now(),
+                seq: 6,
+            }),
+        );
+        assert!(
+            !next
+                .members
+                .iter()
+                .find(|m| m.actor_id == "alice")
+                .unwrap()
+                .attached
+        );
     }
 
     #[test]
     fn artifact_lifecycle() {
         let snap = base_snap();
-        let created = apply_event(&snap, &ev(WsPayload::ArtifactCreated {
-            session_id: "s".into(), actor: "a".into(), timestamp: Utc::now(), seq: 7,
-            payload: protocol::messages::ArtifactPayload {
-                artifact_id: "z".into(), name: "report.md".into(),
-                artifact_type: Some("document".into()),
-            },
-        }));
+        let created = apply_event(
+            &snap,
+            &ev(WsPayload::ArtifactCreated {
+                session_id: "s".into(),
+                actor: "a".into(),
+                timestamp: Utc::now(),
+                seq: 7,
+                payload: protocol::messages::ArtifactPayload {
+                    artifact_id: "z".into(),
+                    name: "report.md".into(),
+                    artifact_type: Some("document".into()),
+                },
+            }),
+        );
         assert_eq!(created.artifacts.len(), 1);
         // idempotent
-        let again = apply_event(&created, &ev(WsPayload::ArtifactCreated {
-            session_id: "s".into(), actor: "a".into(), timestamp: Utc::now(), seq: 7,
-            payload: protocol::messages::ArtifactPayload {
-                artifact_id: "z".into(), name: "report.md".into(),
-                artifact_type: Some("document".into()),
-            },
-        }));
+        let again = apply_event(
+            &created,
+            &ev(WsPayload::ArtifactCreated {
+                session_id: "s".into(),
+                actor: "a".into(),
+                timestamp: Utc::now(),
+                seq: 7,
+                payload: protocol::messages::ArtifactPayload {
+                    artifact_id: "z".into(),
+                    name: "report.md".into(),
+                    artifact_type: Some("document".into()),
+                },
+            }),
+        );
         assert_eq!(again.artifacts.len(), 1);
         // delete
-        let deleted = apply_event(&again, &ev(WsPayload::ArtifactDeleted {
-            session_id: "s".into(), actor: "a".into(), timestamp: Utc::now(), seq: 8,
-            payload: protocol::messages::ArtifactPayload {
-                artifact_id: "z".into(), name: "report.md".into(), artifact_type: None,
-            },
-        }));
+        let deleted = apply_event(
+            &again,
+            &ev(WsPayload::ArtifactDeleted {
+                session_id: "s".into(),
+                actor: "a".into(),
+                timestamp: Utc::now(),
+                seq: 8,
+                payload: protocol::messages::ArtifactPayload {
+                    artifact_id: "z".into(),
+                    name: "report.md".into(),
+                    artifact_type: None,
+                },
+            }),
+        );
         assert!(deleted.artifacts.is_empty());
     }
 
     #[test]
     fn message_posted_is_noop() {
         let snap = base_snap();
-        let next = apply_event(&snap, &ev(WsPayload::MessagePosted {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 9,
-            payload: protocol::messages::MessagePostedPayload { content: "hi".into() },
-        }));
+        let next = apply_event(
+            &snap,
+            &ev(WsPayload::MessagePosted {
+                session_id: "s".into(),
+                actor: "alice".into(),
+                timestamp: Utc::now(),
+                seq: 9,
+                payload: protocol::messages::MessagePostedPayload {
+                    content: "hi".into(),
+                },
+            }),
+        );
         assert_eq!(next.owner, snap.owner);
         assert_eq!(next.members.len(), snap.members.len());
     }
@@ -2141,7 +2935,12 @@ mod tests {
     #[test]
     fn stamp_seq_roundtrip() {
         let m = ev(WsPayload::ActorJoined {
-            session_id: "s".into(), actor: "alice".into(), timestamp: Utc::now(), seq: 0, role: None, name: None,
+            session_id: "s".into(),
+            actor: "alice".into(),
+            timestamp: Utc::now(),
+            seq: 0,
+            role: None,
+            name: None,
         });
         let stamped = stamp_seq(&m, 99);
         assert_eq!(extract_seq(&stamped), Some(99));

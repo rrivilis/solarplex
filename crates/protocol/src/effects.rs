@@ -41,15 +41,15 @@ impl Tier1Type {
     pub fn from_db_str(s: &str) -> Option<Self> {
         match s {
             "artifact_patch" => Some(Self::ArtifactPatch),
-            "context_entry"  => Some(Self::ContextEntry),
-            _                => None,
+            "context_entry" => Some(Self::ContextEntry),
+            _ => None,
         }
     }
 
     pub fn as_db_str(&self) -> &'static str {
         match self {
             Self::ArtifactPatch => "artifact_patch",
-            Self::ContextEntry  => "context_entry",
+            Self::ContextEntry => "context_entry",
         }
     }
 }
@@ -73,11 +73,11 @@ pub struct Ring0Effect {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ring0Receipt {
     pub proposal_id: String,
-    pub event_id:    String,
+    pub event_id: String,
     /// Hash of state before the effect (sha256:<hex>).
-    pub h_before:    String,
+    pub h_before: String,
     /// Hash of state after the effect (sha256:<hex>).
-    pub h_after:     String,
+    pub h_after: String,
 }
 
 // ── Ring 1: filesystem writes ─────────────────────────────────────────────────
@@ -93,7 +93,7 @@ pub struct HashPair {
     /// Hash the agent claims the file has before the write (sha256:<hex>).
     pub before: String,
     /// Hash the agent claims the file will have after the write (sha256:<hex>).
-    pub after:  String,
+    pub after: String,
 }
 
 /// A Ring-1 effect: filesystem write authorized via receipt arg-binding with
@@ -104,11 +104,11 @@ pub struct HashPair {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ring1Effect {
     pub receipt_id: String,
-    pub cap_id:     String,
-    pub tool:       String,
-    pub path:       String,
+    pub cap_id: String,
+    pub tool: String,
+    pub path: String,
     /// The approved hashes from the receipt (what the human saw).
-    pub hashes:     HashPair,
+    pub hashes: HashPair,
 }
 
 /// Receipt returned by a Ring-1 attest call.
@@ -120,7 +120,7 @@ pub struct Ring1Receipt {
     pub attestation_id: String,
     /// True when observed hashes diverged from approved hashes.
     /// A security event recorded permanently in `file_write_attestations`.
-    pub hash_mismatch:  bool,
+    pub hash_mismatch: bool,
 }
 
 // ── Ring 2: shell / imperative ────────────────────────────────────────────────
@@ -135,7 +135,7 @@ pub struct Ring1Receipt {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileOps {
     pub create: bool,
-    pub write:  bool,
+    pub write: bool,
     pub delete: bool,
     pub rename: bool,
 }
@@ -147,7 +147,7 @@ impl FileOps {
 
     pub fn merge(&mut self, other: &FileOps) {
         self.create |= other.create;
-        self.write  |= other.write;
+        self.write |= other.write;
         self.delete |= other.delete;
         self.rename |= other.rename;
     }
@@ -157,7 +157,7 @@ impl FileOps {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEvent {
     pub path: String,
-    pub ops:  FileOps,
+    pub ops: FileOps,
     /// `(st_dev, st_ino)` of `path` as of scout completion, if it existed at
     /// that moment. `None` for a path the scout only ever saw created
     /// (nothing to stat yet). This is the identity the human's approval is
@@ -171,7 +171,7 @@ pub struct FileEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEffect {
     pub path: PathPattern,
-    pub ops:  FileOps,
+    pub ops: FileOps,
     /// Carried from the scout's `FileEvent::identity` for this path (see that
     /// field's doc). The gap this closes: `PathPattern`'s anchor is a string,
     /// re-resolved fresh by both `executor.rs`'s bwrap bind and
@@ -215,9 +215,13 @@ impl PathPattern {
     /// Used as the bind-mount target and landlock rule path.
     pub fn anchor_path(&self) -> &str {
         let pat = &self.0;
-        if let Some(p) = pat.strip_suffix("/**") { p }
-        else if let Some(p) = pat.strip_suffix("/*") { p }
-        else { pat }
+        if let Some(p) = pat.strip_suffix("/**") {
+            p
+        } else if let Some(p) = pat.strip_suffix("/*") {
+            p
+        } else {
+            pat
+        }
     }
 }
 
@@ -263,17 +267,24 @@ impl DeclaredEffects {
         for fe in &scout.file_effects {
             let entry = map.entry(fe.path.clone()).or_default();
             entry.0.merge(&fe.ops);
-            if fe.identity.is_some() { entry.1 = fe.identity; }
+            if fe.identity.is_some() {
+                entry.1 = fe.identity;
+            }
         }
-        let file_effects = map.into_iter()
-            .map(|(path, (ops, identity))| FileEffect { path: PathPattern(path), ops, identity })
+        let file_effects = map
+            .into_iter()
+            .map(|(path, (ops, identity))| FileEffect {
+                path: PathPattern(path),
+                ops,
+                identity,
+            })
             .collect();
 
         DeclaredEffects {
             file_effects,
-            network_access:      !scout.network_connects.is_empty(),
+            network_access: !scout.network_connects.is_empty(),
             // Scout subprocesses[0] is the command itself; >1 means it spawns children.
-            subprocess_exec:     scout.subprocesses.len() > 1,
+            subprocess_exec: scout.subprocesses.len() > 1,
             allow_dynamic_paths: false,
         }
     }
@@ -291,8 +302,8 @@ impl DeclaredEffects {
 /// run (non-Linux, strace absent, or queue-full degradation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ring2Effect {
-    pub approval_id:      String,
-    pub tool:             String,
+    pub approval_id: String,
+    pub tool: String,
     pub declared_effects: Option<DeclaredEffects>,
 }
 
@@ -315,22 +326,22 @@ pub struct Ring2Effect {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScoutManifest {
     /// The command string that was scouted (as extracted from tool args).
-    pub command:          String,
+    pub command: String,
     /// Files the command opened for reading only.
-    pub file_reads:       Vec<String>,
+    pub file_reads: Vec<String>,
     /// Per-path filesystem effects observed (openat writes, unlink, rename).
     /// Replaces the old flat `file_writes` list; carries per-op granularity.
-    pub file_effects:     Vec<FileEvent>,
+    pub file_effects: Vec<FileEvent>,
     /// Network destinations the command attempted to connect to ("ip:port").
     pub network_connects: Vec<String>,
     /// Processes the command spawned (argv\[0\] of each execve).
-    pub subprocesses:     Vec<String>,
+    pub subprocesses: Vec<String>,
     /// Wall-clock time the scout ran before completing or being killed (milliseconds).
-    pub duration_ms:      u64,
+    pub duration_ms: u64,
     /// Observation backend used.
-    pub sandbox_backend:  String,
+    pub sandbox_backend: String,
     /// True when the event count hit the capture cap.  Manifest is partial.
-    pub truncated:        bool,
+    pub truncated: bool,
 }
 
 /// Observed effects of a Ring-2 command's actual execution, captured post-hoc
@@ -341,9 +352,9 @@ pub struct ScoutManifest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecutionManifest {
     /// Files that changed (mtime or size) relative to the pre-execution snapshot.
-    pub files_changed:     Vec<String>,
+    pub files_changed: Vec<String>,
     /// Paths the scout predicted would be written that were NOT changed.
-    pub missing_writes:    Vec<String>,
+    pub missing_writes: Vec<String>,
     /// Paths that changed but were NOT in the scout's write list.
     pub unexpected_writes: Vec<String>,
 }

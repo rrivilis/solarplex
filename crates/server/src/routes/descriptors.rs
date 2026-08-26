@@ -32,17 +32,14 @@ pub fn router() -> Router<Arc<AppState>> {
 
 /// GET /api/descriptors — every local descriptor the caller currently holds.
 #[autometrics]
-async fn list_mine(
-    headers: HeaderMap,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn list_mine(headers: HeaderMap, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     match descriptors::list_for_actor(&state.db, &actor_id).await {
         Ok(rows) => Json(rows).into_response(),
-        Err(e)   => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -66,12 +63,12 @@ async fn resolve(
     Json(body): Json<ResolveBody>,
 ) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     match descriptors::resolve(&state.db, &actor_id, body.local_index).await {
-        Ok(row)                    => Json(row).into_response(),
+        Ok(row) => Json(row).into_response(),
         Err(db::DbError::NotFound) => StatusCode::NOT_FOUND.into_response(),
-        Err(e)                     => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

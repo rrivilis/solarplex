@@ -36,8 +36,7 @@ use std::time::Instant;
 use chrono::Utc;
 
 use session::{
-    transition, InboundEvent, SessionEvent, SessionMemory, SessionState,
-    SagaOutcome, SagaStepSpec,
+    transition, InboundEvent, SagaOutcome, SagaStepSpec, SessionEvent, SessionMemory, SessionState,
 };
 
 // ── dhat opt-in ──────────────────────────────────────────────────────────────
@@ -61,24 +60,24 @@ fn generate_events(n: usize) -> Vec<SessionEvent> {
     // Bootstrap: session + owner
     events.push(SessionEvent::SessionCreated {
         session_id: "bench-session".into(),
-        owner_id:   "owner-001".into(),
-        name:       "replay-bench".into(),
-        policy:     "single_vote".into(),
+        owner_id: "owner-001".into(),
+        name: "replay-bench".into(),
+        policy: "single_vote".into(),
         created_at: now,
     });
     events.push(SessionEvent::ParticipantJoined {
-        actor_id:  "owner-001".into(),
-        role:      "owner".into(),
+        actor_id: "owner-001".into(),
+        role: "owner".into(),
         joined_at: now,
     });
     events.push(SessionEvent::CapDelegated {
-        cap_id:      "cap-root".into(),
-        parent_cap:  None,
-        actor_id:    "owner-001".into(),
+        cap_id: "cap-root".into(),
+        parent_cap: None,
+        actor_id: "owner-001".into(),
         permissions: vec!["*".into()],
-        epoch:       0,
-        stratum:     0,
-        issued_at:   now,
+        epoch: 0,
+        stratum: 0,
+        issued_at: now,
     });
 
     // Cycle through event patterns
@@ -89,50 +88,50 @@ fn generate_events(n: usize) -> Vec<SessionEvent> {
         match cycle {
             0 => {
                 events.push(SessionEvent::CapDelegated {
-                    cap_id:      format!("cap-{id}"),
-                    parent_cap:  Some("cap-root".into()),
-                    actor_id:    format!("agent-{id}"),
+                    cap_id: format!("cap-{id}"),
+                    parent_cap: Some("cap-root".into()),
+                    actor_id: format!("agent-{id}"),
                     permissions: vec!["view".into()],
-                    epoch:       0,
-                    stratum:     1,
-                    issued_at:   now,
+                    epoch: 0,
+                    stratum: 1,
+                    issued_at: now,
                 });
             }
             1 => {
                 events.push(SessionEvent::SagaBegun {
-                    saga_id:   format!("saga-{id}"),
+                    saga_id: format!("saga-{id}"),
                     saga_type: "custom".into(),
-                    steps:     vec![SagaStepSpec {
-                        step_idx:     0,
-                        participant:  "participant-001".into(),
-                        message:      serde_json::json!({"action": "do"}),
+                    steps: vec![SagaStepSpec {
+                        step_idx: 0,
+                        participant: "participant-001".into(),
+                        message: serde_json::json!({"action": "do"}),
                         compensation: serde_json::json!({"action": "undo"}),
-                        timeout_ms:   30_000,
+                        timeout_ms: 30_000,
                     }],
-                    begun_at:  now,
-                    metadata:  serde_json::json!({}),
+                    begun_at: now,
+                    metadata: serde_json::json!({}),
                 });
                 events.push(SessionEvent::SagaStepSent {
-                    saga_id:     format!("saga-{id}"),
-                    step_idx:    0,
+                    saga_id: format!("saga-{id}"),
+                    step_idx: 0,
                     participant: "participant-001".into(),
-                    sent_at:     now,
+                    sent_at: now,
                 });
             }
             2 => {
                 let prev = i - 1;
                 events.push(SessionEvent::SagaStepAcked {
-                    saga_id:  format!("saga-{prev:08}"),
+                    saga_id: format!("saga-{prev:08}"),
                     step_idx: 0,
-                    outcome:  SagaOutcome::Committed,
+                    outcome: SagaOutcome::Committed,
                     acked_at: now,
                 });
             }
             3 => {
                 let prev2 = i - 2;
                 events.push(SessionEvent::SagaTerminated {
-                    saga_id:       format!("saga-{prev2:08}"),
-                    outcome:       session::SagaTermination::Completed,
+                    saga_id: format!("saga-{prev2:08}"),
+                    outcome: session::SagaTermination::Completed,
                     terminated_at: now,
                 });
             }
@@ -149,14 +148,18 @@ fn generate_events(n: usize) -> Vec<SessionEvent> {
 
 /// Cold replay: fold all events from an empty `SessionMemory`.
 fn replay_cold(events: &[SessionEvent]) -> (SessionState, SessionMemory) {
-    let mut state  = SessionState::Active;
+    let mut state = SessionState::Active;
     let mut memory = SessionMemory::new("bench-session".into(), "owner-001".into());
     for (seq, event) in events.iter().enumerate() {
         let (s, m, _) = transition(
-            state, memory,
-            InboundEvent::Replayed { seq: seq as i64 + 1, event: event.clone() },
+            state,
+            memory,
+            InboundEvent::Replayed {
+                seq: seq as i64 + 1,
+                event: event.clone(),
+            },
         );
-        state  = s;
+        state = s;
         memory = m;
     }
     (state, memory)
@@ -168,22 +171,26 @@ fn replay_cold(events: &[SessionEvent]) -> (SessionState, SessionMemory) {
 /// the cold path to `snap_at` first (one-time setup, not included in timing),
 /// then bench the delta replay only.
 fn replay_snapshot_assisted(
-    events:   &[SessionEvent],
-    snap_at:  usize,
+    events: &[SessionEvent],
+    snap_at: usize,
 ) -> (SessionState, SessionMemory) {
     // Setup (not timed): build state up to the snapshot point.
     let (snap_state, snap_memory) = replay_cold(&events[..snap_at]);
 
     // Timed: delta replay from snapshot.
-    let mut state  = snap_state;
+    let mut state = snap_state;
     let mut memory = snap_memory;
     for (i, event) in events[snap_at..].iter().enumerate() {
         let seq = (snap_at + i) as i64 + 1;
         let (s, m, _) = transition(
-            state, memory,
-            InboundEvent::Replayed { seq, event: event.clone() },
+            state,
+            memory,
+            InboundEvent::Replayed {
+                seq,
+                event: event.clone(),
+            },
         );
-        state  = s;
+        state = s;
         memory = m;
     }
     (state, memory)
@@ -195,7 +202,8 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let use_dhat = args.iter().any(|a| a == "--dhat");
-    let n: usize = args.iter()
+    let n: usize = args
+        .iter()
         .filter(|a| !a.starts_with("--") && *a != &args[0])
         .next()
         .and_then(|s| s.parse().ok())

@@ -130,12 +130,12 @@ pub async fn append_in_tx(
 /// Use this variant from paths where `serde_json::to_value` would otherwise
 /// build an intermediate `Value` tree only to have sqlx serialize it again.
 pub async fn append_raw_in_tx(
-    tx:           &mut Transaction<'_, Postgres>,
-    session_id:   &str,
-    actor_id:     &str,
-    event_type:   &str,
+    tx: &mut Transaction<'_, Postgres>,
+    session_id: &str,
+    actor_id: &str,
+    event_type: &str,
     payload_json: &str,
-    seq:          i64,
+    seq: i64,
 ) -> DbResult<()> {
     let id = Ulid::new().to_string();
     sqlx::query(
@@ -156,11 +156,11 @@ pub async fn append_raw_in_tx(
 
 /// A single row to insert via [`append_batch_raw_in_tx`].
 pub struct RawEventRow<'a> {
-    pub session_id:   &'a str,
-    pub actor_id:     &'a str,
-    pub event_type:   &'a str,
+    pub session_id: &'a str,
+    pub actor_id: &'a str,
+    pub event_type: &'a str,
     pub payload_json: &'a str,
-    pub seq:          i64,
+    pub seq: i64,
 }
 
 /// Append multiple events in one transaction, amortising the fsync across all rows.
@@ -171,19 +171,19 @@ pub struct RawEventRow<'a> {
 ///
 /// Returns the ULID IDs assigned to each row in the same order as `rows`.
 pub async fn append_batch_raw_in_tx<'a>(
-    tx:   &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     rows: &[RawEventRow<'a>],
 ) -> DbResult<Vec<String>> {
     if rows.is_empty() {
         return Ok(vec![]);
     }
 
-    let mut ids:     Vec<String> = Vec::with_capacity(rows.len());
-    let mut sids:    Vec<&str>   = Vec::with_capacity(rows.len());
-    let mut aids:    Vec<&str>   = Vec::with_capacity(rows.len());
-    let mut etypes:  Vec<&str>   = Vec::with_capacity(rows.len());
-    let mut payloads: Vec<&str>  = Vec::with_capacity(rows.len());
-    let mut seqs:    Vec<i64>    = Vec::with_capacity(rows.len());
+    let mut ids: Vec<String> = Vec::with_capacity(rows.len());
+    let mut sids: Vec<&str> = Vec::with_capacity(rows.len());
+    let mut aids: Vec<&str> = Vec::with_capacity(rows.len());
+    let mut etypes: Vec<&str> = Vec::with_capacity(rows.len());
+    let mut payloads: Vec<&str> = Vec::with_capacity(rows.len());
+    let mut seqs: Vec<i64> = Vec::with_capacity(rows.len());
 
     for row in rows {
         ids.push(Ulid::new().to_string());
@@ -229,7 +229,12 @@ pub async fn append_batch_raw_in_tx<'a>(
 ///
 /// Called outside the transaction (non-transactional notify) so a slow
 /// notify cannot block the commit path.
-pub async fn notify_session(pool: &PgPool, session_id: &str, seq: i64, replica_id: &str) -> DbResult<()> {
+pub async fn notify_session(
+    pool: &PgPool,
+    session_id: &str,
+    seq: i64,
+    replica_id: &str,
+) -> DbResult<()> {
     sqlx::query("SELECT pg_notify('session_events', $1)")
         .bind(format!("{session_id}:{seq}:{replica_id}"))
         .execute(pool)
@@ -269,11 +274,13 @@ pub async fn list(
 /// check needed here — the caller already only knows about sessions they
 /// belong to.
 pub async fn list_recent_across_sessions(
-    pool:        &PgPool,
+    pool: &PgPool,
     session_ids: &[String],
-    limit:       i64,
+    limit: i64,
 ) -> DbResult<Vec<EventRow>> {
-    if session_ids.is_empty() { return Ok(Vec::new()); }
+    if session_ids.is_empty() {
+        return Ok(Vec::new());
+    }
     // LATERAL, not a flat `WHERE session_id = ANY($1) ORDER BY timestamp
     // DESC LIMIT $2`: that shape can't be served by the events_session_timestamp
     // (session_id, timestamp) index for a *global* top-N across multiple
@@ -311,13 +318,12 @@ pub async fn list_recent_across_sessions(
 }
 
 pub async fn current_seq(pool: &PgPool, session_id: &str) -> DbResult<i64> {
-    let row = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT MAX(seq) FROM events WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await
-    .map_err(DbError::from)?;
+    let row =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(seq) FROM events WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .map_err(DbError::from)?;
     Ok(row.unwrap_or(0))
 }
 

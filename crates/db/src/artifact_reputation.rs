@@ -15,26 +15,26 @@ pub const TLSH_CLUSTER_THRESHOLD: i32 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct HashRow {
-    pub sha256:           String,
-    pub tlsh:             Option<String>,
-    pub family_id:        Option<String>,
-    pub first_seen:       DateTime<Utc>,
-    pub last_seen:        DateTime<Utc>,
-    pub seen_count:       i32,
-    pub yara_matches:     Vec<String>,
+    pub sha256: String,
+    pub tlsh: Option<String>,
+    pub family_id: Option<String>,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub seen_count: i32,
+    pub yara_matches: Vec<String>,
     pub verdict_override: Option<String>,
-    pub verdict_source:   Option<String>,
+    pub verdict_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct FamilyRow {
-    pub id:            String,
-    pub name:          String,
-    pub verdict:       String,
+    pub id: String,
+    pub name: String,
+    pub verdict: String,
     pub tlsh_centroid: Option<String>,
-    pub yara_rules:    Vec<String>,
-    pub member_count:  i32,
-    pub created_at:    DateTime<Utc>,
+    pub yara_rules: Vec<String>,
+    pub member_count: i32,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,19 +49,19 @@ pub enum Verdict {
 impl Verdict {
     pub fn from_str(s: &str) -> Self {
         match s {
-            "benign"     => Verdict::Benign,
+            "benign" => Verdict::Benign,
             "suspicious" => Verdict::Suspicious,
-            "malicious"  => Verdict::Malicious,
-            _            => Verdict::Unknown,
+            "malicious" => Verdict::Malicious,
+            _ => Verdict::Unknown,
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Verdict::Unknown    => "unknown",
-            Verdict::Benign     => "benign",
+            Verdict::Unknown => "unknown",
+            Verdict::Benign => "benign",
             Verdict::Suspicious => "suspicious",
-            Verdict::Malicious  => "malicious",
+            Verdict::Malicious => "malicious",
         }
     }
 }
@@ -127,9 +127,9 @@ pub async fn upsert_hash(pool: &PgPool, sha256: &str) -> DbResult<()> {
 /// Update a hash's YARA matches and TLSH from an async scan result.
 /// Returns all family rows (for caller-side TLSH clustering).
 pub async fn update_scan_results(
-    pool:         &PgPool,
-    sha256:       &str,
-    tlsh:         Option<&str>,
+    pool: &PgPool,
+    sha256: &str,
+    tlsh: Option<&str>,
     yara_matches: &[String],
 ) -> DbResult<Vec<FamilyRow>> {
     sqlx::query(
@@ -158,9 +158,9 @@ pub async fn update_scan_results(
 
 /// Assign a family to a hash and increment the family's member_count.
 pub async fn assign_family(
-    pool:           &PgPool,
-    sha256:         &str,
-    family_id:      &str,
+    pool: &PgPool,
+    sha256: &str,
+    family_id: &str,
     verdict_source: &str,
 ) -> DbResult<()> {
     sqlx::query(
@@ -185,7 +185,7 @@ pub async fn assign_family(
 /// Find the family whose `yara_rules` array contains `rule_name`, or create one.
 /// Returns `(family_id, verdict)`.
 pub async fn find_or_create_yara_family(
-    pool:      &PgPool,
+    pool: &PgPool,
     rule_name: &str,
 ) -> DbResult<(String, String)> {
     if let Some(f) = sqlx::query_as::<_, FamilyRow>(
@@ -217,9 +217,16 @@ pub async fn find_or_create_yara_family(
 }
 
 /// Create a new TLSH-cluster family with this hash as the centroid.
-pub async fn create_tlsh_family(pool: &PgPool, centroid_sha256: &str, tlsh: &str) -> DbResult<String> {
-    let id   = Ulid::new().to_string();
-    let name = format!("tlsh-cluster-{}", &centroid_sha256[..8.min(centroid_sha256.len())]);
+pub async fn create_tlsh_family(
+    pool: &PgPool,
+    centroid_sha256: &str,
+    tlsh: &str,
+) -> DbResult<String> {
+    let id = Ulid::new().to_string();
+    let name = format!(
+        "tlsh-cluster-{}",
+        &centroid_sha256[..8.min(centroid_sha256.len())]
+    );
     sqlx::query(
         "INSERT INTO artifact_families (id, name, verdict, tlsh_centroid)
          VALUES ($1, $2, 'unknown', $3)",
@@ -234,7 +241,11 @@ pub async fn create_tlsh_family(pool: &PgPool, centroid_sha256: &str, tlsh: &str
 
 fn infer_verdict_from_rule(rule_name: &str) -> &'static str {
     let lower = rule_name.to_lowercase();
-    if lower.contains("malware") || lower.contains("malicious") || lower.contains("ransomware") || lower.contains("trojan") {
+    if lower.contains("malware")
+        || lower.contains("malicious")
+        || lower.contains("ransomware")
+        || lower.contains("trojan")
+    {
         "malicious"
     } else {
         "suspicious"

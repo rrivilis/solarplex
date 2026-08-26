@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use protocol::types::EntityHandle;
 
-use crate::{client::Client, config::Ctx, output::*};
 use super::{act, actor, approval, artifact, ask, cap, context, invite, session};
+use crate::{client::Client, config::Ctx, output::*};
 
 // ── Plumb command ─────────────────────────────────────────────────────────────
 
@@ -34,15 +34,17 @@ pub enum PlumbCmd {
         untrusted: bool,
     },
     /// Resolve a bare ULID to its entity type (heuristic-first, API fallback)
-    Resolve {
-        id: String,
-    },
+    Resolve { id: String },
 }
 
 pub async fn run(args: PlumbArgs, ctx: &Ctx) -> Result<()> {
     match args.cmd {
-        PlumbCmd::Run { text, dry_run, untrusted } => plumb(&text, dry_run, untrusted, ctx).await,
-        PlumbCmd::Resolve { id }                   => resolve(&id, ctx).await,
+        PlumbCmd::Run {
+            text,
+            dry_run,
+            untrusted,
+        } => plumb(&text, dry_run, untrusted, ctx).await,
+        PlumbCmd::Resolve { id } => resolve(&id, ctx).await,
     }
 }
 
@@ -84,21 +86,21 @@ enum Action {
 impl Action {
     fn describe(&self) -> String {
         match self {
-            Action::ArtifactGet(id)      => format!("artifact get {id}"),
-            Action::ContextShow(id)      => format!("context show {id}"),
-            Action::ApprovalWait(id)     => format!("approval wait {id}"),
-            Action::CapGet(id)           => format!("cap get {id}"),
-            Action::ActorShow(id)        => format!("actor show {id}"),
-            Action::SessionAsk(id)       => format!("ask session/{id}"),
-            Action::SessionEnter(id)     => format!("session enter {id}"),
+            Action::ArtifactGet(id) => format!("artifact get {id}"),
+            Action::ContextShow(id) => format!("context show {id}"),
+            Action::ApprovalWait(id) => format!("approval wait {id}"),
+            Action::CapGet(id) => format!("cap get {id}"),
+            Action::ActorShow(id) => format!("actor show {id}"),
+            Action::SessionAsk(id) => format!("ask session/{id}"),
+            Action::SessionEnter(id) => format!("session enter {id}"),
             Action::SessionWorkspace(id) => format!("session workspace {id}"),
-            Action::SessionNewPane(id)   => format!("session new-pane {id}"),
-            Action::SessionContext(id)   => format!("context ls {id}"),
-            Action::Ask(argv)            => format!("ask {}", argv.join(" ")),
-            Action::Act(entity, tr)      => format!("act {entity} {tr}"),
-            Action::Resolve(id)          => format!("resolve {id}"),
-            Action::InviteShow(id)       => format!("invite show {id}"),
-            Action::OpenUrl(url)         => format!("xdg-open {url}"),
+            Action::SessionNewPane(id) => format!("session new-pane {id}"),
+            Action::SessionContext(id) => format!("context ls {id}"),
+            Action::Ask(argv) => format!("ask {}", argv.join(" ")),
+            Action::Act(entity, tr) => format!("act {entity} {tr}"),
+            Action::Resolve(id) => format!("resolve {id}"),
+            Action::InviteShow(id) => format!("invite show {id}"),
+            Action::OpenUrl(url) => format!("xdg-open {url}"),
         }
     }
 }
@@ -109,13 +111,13 @@ impl Action {
 /// `EntityHandle::trusted_sp_command`.
 fn default_action(handle: &EntityHandle) -> Action {
     match handle {
-        EntityHandle::Session(id)  => Action::SessionAsk(id.clone()),
+        EntityHandle::Session(id) => Action::SessionAsk(id.clone()),
         EntityHandle::Artifact(id) => Action::ArtifactGet(id.clone()),
-        EntityHandle::Actor(id)    => Action::ActorShow(id.clone()),
-        EntityHandle::Context(id)  => Action::ContextShow(id.clone()),
-        EntityHandle::Cap(id)      => Action::CapGet(id.clone()),
+        EntityHandle::Actor(id) => Action::ActorShow(id.clone()),
+        EntityHandle::Context(id) => Action::ContextShow(id.clone()),
+        EntityHandle::Cap(id) => Action::CapGet(id.clone()),
         EntityHandle::Approval(id) => Action::ApprovalWait(id.clone()),
-        EntityHandle::Invite(id)   => Action::InviteShow(id.clone()),
+        EntityHandle::Invite(id) => Action::InviteShow(id.clone()),
     }
 }
 
@@ -129,44 +131,65 @@ fn match_builtin(text: &str, is_untrusted: bool) -> Option<Action> {
     // Session verb suffixes — checked first, since "session/ID/enter" isn't
     // a bare entity address and would otherwise fail EntityHandle::from_uri.
     for (suffix, wrap) in [
-        ("/enter",     Action::SessionEnter     as fn(String) -> Action),
-        ("/workspace", Action::SessionWorkspace as fn(String) -> Action),
-        ("/new-pane",  Action::SessionNewPane   as fn(String) -> Action),
-        ("/context",   Action::SessionContext   as fn(String) -> Action),
+        ("/enter", Action::SessionEnter as fn(String) -> Action),
+        (
+            "/workspace",
+            Action::SessionWorkspace as fn(String) -> Action,
+        ),
+        ("/new-pane", Action::SessionNewPane as fn(String) -> Action),
+        ("/context", Action::SessionContext as fn(String) -> Action),
     ] {
-        if let Some(id) = text.strip_prefix("session/").and_then(|r| r.strip_suffix(suffix)) {
-            if id.is_empty() { continue; }
+        if let Some(id) = text
+            .strip_prefix("session/")
+            .and_then(|r| r.strip_suffix(suffix))
+        {
+            if id.is_empty() {
+                continue;
+            }
             let handle = EntityHandle::Session(id.to_string());
-            if is_untrusted && !handle.permits_untrusted_dispatch() { return None; }
+            if is_untrusted && !handle.permits_untrusted_dispatch() {
+                return None;
+            }
             return Some(wrap(id.to_string()));
         }
     }
 
     // Generic entity address: session | artifact | actor | context | cap | approval
     if let Some(handle) = EntityHandle::from_uri(text) {
-        if is_untrusted && !handle.permits_untrusted_dispatch() { return None; }
+        if is_untrusted && !handle.permits_untrusted_dispatch() {
+            return None;
+        }
         return Some(default_action(&handle));
     }
 
     // Free-text navigation: `ask/<query...>` — read-only, safe untrusted.
     if let Some(rest) = text.strip_prefix("ask/") {
-        return Some(Action::Ask(rest.split_whitespace().map(String::from).collect()));
+        return Some(Action::Ask(
+            rest.split_whitespace().map(String::from).collect(),
+        ));
     }
 
     // Free-text transition: `act/<kind>/<id>/<transition>` — always mutates
     // state, never runs from an untrusted (foreign-content) source.
     if let Some(rest) = text.strip_prefix("act/") {
-        if is_untrusted { return None; }
+        if is_untrusted {
+            return None;
+        }
         let parts: Vec<&str> = rest.split('/').collect();
         if parts.len() == 3 && parts.iter().all(|p| !p.is_empty()) {
-            return Some(Action::Act(format!("{}/{}", parts[0], parts[1]), parts[2].to_string()));
+            return Some(Action::Act(
+                format!("{}/{}", parts[0], parts[1]),
+                parts[2].to_string(),
+            ));
         }
         return None;
     }
 
     // Bare 26-char ULID → resolve its type, then dispatch its default action.
     let is_ulid = text.len() == 26
-        && text.chars().all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c));
+        && text
+            .chars()
+            .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c));
     if is_ulid {
         return Some(Action::Resolve(text.to_string()));
     }
@@ -189,7 +212,7 @@ fn match_builtin(text: &str, is_untrusted: bool) -> Option<Action> {
 fn detected_shell_kind() -> session::ShellKind {
     match std::env::var("SOLARPLEX_SHELL_KIND").as_deref() {
         Ok("posix") => session::ShellKind::Posix,
-        _           => session::ShellKind::Fish,
+        _ => session::ShellKind::Fish,
     }
 }
 
@@ -198,40 +221,124 @@ fn detected_shell_kind() -> session::ShellKind {
 /// directly.
 async fn dispatch(action: Action, ctx: &Ctx, dry_run: bool, is_untrusted: bool) -> Result<()> {
     if dry_run {
-        let trust_label = if is_untrusted { dim(" [untrusted]") } else { String::new() };
+        let trust_label = if is_untrusted {
+            dim(" [untrusted]")
+        } else {
+            String::new()
+        };
         println!("{} {}{}", dim("→"), cyan(&action.describe()), trust_label);
         return Ok(());
     }
 
     match action {
-        Action::ArtifactGet(id) =>
-            artifact::run(artifact::ArtifactArgs { cmd: artifact::ArtifactCmd::Get { id, save: None } }, ctx).await,
-        Action::ContextShow(id) =>
-            context::run(context::ContextArgs { cmd: context::ContextCmd::Show { entry_id: id, session_id: None } }, ctx).await,
-        Action::ApprovalWait(id) =>
-            approval::run(approval::ApprovalArgs { cmd: approval::ApprovalCmd::Wait { id: Some(id), timeout: 55, follow: false } }, ctx).await,
-        Action::CapGet(id) =>
-            cap::run(cap::CapArgs { cmd: cap::CapCmd::Get { id } }, ctx).await,
-        Action::ActorShow(id) =>
-            actor::run(actor::ActorArgs { cmd: actor::ActorCmd::Show { id } }, ctx).await,
-        Action::SessionAsk(id) =>
-            ask::run(ask::AskArgs { entity: Some(format!("session/{id}")), function: None, rest: vec![] }, ctx).await,
-        Action::SessionEnter(id) =>
-            session::run(session::SessionArgs {
-                cmd: session::SessionCmd::Enter { id, shell: detected_shell_kind() },
-            }, ctx).await,
-        Action::SessionWorkspace(id) =>
-            session::run(session::SessionArgs {
-                cmd: session::SessionCmd::Workspace { id: Some(id), panes: "inspect,feed".to_string() },
-            }, ctx).await,
-        Action::SessionNewPane(id) =>
-            session::run(session::SessionArgs {
-                cmd: session::SessionCmd::NewPane { id: Some(id), split: "horizontal".to_string() },
-            }, ctx).await,
-        Action::SessionContext(id) =>
-            context::run(context::ContextArgs {
-                cmd: context::ContextCmd::Ls { id: Some(id) },
-            }, ctx).await,
+        Action::ArtifactGet(id) => {
+            artifact::run(
+                artifact::ArtifactArgs {
+                    cmd: artifact::ArtifactCmd::Get { id, save: None },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::ContextShow(id) => {
+            context::run(
+                context::ContextArgs {
+                    cmd: context::ContextCmd::Show {
+                        entry_id: id,
+                        session_id: None,
+                    },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::ApprovalWait(id) => {
+            approval::run(
+                approval::ApprovalArgs {
+                    cmd: approval::ApprovalCmd::Wait {
+                        id: Some(id),
+                        timeout: 55,
+                        follow: false,
+                    },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::CapGet(id) => {
+            cap::run(
+                cap::CapArgs {
+                    cmd: cap::CapCmd::Get { id },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::ActorShow(id) => {
+            actor::run(
+                actor::ActorArgs {
+                    cmd: actor::ActorCmd::Show { id },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::SessionAsk(id) => {
+            ask::run(
+                ask::AskArgs {
+                    entity: Some(format!("session/{id}")),
+                    function: None,
+                    rest: vec![],
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::SessionEnter(id) => {
+            session::run(
+                session::SessionArgs {
+                    cmd: session::SessionCmd::Enter {
+                        id,
+                        shell: detected_shell_kind(),
+                    },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::SessionWorkspace(id) => {
+            session::run(
+                session::SessionArgs {
+                    cmd: session::SessionCmd::Workspace {
+                        id: Some(id),
+                        panes: "inspect,feed".to_string(),
+                    },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::SessionNewPane(id) => {
+            session::run(
+                session::SessionArgs {
+                    cmd: session::SessionCmd::NewPane {
+                        id: Some(id),
+                        split: "horizontal".to_string(),
+                    },
+                },
+                ctx,
+            )
+            .await
+        }
+        Action::SessionContext(id) => {
+            context::run(
+                context::ContextArgs {
+                    cmd: context::ContextCmd::Ls { id: Some(id) },
+                },
+                ctx,
+            )
+            .await
+        }
         Action::Ask(argv) => {
             let parsed = AskWrapper::try_parse_from(argv)?;
             ask::run(parsed.args, ctx).await
@@ -243,10 +350,19 @@ async fn dispatch(action: Action, ctx: &Ctx, dry_run: bool, is_untrusted: bool) 
         // resolve() can call back into dispatch() (Session/Artifact/etc. all
         // route through here), so this leg needs boxing to break the cycle.
         Action::Resolve(id) => Box::pin(resolve(&id, ctx)).await,
-        Action::InviteShow(id) =>
-            invite::run(invite::InviteArgs { cmd: invite::InviteCmd::Show { id } }, ctx).await,
+        Action::InviteShow(id) => {
+            invite::run(
+                invite::InviteArgs {
+                    cmd: invite::InviteCmd::Show { id },
+                },
+                ctx,
+            )
+            .await
+        }
         Action::OpenUrl(url) => {
-            std::process::Command::new("xdg-open").arg(&url).status()
+            std::process::Command::new("xdg-open")
+                .arg(&url)
+                .status()
                 .map_err(|e| anyhow::anyhow!("xdg-open: {e}"))?;
             Ok(())
         }
@@ -279,12 +395,16 @@ struct ActWrapper {
 
 struct UserRule {
     pattern: regex::Regex,
-    action:  String, // {0}=full match, {1}=first capture, etc.
+    action: String, // {0}=full match, {1}=first capture, etc.
 }
 
 fn load_user_rules() -> Vec<UserRule> {
-    let Some(path) = user_plumb_path() else { return Vec::new() };
-    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    let Some(path) = user_plumb_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
     parse_toml_rules(&text).unwrap_or_default()
 }
 
@@ -294,10 +414,8 @@ fn match_user_rule(text: &str) -> Option<String> {
             let mut action = rule.action.clone();
             action = action.replace("{0}", caps.get(0).map_or("", |m| m.as_str()));
             for i in 1..caps.len() {
-                action = action.replace(
-                    &format!("{{{i}}}"),
-                    caps.get(i).map_or("", |m| m.as_str()),
-                );
+                action =
+                    action.replace(&format!("{{{i}}}"), caps.get(i).map_or("", |m| m.as_str()));
             }
             return Some(action);
         }
@@ -317,7 +435,10 @@ fn parse_toml_rules(text: &str) -> Result<Vec<UserRule>> {
         if line == "[[rule]]" {
             if let (Some(p), Some(a)) = (cur_pat.take(), cur_act.take()) {
                 if let Ok(re) = regex::Regex::new(&p) {
-                    rules.push(UserRule { pattern: re, action: a });
+                    rules.push(UserRule {
+                        pattern: re,
+                        action: a,
+                    });
                 }
             }
         } else if let Some(rest) = line.strip_prefix("pattern") {
@@ -329,7 +450,10 @@ fn parse_toml_rules(text: &str) -> Result<Vec<UserRule>> {
     // flush last rule
     if let (Some(p), Some(a)) = (cur_pat, cur_act) {
         if let Ok(re) = regex::Regex::new(&p) {
-            rules.push(UserRule { pattern: re, action: a });
+            rules.push(UserRule {
+                pattern: re,
+                action: a,
+            });
         }
     }
     Ok(rules)
@@ -344,19 +468,28 @@ fn extract_toml_string(s: &str) -> Option<String> {
 fn user_plumb_path() -> Option<PathBuf> {
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME").ok()
-            .map(|h| PathBuf::from(h).join(".config").join("solarplex").join("plumb.toml"))
+        std::env::var("HOME").ok().map(|h| {
+            PathBuf::from(h)
+                .join(".config")
+                .join("solarplex")
+                .join("plumb.toml")
+        })
     }
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok()
+        std::env::var("APPDATA")
+            .ok()
             .map(|a| PathBuf::from(a).join("solarplex").join("plumb.toml"))
     }
 }
 
 fn run_shell_action(action: &str, dry_run: bool, is_untrusted: bool) -> Result<()> {
     if dry_run {
-        let trust_label = if is_untrusted { dim(" [untrusted]") } else { String::new() };
+        let trust_label = if is_untrusted {
+            dim(" [untrusted]")
+        } else {
+            String::new()
+        };
         println!("{} {}{}", dim("→"), cyan(action), trust_label);
         return Ok(());
     }
@@ -385,7 +518,10 @@ async fn plumb(text: &str, dry_run: bool, is_untrusted: bool, ctx: &Ctx) -> Resu
     // for Windows Terminal's WinRT Uri parser to accept custom-scheme
     // hyperlinks, see output.rs::link) and the older bare `solarplex:entity/id`
     // form, for anything that still emits it.
-    if let Some(rest) = text.strip_prefix("solarplex://").or_else(|| text.strip_prefix("solarplex:")) {
+    if let Some(rest) = text
+        .strip_prefix("solarplex://")
+        .or_else(|| text.strip_prefix("solarplex:"))
+    {
         return Box::pin(plumb(rest, dry_run, is_untrusted, ctx)).await;
     }
 
@@ -405,7 +541,10 @@ async fn plumb(text: &str, dry_run: bool, is_untrusted: bool, ctx: &Ctx) -> Resu
     // No rule matched. Text may have arrived via WezTerm's URI-click path
     // (i.e. from content the operator did not type) — sanitize before printing.
     // SANITIZATION AUDIT — plumb() no-match: FOREIGN path, sanitized.
-    println!("{}", dim(&format!("(no plumb rule for: {})", sanitize_terminal(text))));
+    println!(
+        "{}",
+        dim(&format!("(no plumb rule for: {})", sanitize_terminal(text)))
+    );
     Ok(())
 }
 
@@ -438,7 +577,8 @@ async fn heuristic_resolve(id: &str, ctx: &Ctx) -> Option<EntityHandle> {
     // Try artifacts list (cheap GET, cached by server)
     if let Ok(arts) = client.list_artifacts(session_id).await {
         if let Some(arr) = arts.as_array() {
-            if let Some(full_id) = arr.iter()
+            if let Some(full_id) = arr
+                .iter()
                 .find(|a| a["id"].as_str().map(|s| s.starts_with(id)).unwrap_or(false))
                 .and_then(|a| a["id"].as_str())
             {
@@ -450,7 +590,8 @@ async fn heuristic_resolve(id: &str, ctx: &Ctx) -> Option<EntityHandle> {
     // Try pending approvals
     if let Ok(appr) = client.list_approvals(session_id).await {
         if let Some(arr) = appr.as_array() {
-            if let Some(full_id) = arr.iter()
+            if let Some(full_id) = arr
+                .iter()
                 .find(|a| a["id"].as_str().map(|s| s.starts_with(id)).unwrap_or(false))
                 .and_then(|a| a["id"].as_str())
             {
@@ -485,7 +626,12 @@ pub fn install_uri_handler() -> Result<()> {
     // --untrusted is always passed for OS URI handler invocations: the URI
     // originates from external content (terminal hyperlink click), not the user.
     let desktop_dir = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".local").join("share").join("applications"))
+        .map(|h| {
+            PathBuf::from(h)
+                .join(".local")
+                .join("share")
+                .join("applications")
+        })
         .map_err(|_| anyhow::anyhow!("HOME not set"))?;
     std::fs::create_dir_all(&desktop_dir)?;
 
@@ -498,13 +644,20 @@ pub fn install_uri_handler() -> Result<()> {
 
     // Register with xdg-mime
     let _ = std::process::Command::new("xdg-mime")
-        .args(["default", "solarplex-plumb.desktop", "x-scheme-handler/solarplex"])
+        .args([
+            "default",
+            "solarplex-plumb.desktop",
+            "x-scheme-handler/solarplex",
+        ])
         .status();
     let _ = std::process::Command::new("update-desktop-database")
         .arg(desktop_dir)
         .status();
 
-    println!("{} URI handler installed (solarplex:// → sp plumb --untrusted)", green("✓"));
+    println!(
+        "{} URI handler installed (solarplex:// → sp plumb --untrusted)",
+        green("✓")
+    );
     println!("  desktop: {}", dim(&desktop.display().to_string()));
     Ok(())
 }
@@ -536,7 +689,10 @@ pub fn install_uri_handler() -> Result<()> {
     let command = format!("\"{sp_path}\" plumb run --untrusted \"%1\"");
     reg_add(&[command_key, "/ve", "/d", &command, "/f"])?;
 
-    println!("{} URI handler installed (solarplex:// → sp plumb --untrusted)", green("✓"));
+    println!(
+        "{} URI handler installed (solarplex:// → sp plumb --untrusted)",
+        green("✓")
+    );
     println!("  registry: {}", dim(proto_key));
     Ok(())
 }
@@ -555,13 +711,18 @@ fn reg_add(args: &[&str]) -> Result<()> {
 }
 
 pub fn write_default_plumb_config() -> Result<()> {
-    let path = user_plumb_path()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
+    let path = user_plumb_path().ok_or_else(|| anyhow::anyhow!("cannot determine config dir"))?;
     if path.exists() {
-        println!("{} {} already exists — not overwriting", yellow("⚠"), path.display());
+        println!(
+            "{} {} already exists — not overwriting",
+            yellow("⚠"),
+            path.display()
+        );
         return Ok(());
     }
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&path, DEFAULT_PLUMB_TOML)?;
     println!("{} Created {}", green("✓"), path.display());
     Ok(())

@@ -12,15 +12,15 @@ fn token_hash(raw: &str) -> String {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct HumanSessionRow {
-    pub id:         String,
-    pub actor_id:   String,
+    pub id: String,
+    pub actor_id: String,
     /// OIDC subject claim (opaque, provider-assigned user identifier).
-    pub sub:        String,
+    pub sub: String,
     /// Normalized provider slug ("google", "github", "microsoft", …).
-    pub provider:   String,
-    pub issued_at:  DateTime<Utc>,
+    pub provider: String,
+    pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    pub last_seen:  DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
 }
 
 /// Issue a new human session token.
@@ -29,11 +29,11 @@ pub struct HumanSessionRow {
 /// to the client. Only the SHA-256 hash is written to the database so that
 /// a DB dump does not expose bearer tokens.
 pub async fn create(
-    pool:       &PgPool,
-    id:         &str,
-    actor_id:   &str,
-    sub:        &str,
-    provider:   &str,
+    pool: &PgPool,
+    id: &str,
+    actor_id: &str,
+    sub: &str,
+    provider: &str,
     expires_at: DateTime<Utc>,
 ) -> DbResult<HumanSessionRow> {
     let id_hash = token_hash(id);
@@ -150,12 +150,11 @@ pub async fn revoke_all(pool: &PgPool, actor_id: &str) -> DbResult<u64> {
 /// join_token WS path from self-registering under an actor_id that already
 /// belongs to a real OIDC-backed human — see `ws.rs::handle_ws`.
 pub async fn exists_for_actor(pool: &PgPool, actor_id: &str) -> DbResult<bool> {
-    let row: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM human_sessions WHERE actor_id = $1 LIMIT 1",
-    )
-    .bind(actor_id)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM human_sessions WHERE actor_id = $1 LIMIT 1")
+            .bind(actor_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.is_some())
 }
 
@@ -166,8 +165,8 @@ pub async fn exists_for_actor(pool: &PgPool, actor_id: &str) -> DbResult<bool> {
 ///
 /// Provider is part of the key: `google/alice` ≠ `github/alice`.
 pub async fn find_actor_by_sub(
-    pool:     &PgPool,
-    sub:      &str,
+    pool: &PgPool,
+    sub: &str,
     provider: &str,
 ) -> DbResult<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as(

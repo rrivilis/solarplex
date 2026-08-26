@@ -23,33 +23,35 @@ use crate::{DbError, DbResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MethodRow {
-    pub id:                String,
-    pub session_id:        String,
-    pub server_slug:       String,
-    pub method_name:       String,
+    pub id: String,
+    pub session_id: String,
+    pub server_slug: String,
+    pub method_name: String,
     /// Full typed address: `"mcp.{server_slug}.{method_name}"`.
-    pub address:           String,
-    pub arg_schema:        serde_json::Value,
-    pub description:       Option<String>,
+    pub address: String,
+    pub arg_schema: serde_json::Value,
+    pub description: Option<String>,
     /// When `false` the server auto-approves invocations without a human gate.
     pub requires_approval: bool,
-    pub registered_at:     DateTime<Utc>,
+    pub registered_at: DateTime<Utc>,
 }
 
 // ── Input type (from sidecar registration payload) ────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodDef {
-    pub name:               String,
-    pub description:        Option<String>,
+    pub name: String,
+    pub description: Option<String>,
     #[serde(default)]
-    pub input_schema:       serde_json::Value,
+    pub input_schema: serde_json::Value,
     /// Mirrors the sidecar's legacy `auto_approve` list: `false` = no gate.
     #[serde(default = "default_requires_approval")]
-    pub requires_approval:  bool,
+    pub requires_approval: bool,
 }
 
-fn default_requires_approval() -> bool { true }
+fn default_requires_approval() -> bool {
+    true
+}
 
 // ── Address helpers ───────────────────────────────────────────────────────────
 
@@ -79,14 +81,14 @@ pub fn method_address(server_slug: &str, method_name: &str) -> String {
 /// registration updates the schema and approval flag so that sidecar upgrades
 /// take effect without a session restart.
 pub async fn register_bulk(
-    pool:        &PgPool,
-    session_id:  &str,
+    pool: &PgPool,
+    session_id: &str,
     server_slug: &str,
-    methods:     &[MethodDef],
+    methods: &[MethodDef],
 ) -> DbResult<usize> {
     let mut registered = 0usize;
     for m in methods {
-        let id      = Ulid::new().to_string();
+        let id = Ulid::new().to_string();
         let address = method_address(server_slug, &m.name);
         sqlx::query(
             "INSERT INTO mcp_methods
@@ -118,9 +120,9 @@ pub async fn register_bulk(
 
 /// Look up a single method by its typed address within a session.
 pub async fn get_by_address(
-    pool:       &PgPool,
+    pool: &PgPool,
     session_id: &str,
-    address:    &str,
+    address: &str,
 ) -> DbResult<Option<MethodRow>> {
     sqlx::query_as::<_, MethodRow>(
         "SELECT id, session_id, server_slug, method_name, address,
@@ -136,10 +138,7 @@ pub async fn get_by_address(
 }
 
 /// All registered methods for a session, ordered by server_slug + method_name.
-pub async fn list_for_session(
-    pool:       &PgPool,
-    session_id: &str,
-) -> DbResult<Vec<MethodRow>> {
+pub async fn list_for_session(pool: &PgPool, session_id: &str) -> DbResult<Vec<MethodRow>> {
     sqlx::query_as::<_, MethodRow>(
         "SELECT id, session_id, server_slug, method_name, address,
                 arg_schema, description, requires_approval, registered_at
@@ -161,8 +160,8 @@ pub async fn list_for_session(
 ///
 /// Returns the slice of unrecognised addresses (empty = all valid).
 pub async fn unknown_addresses(
-    pool:        &PgPool,
-    session_id:  &str,
+    pool: &PgPool,
+    session_id: &str,
     permissions: &[String],
 ) -> DbResult<Vec<String>> {
     if permissions.is_empty() {

@@ -51,7 +51,10 @@ pub async fn run_login(_args: LoginArgs, ctx: &Ctx) -> Result<()> {
 
     let url = format!("{}/cli-auth?port={port}&nonce={nonce}", ctx.ui);
     println!("{}", bold("Opening your browser to sign in..."));
-    println!("{}", dim(&format!("If it doesn't open automatically, visit: {url}")));
+    println!(
+        "{}",
+        dim(&format!("If it doesn't open automatically, visit: {url}"))
+    );
     let _ = open_browser(&url); // best-effort only — the printed URL is the real fallback
 
     println!("{}", dim("Waiting for sign-in (5 min)..."));
@@ -100,13 +103,24 @@ pub async fn run_login(_args: LoginArgs, ctx: &Ctx) -> Result<()> {
 /// 404/403 and we keep waiting rather than erroring out.
 async fn accept_token(listener: TcpListener, expected_nonce: &str) -> Result<String> {
     loop {
-        let (mut stream, _) = listener.accept().await.context("accept loopback connection")?;
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .context("accept loopback connection")?;
 
         let mut buf = vec![0u8; 8192];
-        let n = stream.read(&mut buf).await.context("read loopback request")?;
+        let n = stream
+            .read(&mut buf)
+            .await
+            .context("read loopback request")?;
         let request = String::from_utf8_lossy(&buf[..n]);
-        let path = request.lines().next().unwrap_or("")
-            .split_whitespace().nth(1).unwrap_or("");
+        let path = request
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("");
 
         match extract_callback(path) {
             Some((token, nonce)) if nonce == expected_nonce => {
@@ -124,10 +138,14 @@ async fn accept_token(listener: TcpListener, expected_nonce: &str) -> Result<Str
             Some(_) => {
                 // Right shape, wrong nonce — not the tab we opened. Reject
                 // without leaking anything about why.
-                let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n").await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                    .await;
             }
             None => {
-                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n").await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                    .await;
             }
         }
     }
@@ -138,13 +156,19 @@ async fn accept_token(listener: TcpListener, expected_nonce: &str) -> Result<Str
 /// erroring on a stray request.
 fn extract_callback(path: &str) -> Option<(String, String)> {
     let (route, query) = path.split_once('?')?;
-    if route != "/callback" { return None; }
+    if route != "/callback" {
+        return None;
+    }
 
     let mut token: Option<String> = None;
     let mut nonce: Option<String> = None;
     for kv in query.split('&') {
-        if let Some(v) = kv.strip_prefix("token=") { token = Some(percent_decode(v)); }
-        if let Some(v) = kv.strip_prefix("nonce=") { nonce = Some(percent_decode(v)); }
+        if let Some(v) = kv.strip_prefix("token=") {
+            token = Some(percent_decode(v));
+        }
+        if let Some(v) = kv.strip_prefix("nonce=") {
+            nonce = Some(percent_decode(v));
+        }
     }
     match (token, nonce) {
         (Some(t), Some(n)) if !t.is_empty() && !n.is_empty() => Some((t, n)),
@@ -202,7 +226,9 @@ pub async fn run_logout(_args: LogoutArgs, ctx: &Ctx) -> Result<()> {
     if ctx.token.is_some() {
         // Best-effort server-side revoke, mirroring the frontend's signOut() —
         // clear locally regardless of whether this succeeds.
-        let _ = Client::new(ctx)?.oidc_logout(ctx.token.as_deref().unwrap()).await;
+        let _ = Client::new(ctx)?
+            .oidc_logout(ctx.token.as_deref().unwrap())
+            .await;
     }
     config::clear_token()?;
     println!("{} Signed out.", green("✓"));

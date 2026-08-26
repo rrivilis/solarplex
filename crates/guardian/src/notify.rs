@@ -28,13 +28,13 @@ use protocol::effects::DeclaredEffects;
 use crate::seccomp_ffi;
 
 pub struct SupervisedProcess {
-    pub pidfd:     OwnedFd,
+    pub pidfd: OwnedFd,
     pub notify_fd: OwnedFd,
     pub stdout_fd: OwnedFd,
     pub stderr_fd: OwnedFd,
     pub child_pid: i32,
-    pub declared:  Arc<DeclaredEffects>,
-    pub state:     ProcessState,
+    pub declared: Arc<DeclaredEffects>,
+    pub state: ProcessState,
     pub stdout_buf: Vec<u8>,
     pub stderr_buf: Vec<u8>,
 }
@@ -70,8 +70,8 @@ enum OutstandingOp {
 /// Outcome of one `run_supervised` call -- what `executor.rs` turns into
 /// `GuardianResponse`.
 pub struct SupervisionResult {
-    pub stdout:    Vec<u8>,
-    pub stderr:    Vec<u8>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
     pub exit_code: i32,
 }
 
@@ -100,14 +100,16 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
     for fd in [proc.stdout_fd.as_raw_fd(), proc.stderr_fd.as_raw_fd()] {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags >= 0 {
-            unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK); }
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
         }
     }
 
-    let pidfd_key   = ops.insert(OutstandingOp::PollPidfd);
-    let notify_key  = ops.insert(OutstandingOp::PollNotify);
-    let stdout_key  = ops.insert(OutstandingOp::PollStdout);
-    let stderr_key  = ops.insert(OutstandingOp::PollStderr);
+    let pidfd_key = ops.insert(OutstandingOp::PollPidfd);
+    let notify_key = ops.insert(OutstandingOp::PollNotify);
+    let stdout_key = ops.insert(OutstandingOp::PollStdout);
+    let stderr_key = ops.insert(OutstandingOp::PollStderr);
     let deadline_key = ops.insert(OutstandingOp::Deadline);
 
     // Multishot poll: these fds are watched for the whole exec's lifetime,
@@ -124,12 +126,19 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
     submit_multishot_poll(&mut ring, proc.stderr_fd.as_raw_fd(), stderr_key as u64)?;
 
     let deadline_ts = types::Timespec::new().sec(DEADLINE.as_secs());
-    let timeout_e = opcode::Timeout::new(&deadline_ts).build().user_data(deadline_key as u64);
-    unsafe { ring.submission().push(&timeout_e)?; }
+    let timeout_e = opcode::Timeout::new(&deadline_ts)
+        .build()
+        .user_data(deadline_key as u64);
+    unsafe {
+        ring.submission().push(&timeout_e)?;
+    }
     ring.submit()?;
 
     proc.state = ProcessState::Running;
-    tracing::info!(child_pid = proc.child_pid, "notify: supervising sandboxed exec");
+    tracing::info!(
+        child_pid = proc.child_pid,
+        "notify: supervising sandboxed exec"
+    );
 
     loop {
         match proc.state {
@@ -144,12 +153,15 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
         // touch the ring, but CONTINUE/deny and re-arming a consumed
         // one-shot op would), so don't hold the completion-queue borrow
         // across dispatch.
-        let completed: Vec<(u64, i32, u32)> = ring.completion()
+        let completed: Vec<(u64, i32, u32)> = ring
+            .completion()
             .map(|cqe| (cqe.user_data(), cqe.result(), cqe.flags()))
             .collect();
 
         for (user_data, result, flags) in completed {
-            let Some(op) = ops.get(user_data as usize) else { continue };
+            let Some(op) = ops.get(user_data as usize) else {
+                continue;
+            };
             match *op {
                 OutstandingOp::PollPidfd => {
                     if result > 0 {
@@ -161,7 +173,11 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
                         // this state transition to need to clean up.
                         proc.state = ProcessState::Draining;
                         let status = reap(&proc)?;
-                        tracing::info!(child_pid = proc.child_pid, exit_status = status.0, "notify: sandboxed exec exited");
+                        tracing::info!(
+                            child_pid = proc.child_pid,
+                            exit_status = status.0,
+                            "notify: sandboxed exec exited"
+                        );
                         proc.state = ProcessState::Exited(status);
                     }
                 }
@@ -171,18 +187,32 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
                     }
                 }
                 OutstandingOp::PollStdout => {
-                    if result > 0 { drain_pipe(proc.stdout_fd.as_raw_fd(), &mut proc.stdout_buf); }
+                    if result > 0 {
+                        drain_pipe(proc.stdout_fd.as_raw_fd(), &mut proc.stdout_buf);
+                    }
                 }
                 OutstandingOp::PollStderr => {
-                    if result > 0 { drain_pipe(proc.stderr_fd.as_raw_fd(), &mut proc.stderr_buf); }
+                    if result > 0 {
+                        drain_pipe(proc.stderr_fd.as_raw_fd(), &mut proc.stderr_buf);
+                    }
                 }
                 OutstandingOp::Deadline => {
                     // Same reasoning as the pidfd-exit branch above -- no
                     // outstanding notification can exist here to flush.
-                    tracing::warn!(child_pid = proc.child_pid, deadline_secs = DEADLINE.as_secs(), "notify: deadline hit, killing sandboxed exec");
+                    tracing::warn!(
+                        child_pid = proc.child_pid,
+                        deadline_secs = DEADLINE.as_secs(),
+                        "notify: deadline hit, killing sandboxed exec"
+                    );
                     proc.state = ProcessState::Draining;
                     unsafe {
-                        libc::syscall(libc::SYS_pidfd_send_signal, proc.pidfd.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::c_void>(), 0);
+                        libc::syscall(
+                            libc::SYS_pidfd_send_signal,
+                            proc.pidfd.as_raw_fd(),
+                            libc::SIGKILL,
+                            std::ptr::null::<libc::c_void>(),
+                            0,
+                        );
                     }
                     let status = reap(&proc)?;
                     proc.state = ProcessState::Exited(status);
@@ -201,11 +231,11 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
             // been intentional", for every multishot poll, not just the
             // one this was first caught on.
             let poll_fd = match *op {
-                OutstandingOp::PollPidfd  => Some(proc.pidfd.as_raw_fd()),
+                OutstandingOp::PollPidfd => Some(proc.pidfd.as_raw_fd()),
                 OutstandingOp::PollNotify => Some(proc.notify_fd.as_raw_fd()),
                 OutstandingOp::PollStdout => Some(proc.stdout_fd.as_raw_fd()),
                 OutstandingOp::PollStderr => Some(proc.stderr_fd.as_raw_fd()),
-                OutstandingOp::Deadline   => None,
+                OutstandingOp::Deadline => None,
             };
             let more_coming = io_uring::cqueue::more(flags);
             match poll_fd {
@@ -236,16 +266,26 @@ pub fn run_supervised(mut proc: SupervisedProcess) -> anyhow::Result<Supervision
     };
     proc.state = ProcessState::Reaped;
 
-    Ok(SupervisionResult { stdout: proc.stdout_buf, stderr: proc.stderr_buf, exit_code })
+    Ok(SupervisionResult {
+        stdout: proc.stdout_buf,
+        stderr: proc.stderr_buf,
+        exit_code,
+    })
 }
 
-fn submit_multishot_poll(ring: &mut io_uring::IoUring, fd: RawFd, user_data: u64) -> anyhow::Result<()> {
+fn submit_multishot_poll(
+    ring: &mut io_uring::IoUring,
+    fd: RawFd,
+    user_data: u64,
+) -> anyhow::Result<()> {
     use io_uring::{opcode, types};
     let entry = opcode::PollAdd::new(types::Fd(fd), libc::POLLIN as u32)
         .multi(true)
         .build()
         .user_data(user_data);
-    unsafe { ring.submission().push(&entry)?; }
+    unsafe {
+        ring.submission().push(&entry)?;
+    }
     Ok(())
 }
 
@@ -282,7 +322,8 @@ fn handle_notification(proc: &SupervisedProcess) -> anyhow::Result<()> {
             }
             match open_opts.open(&real_path) {
                 Ok(file) => {
-                    let addfd_result = seccomp_ffi::notif_addfd(notify_fd, req.id, file.as_raw_fd());
+                    let addfd_result =
+                        seccomp_ffi::notif_addfd(notify_fd, req.id, file.as_raw_fd());
                     match &addfd_result {
                         Ok(injected_fd) => tracing::debug!(
                             pid = req.pid, nr = req.syscall_nr(), path = %real_path.display(),
@@ -306,7 +347,11 @@ fn handle_notification(proc: &SupervisedProcess) -> anyhow::Result<()> {
             }
         }
         None => {
-            tracing::debug!(nr = req.syscall_nr(), pid = req.pid, "notify: CONTINUE (not a declared effect)");
+            tracing::debug!(
+                nr = req.syscall_nr(),
+                pid = req.pid,
+                "notify: CONTINUE (not a declared effect)"
+            );
             let _ = seccomp_ffi::notif_continue(notify_fd, req.id);
         }
     }
@@ -397,8 +442,12 @@ fn resolve_and_authorize(
         };
 
     for fe in &declared.file_effects {
-        if !needs_op(&fe.ops) { continue; }
-        if !fe.path.matches(&requested) { continue; }
+        if !needs_op(&fe.ops) {
+            continue;
+        }
+        if !fe.path.matches(&requested) {
+            continue;
+        }
         let real_path = std::path::PathBuf::from(format!("/proc/{pid}/root{requested}"));
         let mut opts = std::fs::OpenOptions::new();
         if nr == libc::SYS_openat {
@@ -408,7 +457,9 @@ fn resolve_and_authorize(
                 Some(flags) => apply_open_flags(&mut opts, flags as i32),
                 // Struct read failed -- fail toward the strictly weaker
                 // grant (read-only) rather than guessing write access.
-                None => { opts.read(true); }
+                None => {
+                    opts.read(true);
+                }
             }
         } else {
             // unlink/rename family: no open-mode concept: see doc comment.
@@ -424,13 +475,25 @@ fn resolve_and_authorize(
 /// unrelated bits packed into the same flags word (`O_CREAT`, `O_TRUNC`, ...).
 fn apply_open_flags(opts: &mut std::fs::OpenOptions, flags: i32) {
     match flags & libc::O_ACCMODE {
-        libc::O_WRONLY => { opts.write(true); }
-        libc::O_RDWR   => { opts.read(true).write(true); }
-        _              => { opts.read(true); } // O_RDONLY == 0
+        libc::O_WRONLY => {
+            opts.write(true);
+        }
+        libc::O_RDWR => {
+            opts.read(true).write(true);
+        }
+        _ => {
+            opts.read(true);
+        } // O_RDONLY == 0
     }
-    if flags & libc::O_CREAT  != 0 { opts.create(true); }
-    if flags & libc::O_TRUNC  != 0 { opts.truncate(true); }
-    if flags & libc::O_APPEND != 0 { opts.append(true); }
+    if flags & libc::O_CREAT != 0 {
+        opts.create(true);
+    }
+    if flags & libc::O_TRUNC != 0 {
+        opts.truncate(true);
+    }
+    if flags & libc::O_APPEND != 0 {
+        opts.append(true);
+    }
 }
 
 /// `openat2`'s flags live behind a pointer (`args[2]` is `const struct
@@ -474,7 +537,9 @@ fn drain_pipe(fd: RawFd, buf: &mut Vec<u8>) {
     let mut chunk = [0u8; 4096];
     loop {
         let n = unsafe { libc::read(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len()) };
-        if n <= 0 { break; }
+        if n <= 0 {
+            break;
+        }
         buf.extend_from_slice(&chunk[..n as usize]);
     }
 }

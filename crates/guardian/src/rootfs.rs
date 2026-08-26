@@ -21,7 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const ENV_SRC:   &str = "SOLARPLEX_SANDBOX_ROOTFS_SRC";
+const ENV_SRC: &str = "SOLARPLEX_SANDBOX_ROOTFS_SRC";
 const ENV_IMAGE: &str = "SOLARPLEX_SANDBOX_ROOTFS_IMAGE";
 const ENV_MOUNT: &str = "SOLARPLEX_SANDBOX_ROOTFS_MOUNT";
 
@@ -39,8 +39,10 @@ pub(crate) fn sandbox_rootfs() -> Option<&'static Path> {
 
 fn setup() -> Option<PathBuf> {
     let src = std::env::var(ENV_SRC).ok()?;
-    let image = PathBuf::from(std::env::var(ENV_IMAGE).unwrap_or_else(|_| DEFAULT_IMAGE.to_string()));
-    let mount = PathBuf::from(std::env::var(ENV_MOUNT).unwrap_or_else(|_| DEFAULT_MOUNT.to_string()));
+    let image =
+        PathBuf::from(std::env::var(ENV_IMAGE).unwrap_or_else(|_| DEFAULT_IMAGE.to_string()));
+    let mount =
+        PathBuf::from(std::env::var(ENV_MOUNT).unwrap_or_else(|_| DEFAULT_MOUNT.to_string()));
 
     if let Err(e) = build_image(&src, &image) {
         tracing::warn!(
@@ -111,5 +113,7 @@ fn mount_image(image: &Path, mount: &Path) -> anyhow::Result<()> {
 fn already_mounted(mount: &Path) -> anyhow::Result<bool> {
     let mounts = std::fs::read_to_string("/proc/mounts")?;
     let target = mount.to_string_lossy();
-    Ok(mounts.lines().any(|l| l.split_whitespace().nth(1) == Some(target.as_ref())))
+    Ok(mounts
+        .lines()
+        .any(|l| l.split_whitespace().nth(1) == Some(target.as_ref())))
 }

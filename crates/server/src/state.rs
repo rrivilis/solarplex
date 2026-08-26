@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -15,13 +15,16 @@ use tokio::sync::{broadcast, mpsc, OnceCell};
 /// Simple token-bucket rate limiter: tracks request count within a 60-second
 /// rolling window per cap.  Resets on the next call after the window expires.
 pub struct RateBucket {
-    count:        u32,
+    count: u32,
     window_start: Instant,
 }
 
 impl RateBucket {
     pub fn new() -> Self {
-        Self { count: 0, window_start: Instant::now() }
+        Self {
+            count: 0,
+            window_start: Instant::now(),
+        }
     }
 
     /// Returns `true` if the request is within the limit and increments the
@@ -53,13 +56,13 @@ pub enum PolicyDecision {
 /// First matching policy wins (ordered by insertion order).
 #[derive(Clone, Debug)]
 pub struct StandingPolicy {
-    pub id:             String,
+    pub id: String,
     /// None = applies to all cap-bound actors in the session.
-    pub actor_id:       Option<String>,
+    pub actor_id: Option<String>,
     /// Exact method address ("mcp.slug.tool_name") or prefix with trailing "*"
     /// ("mcp.slug.*" matches all tools for that slug).
     pub method_pattern: String,
-    pub decision:       PolicyDecision,
+    pub decision: PolicyDecision,
 }
 
 // ── Count-Min Sketch for n-gram anomaly scoring ───────────────────────────────
@@ -79,7 +82,10 @@ struct CmsCell {
 
 impl CmsCell {
     fn new() -> Self {
-        Self { value: AtomicU32::new(0), seq: AtomicU32::new(0) }
+        Self {
+            value: AtomicU32::new(0),
+            seq: AtomicU32::new(0),
+        }
     }
 
     /// Spins until it catches a stable (even, unchanged) `seq` around the
@@ -126,7 +132,11 @@ impl CmsState {
             .map(|_| CmsCell::new())
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        Self { table, samples: AtomicU64::new(0), writer: Mutex::new(()) }
+        Self {
+            table,
+            samples: AtomicU64::new(0),
+            writer: Mutex::new(()),
+        }
     }
 
     #[inline]
@@ -183,16 +193,18 @@ impl CmsState {
         if n == 0 {
             return Some(0.0);
         }
-        let total: u64 = (0..n).map(|i| {
-            let tri = &b[i..i + 3];
-            (0..CMS_DEPTH)
-                .map(|row| {
-                    let col = Self::slot(tri, row);
-                    self.table[Self::index(row, col)].read() as u64
-                })
-                .min()
-                .unwrap_or(0)
-        }).sum();
+        let total: u64 = (0..n)
+            .map(|i| {
+                let tri = &b[i..i + 3];
+                (0..CMS_DEPTH)
+                    .map(|row| {
+                        let col = Self::slot(tri, row);
+                        self.table[Self::index(row, col)].read() as u64
+                    })
+                    .min()
+                    .unwrap_or(0)
+            })
+            .sum();
         Some(total as f64 / n as f64)
     }
 }
@@ -211,7 +223,7 @@ const BROADCAST_CAP: usize = 256;
 /// `state` — i.e. both fields always agree on what Postgres has committed.
 /// This is the source-of-truth for WS attach (no DB queries on the hot path).
 pub struct LiveSnapshot {
-    pub seq:   i64,
+    pub seq: i64,
     pub state: SessionSnapshot,
 }
 
@@ -316,7 +328,8 @@ impl SessionHub {
             .unwrap_or_default();
         for entry in self.actor_senders.iter() {
             let actor_id = entry.key();
-            let role = memberships.iter()
+            let role = memberships
+                .iter()
                 .find(|m| &m.actor_id == actor_id)
                 .and_then(|m| m.role.parse::<MemberRole>().ok())
                 .unwrap_or(MemberRole::Observer);
@@ -407,7 +420,8 @@ pub struct AppState {
     /// live cap is still freshly re-checked (expiry/revocation) on every
     /// later call. Permanent verdicts move into `dead_heartbeat_caps`
     /// instead, which is what actually stops the DB load, not this map.
-    pub inflight_heartbeat_checks: DashMap<String, Arc<OnceCell<Result<String, (StatusCode, &'static str)>>>>,
+    pub inflight_heartbeat_checks:
+        DashMap<String, Arc<OnceCell<Result<String, (StatusCode, &'static str)>>>>,
     /// Per-session standing approval policies.  Keyed by session_id.
     /// First matching policy wins; human gate is bypassed for auto_approve entries.
     pub approval_policies: DashMap<String, Vec<StandingPolicy>>,
@@ -467,18 +481,18 @@ impl AppState {
         let reflector = Reflector::with_replica_id(replica_id, db.clone());
         Self {
             db,
-            invoke_rate_limits:        DashMap::new(),
-            dead_heartbeat_caps:       DashMap::new(),
+            invoke_rate_limits: DashMap::new(),
+            dead_heartbeat_caps: DashMap::new(),
             inflight_heartbeat_checks: DashMap::new(),
-            approval_policies:         DashMap::new(),
-            hubs:                      DashMap::new(),
-            sessions:                  Arc::new(DashMap::new()),
+            approval_policies: DashMap::new(),
+            hubs: DashMap::new(),
+            sessions: Arc::new(DashMap::new()),
             oidc,
-            numa_nodes:                1,
-            reflector:                 Arc::new(reflector),
-            cms:                       CmsState::new(),
-            rate_limits:               crate::rate_limit::GlobalLimiter::new(),
-            session_rate_limits:       crate::rate_limit::SessionRateLimiter::new(),
+            numa_nodes: 1,
+            reflector: Arc::new(reflector),
+            cms: CmsState::new(),
+            rate_limits: crate::rate_limit::GlobalLimiter::new(),
+            session_rate_limits: crate::rate_limit::SessionRateLimiter::new(),
             prometheus_handle,
         }
     }
@@ -503,8 +517,8 @@ impl AppState {
     pub fn get_or_create_session_task(
         &self,
         session_id: &str,
-        owner_id:   &str,
-        hub:        Arc<SessionHub>,
+        owner_id: &str,
+        hub: Arc<SessionHub>,
     ) -> SessionTaskHandle {
         self.sessions
             .entry(session_id.to_string())

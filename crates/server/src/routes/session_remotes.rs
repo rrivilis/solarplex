@@ -50,17 +50,31 @@ async fn add_remote(
     Json(body): Json<AddRemoteBody>,
 ) -> impl IntoResponse {
     let actor_id = match crate::auth::require_session_member(
-        &state.db, &headers, &local_id, MemberRole::Collaborator,
-    ).await {
+        &state.db,
+        &headers,
+        &local_id,
+        MemberRole::Collaborator,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(res) => return res,
     };
     if let Some(res) = gate_session(
-        &state, &local_id, &actor_id, RateLimitKey::SessionRemoteMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &local_id,
+        &actor_id,
+        RateLimitKey::SessionRemoteMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
-    match db::session_remotes::add_remote(&state.db, &local_id, &body.remote_session_id, &actor_id).await {
+    match db::session_remotes::add_remote(&state.db, &local_id, &body.remote_session_id, &actor_id)
+        .await
+    {
         Ok(row) => (StatusCode::CREATED, Json(row)).into_response(),
         Err(db::DbError::Conflict(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -73,9 +87,10 @@ async fn list_remotes(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if let Err(res) = crate::auth::require_session_member(
-        &state.db, &headers, &local_id, MemberRole::Observer,
-    ).await {
+    if let Err(res) =
+        crate::auth::require_session_member(&state.db, &headers, &local_id, MemberRole::Observer)
+            .await
+    {
         return res;
     }
     match db::session_remotes::list_for_session(&state.db, &local_id).await {
@@ -94,14 +109,26 @@ async fn fetch_remote(
     // the "you may use this configured remote" bar, distinct from the
     // separate check against the remote session's own data below.
     let actor_id = match crate::auth::require_session_member(
-        &state.db, &headers, &local_id, MemberRole::Observer,
-    ).await {
+        &state.db,
+        &headers,
+        &local_id,
+        MemberRole::Observer,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(res) => return res,
     };
     if let Some(res) = gate_session(
-        &state, &local_id, &actor_id, RateLimitKey::SessionRemoteMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &local_id,
+        &actor_id,
+        RateLimitKey::SessionRemoteMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
 
@@ -117,22 +144,36 @@ async fn fetch_remote(
     // against a URL you don't yet have access to. 404, not 403 — same
     // anti-enumeration posture as session_links' require_link_admin.
     if let Err(e) = db::sessions::require_membership_or_linked_access(
-        &state.db, &remote.remote_session_id, &actor_id, MemberRole::Observer,
-    ).await {
+        &state.db,
+        &remote.remote_session_id,
+        &actor_id,
+        MemberRole::Observer,
+    )
+    .await
+    {
         return match e {
-            db::DbError::NotFound | db::DbError::Unauthorized => StatusCode::NOT_FOUND.into_response(),
+            db::DbError::NotFound | db::DbError::Unauthorized => {
+                StatusCode::NOT_FOUND.into_response()
+            }
             e => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
     }
 
-    let events = match db::events::list(&state.db, &remote.remote_session_id, Some(remote.last_fetched_seq), 500).await {
-        Ok(e)  => e,
+    let events = match db::events::list(
+        &state.db,
+        &remote.remote_session_id,
+        Some(remote.last_fetched_seq),
+        500,
+    )
+    .await
+    {
+        Ok(e) => e,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
     let updated = if let Some(max_seq) = events.iter().map(|e| e.seq).max() {
         match db::session_remotes::advance_watermark(&state.db, &remote_id, max_seq).await {
-            Ok(r)  => r,
+            Ok(r) => r,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
@@ -149,14 +190,26 @@ async fn remove_remote(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let actor_id = match crate::auth::require_session_member(
-        &state.db, &headers, &local_id, MemberRole::Collaborator,
-    ).await {
+        &state.db,
+        &headers,
+        &local_id,
+        MemberRole::Collaborator,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(res) => return res,
     };
     if let Some(res) = gate_session(
-        &state, &local_id, &actor_id, RateLimitKey::SessionRemoteMutate { actor_id: actor_id.clone() },
-    ).await {
+        &state,
+        &local_id,
+        &actor_id,
+        RateLimitKey::SessionRemoteMutate {
+            actor_id: actor_id.clone(),
+        },
+    )
+    .await
+    {
         return res;
     }
     match db::session_remotes::get(&state.db, &remote_id).await {

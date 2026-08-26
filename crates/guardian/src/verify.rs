@@ -29,7 +29,7 @@ use protocol::effects::DeclaredEffects;
 
 /// The server-canonical execution mandate, returned only when `decision == "granted"`.
 pub struct ApprovedExecution {
-    pub command:  String,
+    pub command: String,
     pub declared: DeclaredEffects,
 }
 
@@ -41,9 +41,9 @@ pub struct ApprovedExecution {
 /// Returns `Err(_)` when the server is unreachable or returns unexpected data.
 pub async fn verify_and_fetch(
     approval_id: &str,
-    api_base:    &str,
-    session_id:  &str,
-    actor_id:    &str,
+    api_base: &str,
+    session_id: &str,
+    actor_id: &str,
 ) -> Result<Option<ApprovedExecution>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
@@ -52,15 +52,14 @@ pub async fn verify_and_fetch(
     let url = format!("{api_base}/api/approvals/{approval_id}");
     // X-Session-Id and X-Actor-Id let the server verify session membership,
     // preventing cross-session IDOR on the guardian fetch endpoint.
-    let resp = client.get(&url)
+    let resp = client
+        .get(&url)
         .header("X-Session-Id", session_id)
-        .header("X-Actor-Id",   actor_id)
-        .send().await?;
+        .header("X-Actor-Id", actor_id)
+        .send()
+        .await?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "approval fetch: server returned {}",
-            resp.status()
-        );
+        anyhow::bail!("approval fetch: server returned {}", resp.status());
     }
 
     let body: serde_json::Value = resp.json().await?;
@@ -85,10 +84,8 @@ pub async fn verify_and_fetch(
         })?
         .to_string();
 
-    let declared: DeclaredEffects = serde_json::from_value(
-        body["declared_effects"].clone(),
-    )
-    .unwrap_or_default();
+    let declared: DeclaredEffects =
+        serde_json::from_value(body["declared_effects"].clone()).unwrap_or_default();
 
     Ok(Some(ApprovedExecution { command, declared }))
 }

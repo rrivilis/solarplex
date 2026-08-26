@@ -43,50 +43,54 @@ pub struct InvokeBody {
     /// The cap token used by the calling agent.
     pub cap_id: String,
     /// Full method address: `"mcp.{slug}.{method}"`.
-    pub method:  String,
+    pub method: String,
     /// Arguments the agent wants to invoke the method with.
-    pub args:    serde_json::Value,
+    pub args: serde_json::Value,
     /// Approval timeout in seconds (only used when `requires_approval = true`).
     #[serde(default = "default_approval_timeout")]
     pub approval_timeout_secs: u64,
 }
 
-fn default_approval_timeout() -> u64 { 120 }
+fn default_approval_timeout() -> u64 {
+    120
+}
 
 /// Receipt TTL for auto-approved invocations (sidecar must consume within 30 s).
 const AUTO_APPROVE_RECEIPT_TTL_SECS: i64 = 30;
 /// Receipt TTL when approval is pending (human has up to N s to respond, then
 /// sidecar consumes; total window = approval_timeout + execution grace).
-const PENDING_RECEIPT_TTL_SECS:      i64 = 240;
+const PENDING_RECEIPT_TTL_SECS: i64 = 240;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 #[autometrics]
 pub async fn handler(
     Path(session_id): Path<String>,
-    State(state):     State<Arc<AppState>>,
-    Json(body):       Json<InvokeBody>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InvokeBody>,
 ) -> impl IntoResponse {
     // ── 0. Rate limit ─────────────────────────────────────────────────────────
     // 60 invoke requests per cap per minute.  Checked before cap validation to
     // avoid DB load from flooded caps.
     {
-        let mut bucket = state.invoke_rate_limits
+        let mut bucket = state
+            .invoke_rate_limits
             .entry(body.cap_id.clone())
             .or_insert_with(crate::state::RateBucket::new);
         if !bucket.check_and_increment(60) {
             return (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
                 "invoke rate limit exceeded (60 req/min per cap)",
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
     // ── 1. Validate cap ───────────────────────────────────────────────────────
 
     let cap = match db::tokens::get_cap(&state.db, &body.cap_id).await {
-        Ok(c)                           => c,
-        Err(db::DbError::NotFound)      => {
+        Ok(c) => c,
+        Err(db::DbError::NotFound) => {
             return (StatusCode::UNAUTHORIZED, "cap not found").into_response();
         }
         Err(e) => {
@@ -111,13 +115,17 @@ pub async fn handler(
 
     // Must match current session epoch.
     let current_epoch = match db::epochs::current(&state.db, &session_id).await {
-        Ok(e)  => e,
+        Ok(e) => e,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
     if cap.epoch != current_epoch {
-        return (StatusCode::GONE, "cap epoch superseded — re-attach required").into_response();
+        return (
+            StatusCode::GONE,
+            "cap epoch superseded — re-attach required",
+        )
+            .into_response();
     }
 
     // ── 2. Resolve method in registry ─────────────────────────────────────────
@@ -125,7 +133,11 @@ pub async fn handler(
     let method_row = match db::methods::get_by_address(&state.db, &session_id, &body.method).await {
         Ok(Some(m)) => m,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, "method not registered for this session").into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                "method not registered for this session",
+            )
+                .into_response();
         }
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -146,32 +158,46 @@ pub async fn handler(
     // in "*" is treated as a prefix match ("mcp.slug.*" → all tools for slug).
     if let Some(policies) = state.approval_policies.get(&session_id) {
         for policy in policies.iter() {
-            let actor_match = policy.actor_id.as_deref()
+            let actor_match = policy
+                .actor_id
+                .as_deref()
                 .map_or(true, |a| a == cap.actor_id);
             let method_match = policy.method_pattern == "*"
                 || policy.method_pattern == body.method
                 || (policy.method_pattern.ends_with('*')
-                    && body.method.starts_with(
-                        &policy.method_pattern[..policy.method_pattern.len() - 1]
-                    ));
+                    && body
+                        .method
+                        .starts_with(&policy.method_pattern[..policy.method_pattern.len() - 1]));
             if actor_match && method_match {
                 match policy.decision {
                     crate::state::PolicyDecision::AutoApprove => {
                         let receipt = match db::receipts::issue(
-                            &state.db, &body.cap_id, &session_id, &body.method,
-                            &body.args, AUTO_APPROVE_RECEIPT_TTL_SECS, None,
-                        ).await {
-                            Ok(r)  => r,
-                            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                            &state.db,
+                            &body.cap_id,
+                            &session_id,
+                            &body.method,
+                            &body.args,
+                            AUTO_APPROVE_RECEIPT_TTL_SECS,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                                    .into_response()
+                            }
                         };
                         return Json(serde_json::json!({
                             "status":     "approved",
                             "receipt_id": receipt.id,
                             "source":     "standing_policy",
-                        })).into_response();
+                        }))
+                        .into_response();
                     }
                     crate::state::PolicyDecision::AlwaysDeny => {
-                        return (StatusCode::FORBIDDEN, "denied by standing policy").into_response();
+                        return (StatusCode::FORBIDDEN, "denied by standing policy")
+                            .into_response();
                     }
                 }
             }
@@ -190,8 +216,10 @@ pub async fn handler(
             &body.args,
             AUTO_APPROVE_RECEIPT_TTL_SECS,
             None,
-        ).await {
-            Ok(r)  => r,
+        )
+        .await
+        {
+            Ok(r) => r,
             Err(e) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
             }
@@ -199,7 +227,8 @@ pub async fn handler(
         return Json(serde_json::json!({
             "status":     "approved",
             "receipt_id": receipt.id,
-        })).into_response();
+        }))
+        .into_response();
     }
 
     // Requires human approval: create an approval request then issue the receipt
@@ -215,7 +244,9 @@ pub async fn handler(
         &method_name,
         &body.args,
         body.approval_timeout_secs,
-    ).await {
+    )
+    .await
+    {
         Some((approval_id, _expires_at)) => approval_id,
         None => {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -230,8 +261,10 @@ pub async fn handler(
         &body.args,
         PENDING_RECEIPT_TTL_SECS,
         Some(&approval),
-    ).await {
-        Ok(r)  => r,
+    )
+    .await
+    {
+        Ok(r) => r,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
@@ -241,7 +274,8 @@ pub async fn handler(
         "status":      "pending",
         "approval_id": approval,
         "receipt_id":  receipt.id,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ── Consume receipt handler ───────────────────────────────────────────────────
@@ -260,13 +294,16 @@ pub struct ConsumeBody {
 #[autometrics]
 pub async fn consume_handler(
     Path(session_id): Path<String>,
-    State(state):     State<Arc<AppState>>,
-    Json(body):       Json<ConsumeBody>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ConsumeBody>,
 ) -> impl IntoResponse {
     let receipt = match db::receipts::consume(&state.db, &body.receipt_id).await {
-        Ok(r)                      => r,
+        Ok(r) => r,
         Err(db::DbError::NotFound) => {
-            return (StatusCode::GONE, "receipt not found, already consumed, or expired")
+            return (
+                StatusCode::GONE,
+                "receipt not found, already consumed, or expired",
+            )
                 .into_response();
         }
         Err(e) => {
@@ -286,5 +323,6 @@ pub async fn consume_handler(
         // The sidecar MUST use these args, not its own copy.
         "args":        receipt.args,
         "approval_id": receipt.approval_id,
-    })).into_response()
+    }))
+    .into_response()
 }

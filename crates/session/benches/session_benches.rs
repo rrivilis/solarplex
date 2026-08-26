@@ -8,27 +8,23 @@
 //! - `serialization/*`— BumpWriter arena serialization vs serde_json heap String
 //! - `hash/*`         — FNV-1a session_numa_node throughput
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use chrono::Utc;
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 
-use session::{
-    build_snapshot,
-    transition,
-    BumpWriter, SessionArena,
-    InboundEvent, LiveEvent,
-    SessionEvent, SessionMemory, SessionState, SagaOutcome,
-    SagaStepSpec,
-};
 use session::CapRecord;
+use session::{
+    build_snapshot, transition, BumpWriter, InboundEvent, LiveEvent, SagaOutcome, SagaStepSpec,
+    SessionArena, SessionEvent, SessionMemory, SessionState,
+};
 
 // ── Fixture builders ──────────────────────────────────────────────────────────
 
-const SESSION_ID: &str  = "01HZXSESSION0000000000001";
-const OWNER_ID:   &str  = "01HZXOWNER00000000000001";
-const AGENT_ID:   &str  = "01HZXAGENT00000000000001";
-const CAP_ID:     &str  = "01HZXCAP0000000000000001";
-const COLLAB_ID:  &str  = "01HZXCOLLAB00000000000001";
-const PART_ID:    &str  = "01HZXPART000000000000001";
+const SESSION_ID: &str = "01HZXSESSION0000000000001";
+const OWNER_ID: &str = "01HZXOWNER00000000000001";
+const AGENT_ID: &str = "01HZXAGENT00000000000001";
+const CAP_ID: &str = "01HZXCAP0000000000000001";
+const COLLAB_ID: &str = "01HZXCOLLAB00000000000001";
+const PART_ID: &str = "01HZXPART000000000000001";
 
 /// Build a session with: owner + collaborator joined, both with caps.
 /// Returns `(state, memory)` at the post-setup baseline.
@@ -39,25 +35,25 @@ fn baseline_memory() -> (SessionState, SessionMemory) {
             seq: 1,
             event: SessionEvent::SessionCreated {
                 session_id: SESSION_ID.into(),
-                owner_id:   OWNER_ID.into(),
-                name:       "bench-session".into(),
-                policy:     "single_vote".into(),
+                owner_id: OWNER_ID.into(),
+                name: "bench-session".into(),
+                policy: "single_vote".into(),
                 created_at: now,
             },
         },
         InboundEvent::Replayed {
             seq: 2,
             event: SessionEvent::ParticipantJoined {
-                actor_id:  OWNER_ID.into(),
-                role:      "owner".into(),
+                actor_id: OWNER_ID.into(),
+                role: "owner".into(),
                 joined_at: now,
             },
         },
         InboundEvent::Replayed {
             seq: 3,
             event: SessionEvent::ParticipantJoined {
-                actor_id:  COLLAB_ID.into(),
-                role:      "collaborator".into(),
+                actor_id: COLLAB_ID.into(),
+                role: "collaborator".into(),
                 joined_at: now,
             },
         },
@@ -65,35 +61,35 @@ fn baseline_memory() -> (SessionState, SessionMemory) {
         InboundEvent::Replayed {
             seq: 4,
             event: SessionEvent::CapDelegated {
-                cap_id:      CAP_ID.into(),
-                parent_cap:  None,
-                actor_id:    OWNER_ID.into(),
+                cap_id: CAP_ID.into(),
+                parent_cap: None,
+                actor_id: OWNER_ID.into(),
                 permissions: vec!["*".into()],
-                epoch:       0,
-                stratum:     0,
-                issued_at:   now,
+                epoch: 0,
+                stratum: 0,
+                issued_at: now,
             },
         },
         // Collab cap
         InboundEvent::Replayed {
             seq: 5,
             event: SessionEvent::CapDelegated {
-                cap_id:      "cap-collab-001".into(),
-                parent_cap:  Some(CAP_ID.into()),
-                actor_id:    COLLAB_ID.into(),
+                cap_id: "cap-collab-001".into(),
+                parent_cap: Some(CAP_ID.into()),
+                actor_id: COLLAB_ID.into(),
                 permissions: vec!["vote".into(), "view".into()],
-                epoch:       0,
-                stratum:     1,
-                issued_at:   now,
+                epoch: 0,
+                stratum: 1,
+                issued_at: now,
             },
         },
     ];
 
-    let mut state  = SessionState::Active;
+    let mut state = SessionState::Active;
     let mut memory = SessionMemory::new(SESSION_ID.into(), OWNER_ID.into());
     for event in events {
         let (s, m, _) = transition(state, memory, event);
-        state  = s;
+        state = s;
         memory = m;
     }
     (state, memory)
@@ -103,13 +99,14 @@ fn baseline_memory() -> (SessionState, SessionMemory) {
 fn memory_with_pending_approval() -> (SessionState, SessionMemory) {
     let (state, memory) = baseline_memory();
     let (s, m, _) = transition(
-        state, memory,
+        state,
+        memory,
         InboundEvent::Live(LiveEvent::ApprovalCreate {
             approval_id: "appr-001".into(),
-            actor_id:    AGENT_ID.into(),
-            tool:        "bash".into(),
-            args:        serde_json::json!({"cmd": "ls"}),
-            expires_ms:  None,
+            actor_id: AGENT_ID.into(),
+            tool: "bash".into(),
+            args: serde_json::json!({"cmd": "ls"}),
+            expires_ms: None,
         }),
     );
     (s, m)
@@ -119,16 +116,17 @@ fn memory_with_pending_approval() -> (SessionState, SessionMemory) {
 fn memory_with_running_saga() -> (SessionState, SessionMemory) {
     let (state, memory) = baseline_memory();
     let (s, m, _) = transition(
-        state, memory,
+        state,
+        memory,
         InboundEvent::Live(LiveEvent::SagaBegin {
-            saga_id:   "saga-001".into(),
+            saga_id: "saga-001".into(),
             saga_type: "custom".into(),
             steps: vec![SagaStepSpec {
-                step_idx:     0,
-                participant:  PART_ID.into(),
-                message:      serde_json::json!({"action": "greet"}),
+                step_idx: 0,
+                participant: PART_ID.into(),
+                message: serde_json::json!({"action": "greet"}),
                 compensation: serde_json::json!({"action": "undo_greet"}),
-                timeout_ms:   30_000,
+                timeout_ms: 30_000,
             }],
             metadata: serde_json::json!({}),
         }),
@@ -148,13 +146,16 @@ fn bench_transition(c: &mut Criterion) {
         g.bench_function("actor_connected", |b| {
             b.iter_batched(
                 || (state.clone(), memory.clone()),
-                |(s, m)| transition(
-                    black_box(s), black_box(m),
-                    black_box(InboundEvent::Live(LiveEvent::ActorConnected {
-                        actor_id:      OWNER_ID.into(),
-                        connection_id: "conn-001".into(),
-                    })),
-                ),
+                |(s, m)| {
+                    transition(
+                        black_box(s),
+                        black_box(m),
+                        black_box(InboundEvent::Live(LiveEvent::ActorConnected {
+                            actor_id: OWNER_ID.into(),
+                            connection_id: "conn-001".into(),
+                        })),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -166,16 +167,19 @@ fn bench_transition(c: &mut Criterion) {
         g.bench_function("approval_create", |b| {
             b.iter_batched(
                 || (state.clone(), memory.clone()),
-                |(s, m)| transition(
-                    black_box(s), black_box(m),
-                    black_box(InboundEvent::Live(LiveEvent::ApprovalCreate {
-                        approval_id: "appr-bench".into(),
-                        actor_id:    AGENT_ID.into(),
-                        tool:        "bash".into(),
-                        args:        serde_json::json!({"cmd": "ls"}),
-                        expires_ms:  Some(30_000),
-                    })),
-                ),
+                |(s, m)| {
+                    transition(
+                        black_box(s),
+                        black_box(m),
+                        black_box(InboundEvent::Live(LiveEvent::ApprovalCreate {
+                            approval_id: "appr-bench".into(),
+                            actor_id: AGENT_ID.into(),
+                            tool: "bash".into(),
+                            args: serde_json::json!({"cmd": "ls"}),
+                            expires_ms: Some(30_000),
+                        })),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -187,14 +191,17 @@ fn bench_transition(c: &mut Criterion) {
         g.bench_function("vote_cast", |b| {
             b.iter_batched(
                 || (state.clone(), memory.clone()),
-                |(s, m)| transition(
-                    black_box(s), black_box(m),
-                    black_box(InboundEvent::Live(LiveEvent::VoteCast {
-                        approval_id: "appr-001".into(),
-                        voter_id:    COLLAB_ID.into(),
-                        decision:    session::VoteDecision::Approve,
-                    })),
-                ),
+                |(s, m)| {
+                    transition(
+                        black_box(s),
+                        black_box(m),
+                        black_box(InboundEvent::Live(LiveEvent::VoteCast {
+                            approval_id: "appr-001".into(),
+                            voter_id: COLLAB_ID.into(),
+                            decision: session::VoteDecision::Approve,
+                        })),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -206,30 +213,33 @@ fn bench_transition(c: &mut Criterion) {
         g.bench_function("saga_begin", |b| {
             b.iter_batched(
                 || (state.clone(), memory.clone()),
-                |(s, m)| transition(
-                    black_box(s), black_box(m),
-                    black_box(InboundEvent::Live(LiveEvent::SagaBegin {
-                        saga_id:   "saga-bench".into(),
-                        saga_type: "custom".into(),
-                        steps: vec![
-                            SagaStepSpec {
-                                step_idx:     0,
-                                participant:  PART_ID.into(),
-                                message:      serde_json::json!({"action": "greet"}),
-                                compensation: serde_json::json!({"action": "undo"}),
-                                timeout_ms:   30_000,
-                            },
-                            SagaStepSpec {
-                                step_idx:     1,
-                                participant:  PART_ID.into(),
-                                message:      serde_json::json!({"action": "confirm"}),
-                                compensation: serde_json::json!({"action": "cancel"}),
-                                timeout_ms:   30_000,
-                            },
-                        ],
-                        metadata: serde_json::json!({}),
-                    })),
-                ),
+                |(s, m)| {
+                    transition(
+                        black_box(s),
+                        black_box(m),
+                        black_box(InboundEvent::Live(LiveEvent::SagaBegin {
+                            saga_id: "saga-bench".into(),
+                            saga_type: "custom".into(),
+                            steps: vec![
+                                SagaStepSpec {
+                                    step_idx: 0,
+                                    participant: PART_ID.into(),
+                                    message: serde_json::json!({"action": "greet"}),
+                                    compensation: serde_json::json!({"action": "undo"}),
+                                    timeout_ms: 30_000,
+                                },
+                                SagaStepSpec {
+                                    step_idx: 1,
+                                    participant: PART_ID.into(),
+                                    message: serde_json::json!({"action": "confirm"}),
+                                    compensation: serde_json::json!({"action": "cancel"}),
+                                    timeout_ms: 30_000,
+                                },
+                            ],
+                            metadata: serde_json::json!({}),
+                        })),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -241,14 +251,17 @@ fn bench_transition(c: &mut Criterion) {
         g.bench_function("saga_ack_committed", |b| {
             b.iter_batched(
                 || (state.clone(), memory.clone()),
-                |(s, m)| transition(
-                    black_box(s), black_box(m),
-                    black_box(InboundEvent::Live(LiveEvent::SagaAck {
-                        saga_id:  "saga-001".into(),
-                        step_idx: 0,
-                        outcome:  SagaOutcome::Committed,
-                    })),
-                ),
+                |(s, m)| {
+                    transition(
+                        black_box(s),
+                        black_box(m),
+                        black_box(InboundEvent::Live(LiveEvent::SagaAck {
+                            saga_id: "saga-001".into(),
+                            step_idx: 0,
+                            outcome: SagaOutcome::Committed,
+                        })),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -261,21 +274,24 @@ fn bench_transition(c: &mut Criterion) {
         g.bench_function("replayed_cap_delegated", |b| {
             b.iter_batched(
                 || (state.clone(), memory.clone()),
-                |(s, m)| transition(
-                    black_box(s), black_box(m),
-                    black_box(InboundEvent::Replayed {
-                        seq: 99,
-                        event: SessionEvent::CapDelegated {
-                            cap_id:      "cap-bench".into(),
-                            parent_cap:  Some(CAP_ID.into()),
-                            actor_id:    AGENT_ID.into(),
-                            permissions: vec!["view".into()],
-                            epoch:       0,
-                            stratum:     1,
-                            issued_at:   now,
-                        },
-                    }),
-                ),
+                |(s, m)| {
+                    transition(
+                        black_box(s),
+                        black_box(m),
+                        black_box(InboundEvent::Replayed {
+                            seq: 99,
+                            event: SessionEvent::CapDelegated {
+                                cap_id: "cap-bench".into(),
+                                parent_cap: Some(CAP_ID.into()),
+                                actor_id: AGENT_ID.into(),
+                                permissions: vec!["view".into()],
+                                epoch: 0,
+                                stratum: 1,
+                                issued_at: now,
+                            },
+                        }),
+                    )
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -310,25 +326,27 @@ fn bench_snapshot(c: &mut Criterion) {
     // Algebra mask check only — no rebuild.  This is what gate_hit costs.
     {
         let saga_event = SessionEvent::SagaStepSent {
-            saga_id:     "saga-001".into(),
-            step_idx:    0,
+            saga_id: "saga-001".into(),
+            step_idx: 0,
             participant: PART_ID.into(),
-            sent_at:     Utc::now(),
+            sent_at: Utc::now(),
         };
         let approval_event = SessionEvent::ParticipantJoined {
-            actor_id:  COLLAB_ID.into(),
-            role:      "collaborator".into(),
+            actor_id: COLLAB_ID.into(),
+            role: "collaborator".into(),
             joined_at: Utc::now(),
         };
         use session::SNAPSHOT_DEPENDS_ON;
         g.bench_function("algebra_mask_gate_hit", |b| {
-            b.iter(|| {
-                black_box(saga_event.algebra_mask().intersects(SNAPSHOT_DEPENDS_ON))
-            })
+            b.iter(|| black_box(saga_event.algebra_mask().intersects(SNAPSHOT_DEPENDS_ON)))
         });
         g.bench_function("algebra_mask_gate_miss", |b| {
             b.iter(|| {
-                black_box(approval_event.algebra_mask().intersects(SNAPSHOT_DEPENDS_ON))
+                black_box(
+                    approval_event
+                        .algebra_mask()
+                        .intersects(SNAPSHOT_DEPENDS_ON),
+                )
             })
         });
     }
@@ -359,13 +377,13 @@ fn bench_arena(c: &mut Criterion) {
     {
         let now = Utc::now();
         let event = SessionEvent::CapDelegated {
-            cap_id:      CAP_ID.into(),
-            parent_cap:  None,
-            actor_id:    OWNER_ID.into(),
+            cap_id: CAP_ID.into(),
+            parent_cap: None,
+            actor_id: OWNER_ID.into(),
             permissions: vec!["*".into()],
-            epoch:       0,
-            stratum:     0,
-            issued_at:   now,
+            epoch: 0,
+            stratum: 0,
+            issued_at: now,
         };
         let arena = SessionArena::with_capacity(4096);
 
@@ -398,9 +416,9 @@ fn bench_serialization(c: &mut Criterion) {
 
     let now = Utc::now();
     let event = SessionEvent::SagaStepAcked {
-        saga_id:  "saga-bench".into(),
+        saga_id: "saga-bench".into(),
         step_idx: 0,
-        outcome:  SagaOutcome::Committed,
+        outcome: SagaOutcome::Committed,
         acked_at: now,
     };
 
@@ -424,9 +442,7 @@ fn bench_serialization(c: &mut Criterion) {
 
     // type_name() — static dispatch, verify it's free.
     g.bench_function("type_name_static", |b| {
-        b.iter(|| {
-            black_box(event.type_name())
-        })
+        b.iter(|| black_box(event.type_name()))
     });
 
     g.finish();
@@ -450,34 +466,41 @@ fn cap_chain_memory(depth: usize) -> (SessionMemory, String) {
     let mut memory = SessionMemory::new("s".into(), "owner".into());
 
     let root_cap = "cap-root".to_string();
-    memory.caps.insert(root_cap.clone(), CapRecord {
-        cap_id:      root_cap.clone(),
-        actor_id:    "owner".into(),
-        parent_cap:  None,
-        permissions: vec!["*".into()],
-        epoch:       0,
-        stratum:     0,
-        issued_at:   now,
-        revoked:     false,
-    });
+    memory.caps.insert(
+        root_cap.clone(),
+        CapRecord {
+            cap_id: root_cap.clone(),
+            actor_id: "owner".into(),
+            parent_cap: None,
+            permissions: vec!["*".into()],
+            epoch: 0,
+            stratum: 0,
+            issued_at: now,
+            revoked: false,
+        },
+    );
 
     let mut parent = root_cap.clone();
     for i in 0..depth {
         let child = format!("cap-{i:06}");
-        memory.cap_children
+        memory
+            .cap_children
             .entry(parent.clone())
             .or_default()
             .push(child.clone());
-        memory.caps.insert(child.clone(), CapRecord {
-            cap_id:      child.clone(),
-            actor_id:    format!("actor-{i}"),
-            parent_cap:  Some(parent.clone()),
-            permissions: vec!["view".into()],
-            epoch:       0,
-            stratum:     (i + 1) as i64,
-            issued_at:   now,
-            revoked:     false,
-        });
+        memory.caps.insert(
+            child.clone(),
+            CapRecord {
+                cap_id: child.clone(),
+                actor_id: format!("actor-{i}"),
+                parent_cap: Some(parent.clone()),
+                permissions: vec!["view".into()],
+                epoch: 0,
+                stratum: (i + 1) as i64,
+                issued_at: now,
+                revoked: false,
+            },
+        );
         parent = child;
     }
     (memory, root_cap)
@@ -490,27 +513,15 @@ fn bench_cap_graph(c: &mut Criterion) {
         let (memory, root_cap) = cap_chain_memory(depth);
 
         // cap_subtree: BFS via inverted index — O(depth) for a chain.
-        g.bench_with_input(
-            BenchmarkId::new("subtree_revoke", depth),
-            &depth,
-            |b, _| {
-                b.iter(|| {
-                    black_box(memory.cap_subtree(black_box(&root_cap)))
-                })
-            },
-        );
+        g.bench_with_input(BenchmarkId::new("subtree_revoke", depth), &depth, |b, _| {
+            b.iter(|| black_box(memory.cap_subtree(black_box(&root_cap))))
+        });
 
         // cap_lineage: follow parent pointers from leaf to root — O(depth).
         let leaf_cap = format!("cap-{:06}", depth - 1);
-        g.bench_with_input(
-            BenchmarkId::new("lineage_why", depth),
-            &depth,
-            |b, _| {
-                b.iter(|| {
-                    black_box(memory.cap_lineage(black_box(&leaf_cap)))
-                })
-            },
-        );
+        g.bench_with_input(BenchmarkId::new("lineage_why", depth), &depth, |b, _| {
+            b.iter(|| black_box(memory.cap_lineage(black_box(&leaf_cap))))
+        });
     }
 
     g.finish();

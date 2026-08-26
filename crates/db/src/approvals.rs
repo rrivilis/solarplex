@@ -123,7 +123,12 @@ pub async fn set_state(pool: &PgPool, id: &str, state: &str) -> DbResult<Approva
     .ok_or(DbError::NotFound)
 }
 
-pub async fn record_vote(pool: &PgPool, id: &str, voter_id: &str, vote: &str) -> DbResult<ApprovalRow> {
+pub async fn record_vote(
+    pool: &PgPool,
+    id: &str,
+    voter_id: &str,
+    vote: &str,
+) -> DbResult<ApprovalRow> {
     sqlx::query_as::<_, ApprovalRow>(
         "UPDATE approval_requests
          SET votes = jsonb_set(votes, ARRAY[$1], to_jsonb($2::text))
@@ -138,7 +143,12 @@ pub async fn record_vote(pool: &PgPool, id: &str, voter_id: &str, vote: &str) ->
     .ok_or(DbError::NotFound)
 }
 
-pub async fn resolve(pool: &PgPool, id: &str, state: &str, resolved_by: &str) -> DbResult<ApprovalRow> {
+pub async fn resolve(
+    pool: &PgPool,
+    id: &str,
+    state: &str,
+    resolved_by: &str,
+) -> DbResult<ApprovalRow> {
     sqlx::query_as::<_, ApprovalRow>(
         "UPDATE approval_requests
          SET state = $1, resolved_by = $2, resolved_at = now()
@@ -306,48 +316,44 @@ pub async fn expire_timed_out(pool: &PgPool) -> DbResult<Vec<String>> {
 /// Store the runahead scout's pre-execution effect manifest for an approval.
 /// Called by the sidecar when the scout finishes (typically during approval wait).
 pub async fn set_scout_manifest(
-    pool:        &PgPool,
-    id:          &str,
-    manifest:    &serde_json::Value,
+    pool: &PgPool,
+    id: &str,
+    manifest: &serde_json::Value,
 ) -> DbResult<()> {
-    sqlx::query(
-        "UPDATE approval_requests SET scout_manifest = $1 WHERE id = $2",
-    )
-    .bind(manifest)
-    .bind(id)
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(DbError::from)
+    sqlx::query("UPDATE approval_requests SET scout_manifest = $1 WHERE id = $2")
+        .bind(manifest)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(DbError::from)
 }
 
 /// Store declared effects derived from the scout manifest.
 /// Called immediately after `set_scout_manifest` so the human sees the sandbox
 /// policy alongside the scout prediction before voting.
 pub async fn set_declared_effects(
-    pool:    &PgPool,
-    id:      &str,
+    pool: &PgPool,
+    id: &str,
     effects: &serde_json::Value,
 ) -> DbResult<()> {
-    sqlx::query(
-        "UPDATE approval_requests SET declared_effects = $1 WHERE id = $2",
-    )
-    .bind(effects)
-    .bind(id)
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(DbError::from)
+    sqlx::query("UPDATE approval_requests SET declared_effects = $1 WHERE id = $2")
+        .bind(effects)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(DbError::from)
 }
 
 /// Store the post-execution manifest and divergence flag for an approval.
 /// Called by the sidecar after the upstream tool returns.
 /// `diverged = true` is a Ring-2 security event (execution ≠ scout prediction).
 pub async fn set_execution_manifest(
-    pool:        &PgPool,
-    id:          &str,
-    manifest:    &serde_json::Value,
-    diverged:    bool,
+    pool: &PgPool,
+    id: &str,
+    manifest: &serde_json::Value,
+    diverged: bool,
 ) -> DbResult<()> {
     sqlx::query(
         "UPDATE approval_requests

@@ -18,17 +18,17 @@ use crate::{DbError, DbResult};
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct RevocationRow {
-    pub id:             String,
-    pub session_id:     String,
-    pub strategy:       String,
-    pub target_cap_id:  Option<String>,
+    pub id: String,
+    pub session_id: String,
+    pub strategy: String,
+    pub target_cap_id: Option<String>,
     pub target_stratum: Option<i64>,
-    pub drain_seq:      i64,
+    pub drain_seq: i64,
     pub drain_deadline: DateTime<Utc>,
-    pub closed_epoch:   i64,
-    pub new_epoch:      i64,
-    pub revoked_at:     DateTime<Utc>,
-    pub revoked_by:     String,
+    pub closed_epoch: i64,
+    pub new_epoch: i64,
+    pub revoked_at: DateTime<Utc>,
+    pub revoked_by: String,
 }
 
 // ── Session epoch reads / writes ──────────────────────────────────────────────
@@ -37,25 +37,22 @@ pub struct RevocationRow {
 ///
 /// Idempotent via ON CONFLICT DO NOTHING — safe to call multiple times.
 pub async fn seed(pool: &PgPool, session_id: &str) -> DbResult<()> {
-    sqlx::query(
-        "INSERT INTO session_epochs (session_id) VALUES ($1) ON CONFLICT DO NOTHING",
-    )
-    .bind(session_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO session_epochs (session_id) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(session_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 /// Return the current epoch for a session.  Returns 0 for sessions that were
 /// created before the epoch system was added (migration 011 back-fills all rows).
 pub async fn current(pool: &PgPool, session_id: &str) -> DbResult<i64> {
-    let epoch = sqlx::query_scalar::<_, i64>(
-        "SELECT epoch FROM session_epochs WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await?
-    .unwrap_or(0);
+    let epoch =
+        sqlx::query_scalar::<_, i64>("SELECT epoch FROM session_epochs WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0);
     Ok(epoch)
 }
 
@@ -86,17 +83,17 @@ pub async fn advance(pool: &PgPool, session_id: &str) -> DbResult<i64> {
 /// for the `cap` and `stratum` strategies respectively.
 #[allow(clippy::too_many_arguments)]
 pub async fn record_revocation(
-    pool:          &PgPool,
-    id:            &str,
-    session_id:    &str,
-    strategy:      &str,
+    pool: &PgPool,
+    id: &str,
+    session_id: &str,
+    strategy: &str,
     target_cap_id: Option<&str>,
     target_stratum: Option<i64>,
-    drain_seq:     i64,
+    drain_seq: i64,
     drain_deadline: DateTime<Utc>,
-    closed_epoch:  i64,
-    new_epoch:     i64,
-    revoked_by:    &str,
+    closed_epoch: i64,
+    new_epoch: i64,
+    revoked_by: &str,
 ) -> DbResult<()> {
     sqlx::query(
         "INSERT INTO cap_revocations
@@ -120,10 +117,7 @@ pub async fn record_revocation(
 }
 
 /// Return the 20 most recent revocation events for a session, newest first.
-pub async fn list_recent(
-    pool:       &PgPool,
-    session_id: &str,
-) -> DbResult<Vec<RevocationRow>> {
+pub async fn list_recent(pool: &PgPool, session_id: &str) -> DbResult<Vec<RevocationRow>> {
     sqlx::query_as::<_, RevocationRow>(
         "SELECT id, session_id, strategy, target_cap_id, target_stratum,
                 drain_seq, drain_deadline, closed_epoch, new_epoch, revoked_at, revoked_by

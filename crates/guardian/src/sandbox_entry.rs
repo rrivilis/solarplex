@@ -75,7 +75,9 @@ pub fn run(args: &[String]) -> ! {
                 std::process::exit(2);
             }
         };
-        let argv: Vec<std::ffi::CString> = match opts.command.iter()
+        let argv: Vec<std::ffi::CString> = match opts
+            .command
+            .iter()
             .map(|s| std::ffi::CString::new(s.as_bytes()))
             .collect::<Result<_, _>>()
         {
@@ -126,7 +128,7 @@ fn require_full_sandbox_or_opt_out(component: &str, err: impl std::fmt::Display)
 #[allow(dead_code)]
 struct FileEffect {
     path: String,
-    ops:  FileOps,
+    ops: FileOps,
     /// `(st_dev, st_ino)` the scout observed at this path, if any -- see
     /// `protocol::effects::FileEffect::identity`'s doc for why this exists.
     /// Re-verified against a fresh `stat()` in `apply_landlock` immediately
@@ -138,7 +140,7 @@ struct FileEffect {
 #[allow(dead_code)]
 struct FileOps {
     create: bool,
-    write:  bool,
+    write: bool,
     delete: bool,
     rename: bool,
 }
@@ -152,31 +154,40 @@ impl FileOps {
 
 #[allow(dead_code)]
 struct SandboxOpts {
-    no_network:      bool,
-    no_subprocess:   bool,
-    file_effects:    Vec<FileEffect>,
-    allow_dynamic:   bool,
+    no_network: bool,
+    no_subprocess: bool,
+    file_effects: Vec<FileEffect>,
+    allow_dynamic: bool,
     resource_limits: ResourceLimits,
-    command:         Vec<String>,
+    command: Vec<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<SandboxOpts, String> {
-    let mut no_network      = false;
-    let mut no_subprocess   = false;
-    let mut file_effects    = Vec::new();
-    let mut allow_dynamic   = false;
+    let mut no_network = false;
+    let mut no_subprocess = false;
+    let mut file_effects = Vec::new();
+    let mut allow_dynamic = false;
     let mut resource_limits = ResourceLimits::default();
-    let mut command         = Vec::new();
+    let mut command = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--no-network"    => { no_network    = true; i += 1; }
-            "--no-subprocess" => { no_subprocess = true; i += 1; }
-            "--allow-dynamic" => { allow_dynamic = true; i += 1; }
+            "--no-network" => {
+                no_network = true;
+                i += 1;
+            }
+            "--no-subprocess" => {
+                no_subprocess = true;
+                i += 1;
+            }
+            "--allow-dynamic" => {
+                allow_dynamic = true;
+                i += 1;
+            }
             "--file-effect" => {
                 i += 1;
                 let val = args.get(i).ok_or("--file-effect requires a value")?;
-                let fe  = parse_file_effect_arg(val)
+                let fe = parse_file_effect_arg(val)
                     .ok_or_else(|| format!("invalid --file-effect value: {val}"))?;
                 file_effects.push(fe);
                 i += 1;
@@ -195,7 +206,14 @@ fn parse_args(args: &[String]) -> Result<SandboxOpts, String> {
             other => return Err(format!("unknown flag: {other}")),
         }
     }
-    Ok(SandboxOpts { no_network, no_subprocess, file_effects, allow_dynamic, resource_limits, command })
+    Ok(SandboxOpts {
+        no_network,
+        no_subprocess,
+        file_effects,
+        allow_dynamic,
+        resource_limits,
+        command,
+    })
 }
 
 /// Wire format: `OPS:DEV:INO:PATH`, where `DEV`/`INO` are decimal or `-` for
@@ -208,11 +226,13 @@ fn parse_file_effect_arg(s: &str) -> Option<FileEffect> {
     let ops_str = parts.next()?;
     let dev_str = parts.next()?;
     let ino_str = parts.next()?;
-    let path    = parts.next()?;
-    if path.is_empty() { return None; }
+    let path = parts.next()?;
+    if path.is_empty() {
+        return None;
+    }
     let ops = FileOps {
         create: ops_str.contains('c'),
-        write:  ops_str.contains('w'),
+        write: ops_str.contains('w'),
         delete: ops_str.contains('d'),
         rename: ops_str.contains('r'),
     };
@@ -220,7 +240,11 @@ fn parse_file_effect_arg(s: &str) -> Option<FileEffect> {
         ("-", "-") => None,
         (d, i) => Some((d.parse().ok()?, i.parse().ok()?)),
     };
-    Some(FileEffect { path: path.to_string(), ops, identity })
+    Some(FileEffect {
+        path: path.to_string(),
+        ops,
+        identity,
+    })
 }
 
 // ── Resource limits ─────────────────────────────────────────────────────────
@@ -240,7 +264,8 @@ fn parse_file_effect_arg(s: &str) -> Option<FileEffect> {
 // all-None starting point; see that module for why this stays a
 // guardian-local concern rather than living in `DeclaredEffects`.
 
-pub(crate) const RLIMIT_NAMES: &[&str] = &["cpu", "as", "fsize", "nofile", "stack", "core", "nproc"];
+pub(crate) const RLIMIT_NAMES: &[&str] =
+    &["cpu", "as", "fsize", "nofile", "stack", "core", "nproc"];
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 pub(crate) struct RlimitPair {
@@ -251,13 +276,13 @@ pub(crate) struct RlimitPair {
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub(crate) struct ResourceLimits {
-    cpu_seconds:         Option<RlimitPair>,
+    cpu_seconds: Option<RlimitPair>,
     address_space_bytes: Option<RlimitPair>,
-    file_size_bytes:     Option<RlimitPair>,
-    open_files:          Option<RlimitPair>,
-    stack_bytes:         Option<RlimitPair>,
-    core_bytes:          Option<RlimitPair>,
-    processes:           Option<RlimitPair>,
+    file_size_bytes: Option<RlimitPair>,
+    open_files: Option<RlimitPair>,
+    stack_bytes: Option<RlimitPair>,
+    core_bytes: Option<RlimitPair>,
+    processes: Option<RlimitPair>,
 }
 
 impl ResourceLimits {
@@ -267,13 +292,13 @@ impl ResourceLimits {
     /// itself.
     pub(crate) fn to_cli_args(&self) -> Vec<String> {
         let named: [(&str, Option<RlimitPair>); 7] = [
-            ("cpu",    self.cpu_seconds),
-            ("as",     self.address_space_bytes),
-            ("fsize",  self.file_size_bytes),
+            ("cpu", self.cpu_seconds),
+            ("as", self.address_space_bytes),
+            ("fsize", self.file_size_bytes),
             ("nofile", self.open_files),
-            ("stack",  self.stack_bytes),
-            ("core",   self.core_bytes),
-            ("nproc",  self.processes),
+            ("stack", self.stack_bytes),
+            ("core", self.core_bytes),
+            ("nproc", self.processes),
         ];
         let mut args = Vec::new();
         for (name, pair) in named {
@@ -286,18 +311,25 @@ impl ResourceLimits {
     }
 }
 
-pub(crate) fn set_named(limits: &mut ResourceLimits, name: &str, pair: RlimitPair) -> Result<(), String> {
+pub(crate) fn set_named(
+    limits: &mut ResourceLimits,
+    name: &str,
+    pair: RlimitPair,
+) -> Result<(), String> {
     match name {
-        "cpu"    => limits.cpu_seconds         = Some(pair),
-        "as"     => limits.address_space_bytes = Some(pair),
-        "fsize"  => limits.file_size_bytes     = Some(pair),
-        "nofile" => limits.open_files          = Some(pair),
-        "stack"  => limits.stack_bytes         = Some(pair),
-        "core"   => limits.core_bytes          = Some(pair),
-        "nproc"  => limits.processes           = Some(pair),
-        other => return Err(format!(
-            "unknown rlimit {other:?} (expected one of: {})", RLIMIT_NAMES.join(", ")
-        )),
+        "cpu" => limits.cpu_seconds = Some(pair),
+        "as" => limits.address_space_bytes = Some(pair),
+        "fsize" => limits.file_size_bytes = Some(pair),
+        "nofile" => limits.open_files = Some(pair),
+        "stack" => limits.stack_bytes = Some(pair),
+        "core" => limits.core_bytes = Some(pair),
+        "nproc" => limits.processes = Some(pair),
+        other => {
+            return Err(format!(
+                "unknown rlimit {other:?} (expected one of: {})",
+                RLIMIT_NAMES.join(", ")
+            ))
+        }
     }
     Ok(())
 }
@@ -306,19 +338,27 @@ pub(crate) fn set_named(limits: &mut ResourceLimits, name: &str, pair: RlimitPai
 pub(crate) fn parse_pair(s: &str) -> Result<RlimitPair, String> {
     match s.split_once(':') {
         Some((soft, hard)) => {
-            let soft: u64 = soft.parse().map_err(|_| "soft value must be a non-negative integer".to_string())?;
-            let hard: u64 = hard.parse().map_err(|_| "hard value must be a non-negative integer".to_string())?;
+            let soft: u64 = soft
+                .parse()
+                .map_err(|_| "soft value must be a non-negative integer".to_string())?;
+            let hard: u64 = hard
+                .parse()
+                .map_err(|_| "hard value must be a non-negative integer".to_string())?;
             Ok(RlimitPair { soft, hard })
         }
         None => {
-            let v: u64 = s.parse().map_err(|_| "value must be a non-negative integer, or SOFT:HARD".to_string())?;
+            let v: u64 = s
+                .parse()
+                .map_err(|_| "value must be a non-negative integer, or SOFT:HARD".to_string())?;
             Ok(RlimitPair { soft: v, hard: v })
         }
     }
 }
 
 pub(crate) fn apply_rlimit_arg(limits: &mut ResourceLimits, s: &str) -> Result<(), String> {
-    let (name, value) = s.split_once('=').ok_or("expected NAME=VALUE or NAME=SOFT:HARD")?;
+    let (name, value) = s
+        .split_once('=')
+        .ok_or("expected NAME=VALUE or NAME=SOFT:HARD")?;
     set_named(limits, name, parse_pair(value)?)
 }
 
@@ -340,13 +380,27 @@ fn set_limit(resource: libc::__rlimit_resource_t, pair: RlimitPair) -> anyhow::R
 
 #[cfg(target_os = "linux")]
 fn apply_resource_limits(limits: &ResourceLimits) -> anyhow::Result<()> {
-    if let Some(p) = limits.cpu_seconds         { set_limit(libc::RLIMIT_CPU,    p)?; }
-    if let Some(p) = limits.address_space_bytes { set_limit(libc::RLIMIT_AS,     p)?; }
-    if let Some(p) = limits.file_size_bytes     { set_limit(libc::RLIMIT_FSIZE,  p)?; }
-    if let Some(p) = limits.open_files          { set_limit(libc::RLIMIT_NOFILE, p)?; }
-    if let Some(p) = limits.stack_bytes         { set_limit(libc::RLIMIT_STACK,  p)?; }
-    if let Some(p) = limits.core_bytes          { set_limit(libc::RLIMIT_CORE,   p)?; }
-    if let Some(p) = limits.processes           { set_limit(libc::RLIMIT_NPROC,  p)?; }
+    if let Some(p) = limits.cpu_seconds {
+        set_limit(libc::RLIMIT_CPU, p)?;
+    }
+    if let Some(p) = limits.address_space_bytes {
+        set_limit(libc::RLIMIT_AS, p)?;
+    }
+    if let Some(p) = limits.file_size_bytes {
+        set_limit(libc::RLIMIT_FSIZE, p)?;
+    }
+    if let Some(p) = limits.open_files {
+        set_limit(libc::RLIMIT_NOFILE, p)?;
+    }
+    if let Some(p) = limits.stack_bytes {
+        set_limit(libc::RLIMIT_STACK, p)?;
+    }
+    if let Some(p) = limits.core_bytes {
+        set_limit(libc::RLIMIT_CORE, p)?;
+    }
+    if let Some(p) = limits.processes {
+        set_limit(libc::RLIMIT_NPROC, p)?;
+    }
     Ok(())
 }
 
@@ -369,11 +423,15 @@ fn apply_resource_limits(limits: &ResourceLimits) -> anyhow::Result<()> {
 fn verify_identity(path: &str, identity: Option<(u64, u64)>) -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt;
 
-    let Some((expected_dev, expected_ino)) = identity else { return Ok(()) };
-    let meta = std::fs::metadata(path).map_err(|e| anyhow::anyhow!(
-        "declared path {path:?} no longer exists (scout observed it at dev={expected_dev} \
+    let Some((expected_dev, expected_ino)) = identity else {
+        return Ok(());
+    };
+    let meta = std::fs::metadata(path).map_err(|e| {
+        anyhow::anyhow!(
+            "declared path {path:?} no longer exists (scout observed it at dev={expected_dev} \
          ino={expected_ino}; stat failed: {e})"
-    ))?;
+        )
+    })?;
     let (actual_dev, actual_ino) = (meta.dev(), meta.ino());
     if (actual_dev, actual_ino) != (expected_dev, expected_ino) {
         anyhow::bail!(
@@ -391,11 +449,17 @@ fn apply_landlock(file_effects: &[FileEffect], allow_dynamic: bool) -> anyhow::R
     use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr};
 
     let read_access = AccessFs::Execute | AccessFs::ReadFile | AccessFs::ReadDir;
-    let all_write   = AccessFs::WriteFile | AccessFs::Truncate
-        | AccessFs::MakeReg  | AccessFs::MakeDir
-        | AccessFs::MakeFifo | AccessFs::MakeSock
-        | AccessFs::MakeChar | AccessFs::MakeBlock | AccessFs::MakeSym
-        | AccessFs::RemoveFile | AccessFs::RemoveDir;
+    let all_write = AccessFs::WriteFile
+        | AccessFs::Truncate
+        | AccessFs::MakeReg
+        | AccessFs::MakeDir
+        | AccessFs::MakeFifo
+        | AccessFs::MakeSock
+        | AccessFs::MakeChar
+        | AccessFs::MakeBlock
+        | AccessFs::MakeSym
+        | AccessFs::RemoveFile
+        | AccessFs::RemoveDir;
 
     let mut ruleset = Ruleset::default()
         .handle_access(read_access)?
@@ -410,20 +474,35 @@ fn apply_landlock(file_effects: &[FileEffect], allow_dynamic: bool) -> anyhow::R
         }
     } else {
         for fe in file_effects {
-            if !fe.ops.any() { continue; }
-            verify_identity(&fe.path, fe.identity)?;
-            let Ok(fd) = PathFd::new(&fe.path) else { continue };
-            let mut access = read_access;
-            if fe.ops.write  { access |= AccessFs::WriteFile | AccessFs::Truncate; }
-            if fe.ops.create {
-                access |= AccessFs::MakeReg  | AccessFs::MakeDir
-                    | AccessFs::MakeFifo | AccessFs::MakeSock
-                    | AccessFs::MakeChar | AccessFs::MakeBlock | AccessFs::MakeSym;
+            if !fe.ops.any() {
+                continue;
             }
-            if fe.ops.delete { access |= AccessFs::RemoveFile | AccessFs::RemoveDir; }
+            verify_identity(&fe.path, fe.identity)?;
+            let Ok(fd) = PathFd::new(&fe.path) else {
+                continue;
+            };
+            let mut access = read_access;
+            if fe.ops.write {
+                access |= AccessFs::WriteFile | AccessFs::Truncate;
+            }
+            if fe.ops.create {
+                access |= AccessFs::MakeReg
+                    | AccessFs::MakeDir
+                    | AccessFs::MakeFifo
+                    | AccessFs::MakeSock
+                    | AccessFs::MakeChar
+                    | AccessFs::MakeBlock
+                    | AccessFs::MakeSym;
+            }
+            if fe.ops.delete {
+                access |= AccessFs::RemoveFile | AccessFs::RemoveDir;
+            }
             if fe.ops.rename {
-                access |= AccessFs::RemoveFile | AccessFs::RemoveDir
-                    | AccessFs::MakeReg | AccessFs::MakeDir | AccessFs::MakeSym;
+                access |= AccessFs::RemoveFile
+                    | AccessFs::RemoveDir
+                    | AccessFs::MakeReg
+                    | AccessFs::MakeDir
+                    | AccessFs::MakeSym;
             }
             ruleset = ruleset.add_rule(PathBeneath::new(fd, access))?;
         }
@@ -518,8 +597,12 @@ const SUBPROCESS_DENY: &[i64] = &[libc::SYS_execve, libc::SYS_execveat];
 #[cfg(target_os = "linux")]
 fn denied_syscalls(no_network: bool, no_subprocess: bool) -> Vec<i64> {
     let mut denied = BASELINE_DENY.to_vec();
-    if no_network { denied.extend_from_slice(NETWORK_DENY); }
-    if no_subprocess { denied.extend_from_slice(SUBPROCESS_DENY); }
+    if no_network {
+        denied.extend_from_slice(NETWORK_DENY);
+    }
+    if no_subprocess {
+        denied.extend_from_slice(SUBPROCESS_DENY);
+    }
     denied
 }
 
@@ -544,13 +627,15 @@ fn apply_seccomp(no_network: bool, no_subprocess: bool) -> anyhow::Result<()> {
 
     let filter = SeccompFilter::new(
         rules,
-        SeccompAction::Allow,                      // not in the map → allow
-        SeccompAction::Errno(libc::EPERM as u32),   // in the map → deny (matches prior RET_ERRNO behavior)
+        SeccompAction::Allow,                     // not in the map → allow
+        SeccompAction::Errno(libc::EPERM as u32), // in the map → deny (matches prior RET_ERRNO behavior)
         TARGET_ARCH,
     )
     .context("building seccomp filter")?;
 
-    let bpf_program: BpfProgram = filter.try_into().context("compiling seccomp filter to BPF")?;
+    let bpf_program: BpfProgram = filter
+        .try_into()
+        .context("compiling seccomp filter to BPF")?;
     seccompiler::apply_filter(&bpf_program).context("installing seccomp filter")?;
     Ok(())
 }
@@ -648,14 +733,19 @@ mod tests {
             let path = std::env::temp_dir().join(format!(
                 "solarplex-guardian-test-{tag}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
             ));
             std::fs::write(&path, b"test").unwrap();
             Self(path)
         }
     }
     impl Drop for TestFile {
-        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     #[test]

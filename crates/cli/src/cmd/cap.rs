@@ -13,9 +13,7 @@ pub struct CapArgs {
 pub enum CapCmd {
     /// Inspect a capability token (bare-ref dispatch: cap/<id>)
     #[command(alias = "inspect")]
-    Get {
-        id: String,
-    },
+    Get { id: String },
     /// Delegate a capability token to an agent
     Delegate {
         /// Agent actor ID to delegate to
@@ -77,16 +75,43 @@ pub async fn run(args: CapArgs, ctx: &Ctx) -> Result<()> {
         CapCmd::Get { id } => {
             // Cap inspect — for now just print the ID and note it's in the session.
             let session_id = ctx.session_id.as_deref().unwrap_or("?");
-            println!("{}", crate::output::entity_link("cap", &id, session_id, &ctx.ui));
-            println!("  {}", crate::output::dim("(cap detail endpoint not yet implemented)"));
+            println!(
+                "{}",
+                crate::output::entity_link("cap", &id, session_id, &ctx.ui)
+            );
+            println!(
+                "  {}",
+                crate::output::dim("(cap detail endpoint not yet implemented)")
+            );
             Ok(())
         }
-        CapCmd::Delegate { to, permissions, ttl, path, parent, role } => {
-            delegate(&client, ctx, &to, &permissions, ttl, path.as_deref(), parent.as_deref(), &role).await
+        CapCmd::Delegate {
+            to,
+            permissions,
+            ttl,
+            path,
+            parent,
+            role,
+        } => {
+            delegate(
+                &client,
+                ctx,
+                &to,
+                &permissions,
+                ttl,
+                path.as_deref(),
+                parent.as_deref(),
+                &role,
+            )
+            .await
         }
-        CapCmd::Revoke { cap_id, strategy, stratum, drain, reroot } => {
-            revoke(&client, ctx, &cap_id, &strategy, stratum, drain, reroot).await
-        }
+        CapCmd::Revoke {
+            cap_id,
+            strategy,
+            stratum,
+            drain,
+            reroot,
+        } => revoke(&client, ctx, &cap_id, &strategy, stratum, drain, reroot).await,
     }
 }
 
@@ -102,15 +127,20 @@ pub async fn delegate(
 ) -> Result<()> {
     let session_id = ctx.require_session()?;
 
-    let token = client.issue_cap(session_id, to, role, ttl, permissions, mcp_path, parent_cap).await?;
+    let token = client
+        .issue_cap(session_id, to, role, ttl, permissions, mcp_path, parent_cap)
+        .await?;
 
-    let token_id  = token["token"].as_str().unwrap_or("?");
-    let expires   = token["expires_at"].as_str().unwrap_or("?");
-    let launch    = token["launch_cmd"].as_str().unwrap_or("");
-    let perms     = token["permissions"].as_array();
+    let token_id = token["token"].as_str().unwrap_or("?");
+    let expires = token["expires_at"].as_str().unwrap_or("?");
+    let launch = token["launch_cmd"].as_str().unwrap_or("");
+    let perms = token["permissions"].as_array();
 
     println!("{} Cap delegated → {}", green("✓"), bold(to));
-    println!("  token:      {}", entity_link("cap", token_id, session_id, &ctx.ui));
+    println!(
+        "  token:      {}",
+        entity_link("cap", token_id, session_id, &ctx.ui)
+    );
     println!("  expires_at: {}", dim(expires));
     println!("  ttl:        {ttl}s");
 
@@ -135,31 +165,43 @@ pub async fn delegate(
 }
 
 pub async fn revoke(
-    client:   &Client,
-    ctx:      &Ctx,
-    cap_id:   &str,
+    client: &Client,
+    ctx: &Ctx,
+    cap_id: &str,
     strategy: &str,
-    stratum:  Option<i64>,
-    drain:    u64,
-    reroot:   bool,
+    stratum: Option<i64>,
+    drain: u64,
+    reroot: bool,
 ) -> Result<()> {
     let session_id = ctx.require_session()?;
-    let actor_id   = ctx.actor_id.as_deref().unwrap_or("?");
-    let cap_id     = cap_id.strip_prefix("cap/").unwrap_or(cap_id);
+    let actor_id = ctx.actor_id.as_deref().unwrap_or("?");
+    let cap_id = cap_id.strip_prefix("cap/").unwrap_or(cap_id);
 
     // For stratum/epoch strategies the target_cap_id isn't sent, but we still
     // need the session_id — which comes from context, not from the cap arg.
-    let target_cap_id = if strategy == "cap" { Some(cap_id) } else { None };
+    let target_cap_id = if strategy == "cap" {
+        Some(cap_id)
+    } else {
+        None
+    };
 
-    let result = client.revoke_caps(
-        session_id, actor_id, strategy, target_cap_id, stratum, drain, reroot,
-    ).await?;
+    let result = client
+        .revoke_caps(
+            session_id,
+            actor_id,
+            strategy,
+            target_cap_id,
+            stratum,
+            drain,
+            reroot,
+        )
+        .await?;
 
-    let new_epoch     = result["new_epoch"].as_i64().unwrap_or(0);
-    let closed_epoch  = result["closed_epoch"].as_i64().unwrap_or(0);
+    let new_epoch = result["new_epoch"].as_i64().unwrap_or(0);
+    let closed_epoch = result["closed_epoch"].as_i64().unwrap_or(0);
     let revoked_count = result["revoked_count"].as_u64().unwrap_or(0);
     let drain_deadline = result["drain_deadline"].as_str().unwrap_or("?");
-    let drain_seq     = result["drain_seq"].as_i64().unwrap_or(0);
+    let drain_seq = result["drain_seq"].as_i64().unwrap_or(0);
 
     println!("{} Revocation complete", red("⊘"));
     println!();
@@ -173,7 +215,10 @@ pub async fn revoke(
     println!("  drain seq      {drain_seq}  (caps observed ≤ this seq get grace window)");
     println!("  drain deadline {}", dim(drain_deadline));
     println!();
-    println!("{} Fenced agents will be closed with WS 4401 after drain window.", yellow("⚠"));
+    println!(
+        "{} Fenced agents will be closed with WS 4401 after drain window.",
+        yellow("⚠")
+    );
 
     Ok(())
 }

@@ -5,6 +5,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use sha2::{Digest, Sha256};
 
+use autometrics::autometrics;
 use axum::{
     body::{Body, Bytes},
     extract::State,
@@ -13,7 +14,6 @@ use axum::{
     routing::{any, get},
     Router,
 };
-use autometrics::autometrics;
 use dashmap::DashMap;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
@@ -32,7 +32,7 @@ use crate::Config;
 /// using a correlation-ID → oneshot map and an unbounded write channel.
 pub struct ShimClient {
     write_tx: mpsc::UnboundedSender<ipc::AdapterMessage>,
-    pending:  Arc<DashMap<String, oneshot::Sender<ipc::ProposalDecision>>>,
+    pending: Arc<DashMap<String, oneshot::Sender<ipc::ProposalDecision>>>,
     /// Separate correlation map for `ServerCall`/`ServerCallResult` — see
     /// `server_call`'s doc. Kept distinct from `pending` rather than unifying
     /// into one enum-valued map: the two request kinds have unrelated
@@ -79,7 +79,9 @@ impl ShimClient {
             tokio::spawn(async move {
                 let mut w = write_half;
                 while let Some(msg) = write_rx.recv().await {
-                    if ipc::write_frame(&mut w, &msg).await.is_err() { break; }
+                    if ipc::write_frame(&mut w, &msg).await.is_err() {
+                        break;
+                    }
                 }
             });
 
@@ -109,7 +111,11 @@ impl ShimClient {
                 }
             });
 
-            Ok(Self { write_tx, pending, pending_calls })
+            Ok(Self {
+                write_tx,
+                pending,
+                pending_calls,
+            })
         }
         #[cfg(not(unix))]
         anyhow::bail!("ShimClient requires Unix domain sockets");
@@ -121,12 +127,20 @@ impl ShimClient {
         let (tx, rx) = oneshot::channel();
         self.pending.insert(id.clone(), tx);
 
-        let send_ok = self.write_tx.send(ipc::AdapterMessage::Propose(req)).is_ok();
+        let send_ok = self
+            .write_tx
+            .send(ipc::AdapterMessage::Propose(req))
+            .is_ok();
         if !send_ok {
             self.pending.remove(&id);
             return ipc::ProposalDecision {
-                id, granted: false, approval_id: None, canonical_rpc: None,
-                scout: None, exec_result: None, tier2_ctx: None,
+                id,
+                granted: false,
+                approval_id: None,
+                canonical_rpc: None,
+                scout: None,
+                exec_result: None,
+                tier2_ctx: None,
                 error: Some("shim IPC channel closed".to_string()),
             };
         }
@@ -136,8 +150,13 @@ impl ShimClient {
             _ => {
                 self.pending.remove(&id);
                 ipc::ProposalDecision {
-                    id, granted: false, approval_id: None, canonical_rpc: None,
-                    scout: None, exec_result: None, tier2_ctx: None,
+                    id,
+                    granted: false,
+                    approval_id: None,
+                    canonical_rpc: None,
+                    scout: None,
+                    exec_result: None,
+                    tier2_ctx: None,
                     error: Some("shim IPC timeout".to_string()),
                 }
             }
@@ -153,9 +172,13 @@ impl ShimClient {
         let (tx, rx) = oneshot::channel();
         self.pending_calls.insert(id.clone(), tx);
 
-        let send_ok = self.write_tx.send(ipc::AdapterMessage::ServerCall(
-            ipc::ServerCallRequest { id: id.clone(), call },
-        )).is_ok();
+        let send_ok = self
+            .write_tx
+            .send(ipc::AdapterMessage::ServerCall(ipc::ServerCallRequest {
+                id: id.clone(),
+                call,
+            }))
+            .is_ok();
         if !send_ok {
             self.pending_calls.remove(&id);
             return Err("shim IPC channel closed".to_string());
@@ -164,7 +187,7 @@ impl ShimClient {
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(resp)) => match resp.error {
                 Some(e) => Err(e),
-                None    => Ok(resp.body.unwrap_or(serde_json::Value::Null)),
+                None => Ok(resp.body.unwrap_or(serde_json::Value::Null)),
             },
             _ => {
                 self.pending_calls.remove(&id);
@@ -260,7 +283,7 @@ impl StdioUpstream {
                 .spawn()?
         };
 
-        let stdin  = child.stdin.take().expect("stdin was piped");
+        let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
 
         let pending: Arc<DashMap<String, oneshot::Sender<serde_json::Value>>> =
@@ -283,8 +306,14 @@ impl StdioUpstream {
                         }
                     }
                     Ok(Some(_)) => {}
-                    Ok(None) => { tracing::warn!("stdio upstream stdout closed"); break; }
-                    Err(e)   => { tracing::error!("stdio read error: {e}"); break; }
+                    Ok(None) => {
+                        tracing::warn!("stdio upstream stdout closed");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!("stdio read error: {e}");
+                        break;
+                    }
                 }
             }
         });
@@ -339,16 +368,19 @@ fn id_to_key(id: Option<&serde_json::Value>) -> String {
 
 enum Upstream {
     Stdio(StdioUpstream),
-    Http { client: reqwest::Client, base_url: String },
+    Http {
+        client: reqwest::Client,
+        base_url: String,
+    },
 }
 
 // ── Server state ──────────────────────────────────────────────────────────────
 
 struct ProxyState {
-    config:     Config,
-    api_base:   String,
-    upstream:   Upstream,
-    shim:       ShimClient,
+    config: Config,
+    api_base: String,
+    upstream: Upstream,
+    shim: ShimClient,
     sse_streams: Arc<DashMap<String, mpsc::UnboundedSender<String>>>,
     prometheus_handle: PrometheusHandle,
     /// Guards `notify_connected` on the `initialize` path (see `intercept`)
@@ -363,10 +395,16 @@ struct ProxyState {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub async fn serve(config: Config, shim: ShimClient, prometheus_handle: PrometheusHandle) -> anyhow::Result<()> {
-    let addr     = format!("0.0.0.0:{}", config.listen_port);
-    let api_base = config.server_ws
-        .replace("ws://", "http://").replace("wss://", "https://");
+pub async fn serve(
+    config: Config,
+    shim: ShimClient,
+    prometheus_handle: PrometheusHandle,
+) -> anyhow::Result<()> {
+    let addr = format!("0.0.0.0:{}", config.listen_port);
+    let api_base = config
+        .server_ws
+        .replace("ws://", "http://")
+        .replace("wss://", "https://");
 
     // Bind before spawning anything with a side effect: a stale previous
     // adapter still holding this port is a common, recoverable startup
@@ -381,13 +419,16 @@ pub async fn serve(config: Config, shim: ShimClient, prometheus_handle: Promethe
         Upstream::Stdio(StdioUpstream::spawn(cmd).await?)
     } else {
         Upstream::Http {
-            client:   reqwest::Client::new(),
+            client: reqwest::Client::new(),
             base_url: config.upstream_mcp.clone(),
         }
     };
 
     let state = Arc::new(ProxyState {
-        config, api_base, upstream, shim,
+        config,
+        api_base,
+        upstream,
+        shim,
         sse_streams: Arc::new(DashMap::new()),
         prometheus_handle,
         announced_once: std::sync::atomic::AtomicBool::new(false),
@@ -409,7 +450,7 @@ pub async fn serve(config: Config, shim: ShimClient, prometheus_handle: Promethe
     }
 
     let app = Router::new()
-        .route("/",      any(intercept))
+        .route("/", any(intercept))
         .route("/metrics", get(metrics_handler))
         .route("/*path", any(intercept))
         .with_state(state);
@@ -429,21 +470,31 @@ async fn metrics_handler(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
 
 #[autometrics]
 async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> Response {
-    let method  = req.method().clone();
-    let path    = req.uri().path().to_string();
-    let query   = req.uri().query().unwrap_or("").to_string();
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
     let headers = req.headers().clone();
 
     // ── GET ─────────────────────────────────────────────────────────────────
     if method == axum::http::Method::GET {
         return match &state.upstream {
             Upstream::Stdio(_) => {
-                if path.ends_with("/sse") { handle_sse_open(&state) }
-                else { json_error_response(StatusCode::NOT_FOUND, "not found") }
+                if path.ends_with("/sse") {
+                    handle_sse_open(&state)
+                } else {
+                    json_error_response(StatusCode::NOT_FOUND, "not found")
+                }
             }
             Upstream::Http { client, base_url } => {
                 if path.ends_with("/sse") {
-                    forward_streaming_http(client, base_url, &path, headers, state.config.listen_port).await
+                    forward_streaming_http(
+                        client,
+                        base_url,
+                        &path,
+                        headers,
+                        state.config.listen_port,
+                    )
+                    .await
                 } else {
                     json_error_response(StatusCode::NOT_FOUND, "not found")
                 }
@@ -454,7 +505,9 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
     // ── POST ─────────────────────────────────────────────────────────────────
     let body_bytes = match axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return json_error_response(StatusCode::BAD_REQUEST, "could not read request body"),
+        Err(_) => {
+            return json_error_response(StatusCode::BAD_REQUEST, "could not read request body")
+        }
     };
 
     let rpc: serde_json::Value = match serde_json::from_slice(&body_bytes) {
@@ -492,34 +545,37 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
     if let Some(ref call) = tool_call {
         let id = rpc.get("id").cloned().unwrap_or(json!(null));
         match call.tool.as_str() {
-            "solarplex_introspect"   => return build_introspect_response(&state, id),
+            "solarplex_introspect" => return build_introspect_response(&state, id),
             "solarplex_session_info" => return build_session_info_response(&state, id),
             _ => {}
         }
     }
 
     // ── Tool call: gate via shim ──────────────────────────────────────────────
-    let mut rpc_to_send  = rpc.clone();
+    let mut rpc_to_send = rpc.clone();
     let mut decision_out: Option<ipc::ProposalDecision> = None;
 
     if let Some(ref call) = tool_call {
         let correlation_id = ulid::Ulid::new().to_string();
         let proposal = ipc::ProposalRequest {
-            id:      correlation_id,
-            tool:    call.clone(),
+            id: correlation_id,
+            tool: call.clone(),
             raw_rpc: rpc.clone(),
         };
 
         let decision = state.shim.propose(proposal).await;
 
         if !decision.granted {
-            let msg = decision.error.as_deref().unwrap_or("tool call denied by Solarplex supervisor");
+            let msg = decision
+                .error
+                .as_deref()
+                .unwrap_or("tool call denied by Solarplex supervisor");
             return mcp_error_response(msg);
         }
 
         // For solarplex_exec: exec_result is already in the decision (guardian ran it).
         if let Some(ref exec_res) = decision.exec_result {
-            let id   = rpc.get("id").cloned().unwrap_or(json!(null));
+            let id = rpc.get("id").cloned().unwrap_or(json!(null));
             let text = format!(
                 "exit: {}\n\nstdout:\n{}\n\nstderr:\n{}",
                 exec_res.exit_code,
@@ -534,8 +590,10 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
             // ExecResultIpc::pre_snap's doc comment.
             let approval_id = decision.approval_id.clone().unwrap_or_default();
             state.shim.exec_done(ipc::ExecDoneNotice {
-                approval_id, tool_name: call.tool.clone(),
-                pre_snap: exec_res.pre_snap.clone(), post_snap: exec_res.post_snap.clone(),
+                approval_id,
+                tool_name: call.tool.clone(),
+                pre_snap: exec_res.pre_snap.clone(),
+                post_snap: exec_res.post_snap.clone(),
                 tier2: None,
             });
             return json_response(json!({
@@ -553,7 +611,8 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
 
     // ── Meta-tool dispatch (after approval) ────────────────────────────────────
     if let Some(ref call) = tool_call {
-        let scout_opt: Option<&ScoutManifest> = decision_out.as_ref().and_then(|d| d.scout.as_ref());
+        let scout_opt: Option<&ScoutManifest> =
+            decision_out.as_ref().and_then(|d| d.scout.as_ref());
         if let Some(resp) = handle_meta_tool(&state, &rpc, call, scout_opt).await {
             // Meta-tools handled entirely locally — no upstream forward needed.
             return resp;
@@ -561,17 +620,20 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
     }
 
     // ── Ring-1 H_before (capture file state BEFORE upstream write) ────────────
-    let tier2_ctx  = decision_out.as_ref().and_then(|d| d.tier2_ctx.clone());
+    let tier2_ctx = decision_out.as_ref().and_then(|d| d.tier2_ctx.clone());
     let h_before: Option<String> = if let Some(ref t) = tier2_ctx {
         let h = hash_file_sha256(&t.path).await;
         if h.is_none() {
             tracing::warn!(path = %t.path, "adapter: Tier-2: could not read file before write");
         }
         h
-    } else { None };
+    } else {
+        None
+    };
 
     // ── Ring-2 pre-snap ────────────────────────────────────────────────────────
-    let scout_paths: Vec<String> = decision_out.as_ref()
+    let scout_paths: Vec<String> = decision_out
+        .as_ref()
         .and_then(|d| d.scout.as_ref())
         .map(|s| s.file_effects.iter().map(|fe| fe.path.clone()).collect())
         .unwrap_or_default();
@@ -593,8 +655,11 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
             }
 
-            let rpc_method = rpc_to_send.get("method").and_then(|m| m.as_str())
-                .unwrap_or("").to_string();
+            let rpc_method = rpc_to_send
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
             match stdio.call(rpc_to_send.clone()).await {
                 Ok(resp) => {
                     let resp = maybe_inject_meta_tools(&resp);
@@ -630,11 +695,15 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                     // that never actually left. One adapter process = one
                     // agent lifetime = at most one join announcement.
                     if rpc_method == "initialize"
-                        && state.announced_once.compare_exchange(
-                            false, true,
-                            std::sync::atomic::Ordering::SeqCst,
-                            std::sync::atomic::Ordering::SeqCst,
-                        ).is_ok()
+                        && state
+                            .announced_once
+                            .compare_exchange(
+                                false,
+                                true,
+                                std::sync::atomic::Ordering::SeqCst,
+                                std::sync::atomic::Ordering::SeqCst,
+                            )
+                            .is_ok()
                     {
                         state.shim.notify_connected();
                     }
@@ -645,11 +714,13 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                     if rpc_method == "tools/list" {
                         if let Some(tools) = resp.get("result").and_then(|r| r.get("tools")) {
                             let state_ref = Arc::clone(&state);
-                            let ts        = tools.clone();
+                            let ts = tools.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = state_ref.shim.server_call(
-                                    ipc::ServerCall::RegisterMethods { methods: ts },
-                                ).await {
+                                if let Err(e) = state_ref
+                                    .shim
+                                    .server_call(ipc::ServerCall::RegisterMethods { methods: ts })
+                                    .await
+                                {
                                     tracing::warn!("register_methods failed: {e}");
                                 }
                             });
@@ -659,16 +730,21 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                     // Post-execution hooks (fire-and-forget).
                     if let Some(ref call) = tool_call {
                         post_exec_hooks(
-                            &state, call,
-                            &pre_snap, &scout_paths,
-                            h_before, tier2_ctx,
+                            &state,
+                            call,
+                            &pre_snap,
+                            &scout_paths,
+                            h_before,
+                            tier2_ctx,
                             decision_out.as_ref().and_then(|d| d.approval_id.clone()),
-                        ).await;
+                        )
+                        .await;
                     }
 
                     let sse_key = extract_sse_key(&query);
                     if let Some(entry) = sse_key.as_deref().and_then(|k| state.sse_streams.get(k)) {
-                        let event = sse_event("message", &serde_json::to_string(&resp).unwrap_or_default());
+                        let event =
+                            sse_event("message", &serde_json::to_string(&resp).unwrap_or_default());
                         let _ = entry.send(event);
                         Response::builder()
                             .status(StatusCode::ACCEPTED)
@@ -684,7 +760,7 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                     }
                 }
                 Err(e) => {
-                    let rpc_id  = rpc.get("id").cloned().unwrap_or(json!(null));
+                    let rpc_id = rpc.get("id").cloned().unwrap_or(json!(null));
                     let rpc_mth = rpc.get("method").and_then(|m| m.as_str()).unwrap_or("");
                     match rpc_mth {
                         "initialize" => {
@@ -701,7 +777,9 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                                 .status(StatusCode::OK)
                                 .header("content-type", "application/json")
                                 .body(Body::from(body))
-                                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                                .unwrap_or_else(|_| {
+                                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                                })
                         }
                         "tools/list" => {
                             tracing::warn!("upstream unavailable for tools/list ({e})");
@@ -710,12 +788,15 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
                             let body = serde_json::to_vec(&json!({
                                 "jsonrpc": "2.0", "id": rpc_id,
                                 "result": { "tools": meta }
-                            })).unwrap_or_default();
+                            }))
+                            .unwrap_or_default();
                             Response::builder()
                                 .status(StatusCode::OK)
                                 .header("content-type", "application/json")
                                 .body(Body::from(body))
-                                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                                .unwrap_or_else(|_| {
+                                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                                })
                         }
                         _ => {
                             tracing::error!("stdio call failed ({rpc_mth}): {e}");
@@ -727,16 +808,22 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
         }
         Upstream::Http { client, base_url } => {
             let canonical_bytes = serde_json::to_vec(&rpc_to_send)
-                .map(Bytes::from).unwrap_or(body_bytes);
-            let resp = forward_http(client, base_url, &method, &path, headers, canonical_bytes).await;
+                .map(Bytes::from)
+                .unwrap_or(body_bytes);
+            let resp =
+                forward_http(client, base_url, &method, &path, headers, canonical_bytes).await;
 
             if let Some(ref call) = tool_call {
                 post_exec_hooks(
-                    &state, call,
-                    &pre_snap, &scout_paths,
-                    h_before, tier2_ctx,
+                    &state,
+                    call,
+                    &pre_snap,
+                    &scout_paths,
+                    h_before,
+                    tier2_ctx,
                     decision_out.as_ref().and_then(|d| d.approval_id.clone()),
-                ).await;
+                )
+                .await;
             }
 
             resp
@@ -747,13 +834,13 @@ async fn intercept(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> 
 /// Fire-and-forget post-execution logic: Ring-1 attestation, Ring-2 divergence,
 /// auto-artifact creation, feed message.  All spawned as background tasks.
 async fn post_exec_hooks(
-    state:         &Arc<ProxyState>,
-    call:          &ToolCall,
-    pre_snap:      &HashMap<String, SnapEntry>,
-    scout_paths:   &[String],
-    h_before:      Option<String>,
-    tier2_ctx:     Option<ipc::Tier2Ctx>,
-    approval_id:   Option<String>,
+    state: &Arc<ProxyState>,
+    call: &ToolCall,
+    pre_snap: &HashMap<String, SnapEntry>,
+    scout_paths: &[String],
+    h_before: Option<String>,
+    tier2_ctx: Option<ipc::Tier2Ctx>,
+    approval_id: Option<String>,
 ) {
     // Ring-2 post-snap + ExecDoneNotice.
     let post_snap = if !scout_paths.is_empty() {
@@ -765,31 +852,35 @@ async fn post_exec_hooks(
     // Ring-1 H_after.
     let h_after = if let Some(ref t) = tier2_ctx {
         hash_file_sha256(&t.path).await
-    } else { None };
+    } else {
+        None
+    };
 
     // Build Tier2Notice if we have all hash data.
     let tier2_notice: Option<ipc::Tier2Notice> = tier2_ctx.as_ref().and_then(|t| {
         Some(ipc::Tier2Notice {
-            receipt_id:           t.receipt_id.clone(),
-            cap_id:               t.cap_id.clone(),
-            tool:                 t.tool.clone(),
-            path:                 t.path.clone(),
-            approved_before:      t.approved_before.clone(),
-            approved_after:       t.approved_after.clone(),
-            observed_before_hash: h_before.clone()
+            receipt_id: t.receipt_id.clone(),
+            cap_id: t.cap_id.clone(),
+            tool: t.tool.clone(),
+            path: t.path.clone(),
+            approved_before: t.approved_before.clone(),
+            approved_after: t.approved_after.clone(),
+            observed_before_hash: h_before
+                .clone()
                 .unwrap_or_else(|| "sha256:unreadable".to_string()),
-            actual_after_hash:    h_after.clone()
+            actual_after_hash: h_after
+                .clone()
                 .unwrap_or_else(|| "sha256:unreadable".to_string()),
         })
     });
 
     // Send ExecDoneNotice so the shim handles Ring-1 attestation + Ring-2 divergence.
     state.shim.exec_done(ipc::ExecDoneNotice {
-        approval_id:  approval_id.unwrap_or_default(),
-        tool_name:    call.tool.clone(),
-        pre_snap:     pre_snap.clone(),
-        post_snap:    post_snap.clone(),
-        tier2:        tier2_notice,
+        approval_id: approval_id.unwrap_or_default(),
+        tool_name: call.tool.clone(),
+        pre_snap: pre_snap.clone(),
+        post_snap: post_snap.clone(),
+        tier2: tier2_notice,
     });
 
     // Auto-artifact: write_file → create a Solarplex artifact. Via the shim
@@ -801,14 +892,23 @@ async fn post_exec_hooks(
             call.args.get("content").and_then(|v| v.as_str()),
         ) {
             let artifact_name = std::path::Path::new(path)
-                .file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
-            let content     = content.to_string();
-            let state_ref   = Arc::clone(state);
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            let content = content.to_string();
+            let state_ref = Arc::clone(state);
             tokio::spawn(async move {
-                match state_ref.shim.server_call(ipc::ServerCall::CreateArtifact {
-                    name: artifact_name, artifact_type: "document".to_string(), content,
-                }).await {
-                    Ok(_)  => tracing::info!("auto-artifact created from write_file"),
+                match state_ref
+                    .shim
+                    .server_call(ipc::ServerCall::CreateArtifact {
+                        name: artifact_name,
+                        artifact_type: "document".to_string(),
+                        content,
+                    })
+                    .await
+                {
+                    Ok(_) => tracing::info!("auto-artifact created from write_file"),
                     Err(e) => tracing::warn!("auto-artifact request failed: {e}"),
                 }
             });
@@ -836,24 +936,30 @@ fn handle_sse_open(state: &Arc<ProxyState>) -> Response {
     // (visible as a duplicated "X joined the session" row in the activity
     // log). One adapter process = one agent lifetime = at most one join
     // announcement, from whichever call site gets there first.
-    if state.announced_once.compare_exchange(
-        false, true,
-        std::sync::atomic::Ordering::SeqCst,
-        std::sync::atomic::Ordering::SeqCst,
-    ).is_ok() {
+    if state
+        .announced_once
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_ok()
+    {
         state.shim.notify_connected();
     }
 
-    let port         = state.config.listen_port;
+    let port = state.config.listen_port;
     let endpoint_url = format!("http://localhost:{port}/messages?stream={stream_key}");
     let endpoint_evt = format!("event: endpoint\ndata: {endpoint_url}\n\n");
-    let streams_ref  = state.sse_streams.clone();
-    let key_clone    = stream_key;
-    let state_ref    = Arc::clone(state);
+    let streams_ref = state.sse_streams.clone();
+    let key_clone = stream_key;
+    let state_ref = Arc::clone(state);
 
-    let initial = futures_util::stream::once(futures_util::future::ready(
-        Ok::<Bytes, std::io::Error>(Bytes::from(endpoint_evt)),
-    ));
+    let initial =
+        futures_util::stream::once(futures_util::future::ready(Ok::<Bytes, std::io::Error>(
+            Bytes::from(endpoint_evt),
+        )));
     let channel_stream = futures_util::stream::poll_fn(move |cx| {
         let poll = rx.poll_recv(cx);
         if matches!(poll, std::task::Poll::Ready(None)) {
@@ -861,9 +967,7 @@ fn handle_sse_open(state: &Arc<ProxyState>) -> Response {
             // The stream genuinely ended — this is the real disconnect signal.
             state_ref.shim.notify_disconnected();
         }
-        poll.map(|opt| {
-            opt.map(|event| Ok::<Bytes, std::io::Error>(Bytes::from(event)))
-        })
+        poll.map(|opt| opt.map(|event| Ok::<Bytes, std::io::Error>(Bytes::from(event))))
     });
     let combined = futures_util::StreamExt::chain(initial, channel_stream);
 
@@ -904,12 +1008,12 @@ async fn forward_http(
 ) -> Response {
     let upstream_url = format!("{base_url}{path}");
     let mut req_builder = match method.as_str() {
-        "GET"    => client.get(&upstream_url),
-        "POST"   => client.post(&upstream_url),
-        "PUT"    => client.put(&upstream_url),
+        "GET" => client.get(&upstream_url),
+        "POST" => client.post(&upstream_url),
+        "PUT" => client.put(&upstream_url),
         "DELETE" => client.delete(&upstream_url),
-        "PATCH"  => client.patch(&upstream_url),
-        _        => return json_error_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+        "PATCH" => client.patch(&upstream_url),
+        _ => return json_error_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
     };
     for (name, value) in &headers {
         let n = name.as_str();
@@ -930,7 +1034,9 @@ async fn forward_http(
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let resp_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
-        Err(_) => return json_error_response(StatusCode::BAD_GATEWAY, "failed to read upstream response"),
+        Err(_) => {
+            return json_error_response(StatusCode::BAD_GATEWAY, "failed to read upstream response")
+        }
     };
     Response::builder()
         .status(status)
@@ -971,11 +1077,15 @@ async fn forward_streaming_http(
             builder = builder.header(n, value.as_bytes());
         }
     }
-    let sidecar_base  = format!("http://localhost:{sidecar_port}");
+    let sidecar_base = format!("http://localhost:{sidecar_port}");
     let upstream_origin: String = {
-        let scheme     = if base_url.starts_with("https") { "https" } else { "http" };
-        let after      = base_url.split("://").nth(1).unwrap_or(base_url);
-        let host_port  = after.split('/').next().unwrap_or(after);
+        let scheme = if base_url.starts_with("https") {
+            "https"
+        } else {
+            "http"
+        };
+        let after = base_url.split("://").nth(1).unwrap_or(base_url);
+        let host_port = after.split('/').next().unwrap_or(after);
         format!("{scheme}://{host_port}")
     };
     let rewritten = upstream_resp.bytes_stream().map(move |chunk| {
@@ -991,7 +1101,8 @@ async fn forward_streaming_http(
             bytes
         })
     });
-    builder.body(Body::from_stream(rewritten))
+    builder
+        .body(Body::from_stream(rewritten))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
@@ -1003,11 +1114,11 @@ async fn forward_streaming_http(
 /// before the shim gate rather than as one more `handle_meta_tool` arm.
 fn build_introspect_response(state: &ProxyState, id: serde_json::Value) -> Response {
     let upstream_kind = match &state.upstream {
-        Upstream::Stdio(_)      => "stdio",
-        Upstream::Http { .. }   => "http",
+        Upstream::Stdio(_) => "stdio",
+        Upstream::Http { .. } => "http",
     };
-    let shim_connected  = state.shim.is_connected();
-    let pending_count   = state.shim.pending_count();
+    let shim_connected = state.shim.is_connected();
+    let pending_count = state.shim.pending_count();
     let sse_stream_count = state.sse_streams.len();
 
     let text = format!(
@@ -1020,7 +1131,11 @@ fn build_introspect_response(state: &ProxyState, id: serde_json::Value) -> Respo
          Active SSE streams: {sse_stream_count}",
         state.config.session_id,
         state.config.actor_id,
-        state.config.cap_id.as_deref().unwrap_or("(none -- human-driven session)"),
+        state
+            .config
+            .cap_id
+            .as_deref()
+            .unwrap_or("(none -- human-driven session)"),
     );
 
     json_response(json!({
@@ -1045,7 +1160,9 @@ fn build_session_info_response(state: &ProxyState, id: serde_json::Value) -> Res
 
 fn extract_tool_call(body: &[u8]) -> Option<ToolCall> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if value.get("method")?.as_str()? != "tools/call" { return None; }
+    if value.get("method")?.as_str()? != "tools/call" {
+        return None;
+    }
     let params = value.get("params")?;
     Some(ToolCall {
         tool: params.get("name")?.as_str()?.to_string(),
@@ -1188,12 +1305,12 @@ fn maybe_inject_meta_tools(resp: &serde_json::Value) -> serde_json::Value {
 
 #[autometrics]
 async fn handle_meta_tool(
-    state:       &Arc<ProxyState>,
-    rpc:         &serde_json::Value,
-    tool:        &ToolCall,
-    _scout:      Option<&ScoutManifest>,
+    state: &Arc<ProxyState>,
+    rpc: &serde_json::Value,
+    tool: &ToolCall,
+    _scout: Option<&ScoutManifest>,
 ) -> Option<Response> {
-    let id       = rpc.get("id").cloned().unwrap_or(json!(null));
+    let id = rpc.get("id").cloned().unwrap_or(json!(null));
     let api_base = &state.api_base;
 
     match tool.tool.as_str() {
@@ -1208,17 +1325,41 @@ async fn handle_meta_tool(
         // type's doc comment in protocol::ipc. Response formatting logic is
         // unchanged; only the data-fetching mechanism moved.
         "solarplex_create_artifact" => {
-            let name    = tool.args.get("name").and_then(|v| v.as_str()).unwrap_or("artifact");
-            let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let kind    = tool.args.get("type").and_then(|v| v.as_str()).unwrap_or("document");
-            let sha256  = compute_sha256(content);
-            crate::artifact_scan::spawn_artifact_scan(content.to_string(), sha256, api_base.clone());
-            let body = match state.shim.server_call(ipc::ServerCall::CreateArtifact {
-                name: name.to_string(), artifact_type: kind.to_string(), content: content.to_string(),
-            }).await {
-                Ok(artifact) => json!({ "jsonrpc": "2.0", "id": id, "result": { "content": [{ "type": "text",
+            let name = tool
+                .args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("artifact");
+            let content = tool
+                .args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let kind = tool
+                .args
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("document");
+            let sha256 = compute_sha256(content);
+            crate::artifact_scan::spawn_artifact_scan(
+                content.to_string(),
+                sha256,
+                api_base.clone(),
+            );
+            let body = match state
+                .shim
+                .server_call(ipc::ServerCall::CreateArtifact {
+                    name: name.to_string(),
+                    artifact_type: kind.to_string(),
+                    content: content.to_string(),
+                })
+                .await
+            {
+                Ok(artifact) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "result": { "content": [{ "type": "text",
                     "text": format!("Artifact '{}' created (id: {})", name,
-                        artifact.get("id").and_then(|v| v.as_str()).unwrap_or("?")) }] }}),
+                        artifact.get("id").and_then(|v| v.as_str()).unwrap_or("?")) }] }})
+                }
                 Err(e) => json!({ "jsonrpc": "2.0", "id": id,
                     "error": { "code": -32000, "message": e } }),
             };
@@ -1228,15 +1369,26 @@ async fn handle_meta_tool(
         "solarplex_list_artifacts" => {
             match state.shim.server_call(ipc::ServerCall::ListArtifacts).await {
                 Ok(v) => {
-                    let artifacts: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
-                    let summary = artifacts.iter().map(|a| format!(
-                        "- **{}** (id: `{}`, type: {}, by: {})",
-                        a.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
-                        a.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
-                        a.get("type").and_then(|v| v.as_str()).unwrap_or("?"),
-                        a.get("created_by").and_then(|v| v.as_str()).unwrap_or("?"),
-                    )).collect::<Vec<_>>().join("\n");
-                    let text = if summary.is_empty() { "No artifacts yet.".to_string() } else { summary };
+                    let artifacts: Vec<serde_json::Value> =
+                        v.as_array().cloned().unwrap_or_default();
+                    let summary = artifacts
+                        .iter()
+                        .map(|a| {
+                            format!(
+                                "- **{}** (id: `{}`, type: {}, by: {})",
+                                a.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                                a.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                                a.get("type").and_then(|v| v.as_str()).unwrap_or("?"),
+                                a.get("created_by").and_then(|v| v.as_str()).unwrap_or("?"),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let text = if summary.is_empty() {
+                        "No artifacts yet.".to_string()
+                    } else {
+                        summary
+                    };
                     Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
@@ -1247,31 +1399,52 @@ async fn handle_meta_tool(
 
         "solarplex_read_artifact" => {
             let artifact_id = tool.args.get("id").and_then(|v| v.as_str());
-            let name_query  = tool.args.get("name").and_then(|v| v.as_str());
+            let name_query = tool.args.get("name").and_then(|v| v.as_str());
             let resolved_id: Option<String> = if let Some(id_str) = artifact_id {
                 Some(id_str.to_string())
             } else if let Some(name_str) = name_query {
                 let name_lower = name_str.to_lowercase();
-                state.shim.server_call(ipc::ServerCall::ListArtifacts).await.ok()
+                state
+                    .shim
+                    .server_call(ipc::ServerCall::ListArtifacts)
+                    .await
+                    .ok()
                     .and_then(|v| v.as_array().cloned())
-                    .and_then(|list| list.into_iter().find(|a|
-                        a.get("name").and_then(|v| v.as_str())
-                            .map_or(false, |n| n.to_lowercase().contains(&name_lower))
-                    ).and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())))
-            } else { None };
+                    .and_then(|list| {
+                        list.into_iter()
+                            .find(|a| {
+                                a.get("name")
+                                    .and_then(|v| v.as_str())
+                                    .map_or(false, |n| n.to_lowercase().contains(&name_lower))
+                            })
+                            .and_then(|a| {
+                                a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                            })
+                    })
+            } else {
+                None
+            };
 
             match resolved_id {
                 None => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                     "error": { "code": -32602, "message": "Provide 'id' or 'name'." } }))),
                 Some(art_id) => {
-                    match state.shim.server_call(ipc::ServerCall::ReadArtifact { id: art_id }).await {
+                    match state
+                        .shim
+                        .server_call(ipc::ServerCall::ReadArtifact { id: art_id })
+                        .await
+                    {
                         Ok(a) => {
                             let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let raw  = a.get("storage_ref").and_then(|v| v.as_str()).unwrap_or("");
+                            let raw = a.get("storage_ref").and_then(|v| v.as_str()).unwrap_or("");
                             let sha256 = compute_sha256(raw);
-                            crate::artifact_scan::spawn_artifact_scan(raw.to_string(), sha256.clone(), api_base.clone());
+                            crate::artifact_scan::spawn_artifact_scan(
+                                raw.to_string(),
+                                sha256.clone(),
+                                api_base.clone(),
+                            );
                             let sanitized = sanitize_artifact_content(raw);
-                            let verdict   = lookup_verdict_banner(&sha256, api_base).await;
+                            let verdict = lookup_verdict_banner(&sha256, api_base).await;
                             let text = format!("# {name}\n\n{verdict}{sanitized}");
                             Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                                 "result": { "content": [{ "type": "text", "text": text }] } })))
@@ -1284,9 +1457,26 @@ async fn handle_meta_tool(
         }
 
         "solarplex_update_artifact" => {
-            let art_id  = tool.args.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            match state.shim.server_call(ipc::ServerCall::UpdateArtifact { id: art_id, content }).await {
+            let art_id = tool
+                .args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let content = tool
+                .args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            match state
+                .shim
+                .server_call(ipc::ServerCall::UpdateArtifact {
+                    id: art_id,
+                    content,
+                })
+                .await
+            {
                 Ok(a) => {
                     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1298,28 +1488,58 @@ async fn handle_meta_tool(
         }
 
         "solarplex_read_feed" => {
-            let limit = tool.args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30);
-            match state.shim.server_call(ipc::ServerCall::ReadFeed { limit }).await {
+            let limit = tool
+                .args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30);
+            match state
+                .shim
+                .server_call(ipc::ServerCall::ReadFeed { limit })
+                .await
+            {
                 Ok(v) => {
                     let events: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
-                    let lines  = events.iter().map(|e| {
-                        let actor   = e.get("actor_id").and_then(|v| v.as_str()).unwrap_or("?");
-                        let etype   = e.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-                        let payload = e.get("payload")
-                            .and_then(|v| v.get("payload")).cloned().unwrap_or(json!({}));
-                        let detail = match etype {
-                            "message.posted" => payload.get("content")
-                                .and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            "artifact.created" | "artifact.updated" => payload.get("name")
-                                .and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            "approval.requested" => format!("tool: {}",
-                                payload.get("tool").and_then(|v| v.as_str()).unwrap_or("?")),
-                            _ => String::new(),
-                        };
-                        if detail.is_empty() { format!("[{etype}] {actor}") }
-                        else { format!("[{etype}] {actor}: {detail}") }
-                    }).collect::<Vec<_>>().join("\n");
-                    let text = if lines.is_empty() { "No events yet.".to_string() } else { lines };
+                    let lines = events
+                        .iter()
+                        .map(|e| {
+                            let actor = e.get("actor_id").and_then(|v| v.as_str()).unwrap_or("?");
+                            let etype = e.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                            let payload = e
+                                .get("payload")
+                                .and_then(|v| v.get("payload"))
+                                .cloned()
+                                .unwrap_or(json!({}));
+                            let detail = match etype {
+                                "message.posted" => payload
+                                    .get("content")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                "artifact.created" | "artifact.updated" => payload
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                "approval.requested" => format!(
+                                    "tool: {}",
+                                    payload.get("tool").and_then(|v| v.as_str()).unwrap_or("?")
+                                ),
+                                _ => String::new(),
+                            };
+                            if detail.is_empty() {
+                                format!("[{etype}] {actor}")
+                            } else {
+                                format!("[{etype}] {actor}: {detail}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let text = if lines.is_empty() {
+                        "No events yet.".to_string()
+                    } else {
+                        lines
+                    };
                     Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
@@ -1329,8 +1549,17 @@ async fn handle_meta_tool(
         }
 
         "solarplex_post_message" => {
-            let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if let Err(e) = state.shim.server_call(ipc::ServerCall::PostMessage { content }).await {
+            let content = tool
+                .args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Err(e) = state
+                .shim
+                .server_call(ipc::ServerCall::PostMessage { content })
+                .await
+            {
                 tracing::warn!("post_message failed: {e}");
             }
             Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1338,9 +1567,26 @@ async fn handle_meta_tool(
         }
 
         "solarplex_add_context" => {
-            let kind_str = tool.args.get("kind").and_then(|v| v.as_str()).unwrap_or("fact").to_string();
-            let content  = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if let Err(e) = state.shim.server_call(ipc::ServerCall::AddContext { kind: kind_str, content }).await {
+            let kind_str = tool
+                .args
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("fact")
+                .to_string();
+            let content = tool
+                .args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Err(e) = state
+                .shim
+                .server_call(ipc::ServerCall::AddContext {
+                    kind: kind_str,
+                    content,
+                })
+                .await
+            {
                 tracing::warn!("add_context failed: {e}");
             }
             Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1349,33 +1595,55 @@ async fn handle_meta_tool(
 
         "solarplex_read_context" => {
             let kind_filter = tool.args.get("kind").and_then(|v| v.as_str());
-            match state.shim.server_call(ipc::ServerCall::ReadFeed { limit: 200 }).await {
+            match state
+                .shim
+                .server_call(ipc::ServerCall::ReadFeed { limit: 200 })
+                .await
+            {
                 Ok(v) => {
                     let events: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
-                    let lines: Vec<String> = events.iter()
-                        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("context.entry.added"))
+                    let lines: Vec<String> = events
+                        .iter()
+                        .filter(|e| {
+                            e.get("type").and_then(|v| v.as_str()) == Some("context.entry.added")
+                        })
                         .filter(|e| {
                             if let Some(kf) = kind_filter {
-                                e.get("payload").and_then(|p| p.get("payload"))
-                                    .and_then(|p| p.get("kind")).and_then(|v| v.as_str())
+                                e.get("payload")
+                                    .and_then(|p| p.get("payload"))
+                                    .and_then(|p| p.get("kind"))
+                                    .and_then(|v| v.as_str())
                                     .map_or(false, |k| k == kf)
-                            } else { true }
+                            } else {
+                                true
+                            }
                         })
                         .map(|e| {
-                            let p = e.get("payload").and_then(|v| v.get("payload"))
-                                .cloned().unwrap_or(json!({}));
-                            let kind        = p.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                            let content     = p.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                            let actor       = e.get("actor_id").and_then(|v| v.as_str()).unwrap_or("?");
-                            let authored_by = p.get("authored_by").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let prov        = match authored_by {
-                                "agent" => "[AGENT-GENERATED]", "human" => "[HUMAN-VERIFIED]",
-                                _       => "[UNKNOWN-PROVENANCE]",
+                            let p = e
+                                .get("payload")
+                                .and_then(|v| v.get("payload"))
+                                .cloned()
+                                .unwrap_or(json!({}));
+                            let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                            let content = p.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            let actor = e.get("actor_id").and_then(|v| v.as_str()).unwrap_or("?");
+                            let authored_by = p
+                                .get("authored_by")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let prov = match authored_by {
+                                "agent" => "[AGENT-GENERATED]",
+                                "human" => "[HUMAN-VERIFIED]",
+                                _ => "[UNKNOWN-PROVENANCE]",
                             };
                             format!("{prov} [{kind}] {content}  (by {actor})")
-                        }).collect();
-                    let text = if lines.is_empty() { "No context entries yet.".to_string() }
-                               else { lines.join("\n") };
+                        })
+                        .collect();
+                    let text = if lines.is_empty() {
+                        "No context entries yet.".to_string()
+                    } else {
+                        lines.join("\n")
+                    };
                     Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
                         "result": { "content": [{ "type": "text", "text": text }] } })))
                 }
@@ -1387,13 +1655,17 @@ async fn handle_meta_tool(
         "solarplex_read_whiteboard" => {
             match state.shim.server_call(ipc::ServerCall::ListArtifacts).await {
                 Ok(v) => {
-                    let artifacts: Vec<serde_json::Value> = v.as_array().cloned().unwrap_or_default();
-                    let wb = artifacts.iter().find(|a|
-                        a.get("type").and_then(|v| v.as_str()) == Some("whiteboard")
-                    );
+                    let artifacts: Vec<serde_json::Value> =
+                        v.as_array().cloned().unwrap_or_default();
+                    let wb = artifacts
+                        .iter()
+                        .find(|a| a.get("type").and_then(|v| v.as_str()) == Some("whiteboard"));
                     let text = match wb {
-                        Some(a) => a.get("storage_ref").and_then(|v| v.as_str())
-                            .unwrap_or("").to_string(),
+                        Some(a) => a
+                            .get("storage_ref")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         None => "No whiteboard exists in this session yet.".to_string(),
                     };
                     Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1405,19 +1677,40 @@ async fn handle_meta_tool(
         }
 
         "solarplex_write_whiteboard" => {
-            let content = tool.args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let existing_id: Option<String> = state.shim.server_call(ipc::ServerCall::ListArtifacts).await.ok()
+            let content = tool
+                .args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let existing_id: Option<String> = state
+                .shim
+                .server_call(ipc::ServerCall::ListArtifacts)
+                .await
+                .ok()
                 .and_then(|v| v.as_array().cloned())
-                .and_then(|list| list.into_iter()
-                    .find(|a| a.get("type").and_then(|v| v.as_str()) == Some("whiteboard"))
-                    .and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
-                );
+                .and_then(|list| {
+                    list.into_iter()
+                        .find(|a| a.get("type").and_then(|v| v.as_str()) == Some("whiteboard"))
+                        .and_then(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                });
             let result = if let Some(art_id) = existing_id {
-                state.shim.server_call(ipc::ServerCall::UpdateArtifact { id: art_id, content }).await
+                state
+                    .shim
+                    .server_call(ipc::ServerCall::UpdateArtifact {
+                        id: art_id,
+                        content,
+                    })
+                    .await
             } else {
-                state.shim.server_call(ipc::ServerCall::CreateArtifact {
-                    name: "whiteboard".to_string(), artifact_type: "whiteboard".to_string(), content,
-                }).await
+                state
+                    .shim
+                    .server_call(ipc::ServerCall::CreateArtifact {
+                        name: "whiteboard".to_string(),
+                        artifact_type: "whiteboard".to_string(),
+                        content,
+                    })
+                    .await
             };
             match result {
                 Ok(_) => Some(json_response(json!({ "jsonrpc": "2.0", "id": id,
@@ -1443,11 +1736,20 @@ fn sanitize_artifact_content(content: &str) -> String {
             .ascii_case_insensitive(true)
             .match_kind(MatchKind::LeftmostFirst)
             .build([
-                "ignore previous instructions", "ignore all previous",
-                "disregard previous", "forget your instructions",
-                "you are now", "new instructions:", "system prompt:",
-                "###instruction", "<|system|>", "<|im_start|>",
-                "[system]", "assistant:", "human:", "user:",
+                "ignore previous instructions",
+                "ignore all previous",
+                "disregard previous",
+                "forget your instructions",
+                "you are now",
+                "new instructions:",
+                "system prompt:",
+                "###instruction",
+                "<|system|>",
+                "<|im_start|>",
+                "[system]",
+                "assistant:",
+                "human:",
+                "user:",
             ])
             .expect("AC infallible for literals")
     });
@@ -1470,16 +1772,30 @@ fn compute_sha256(content: &str) -> String {
 async fn lookup_verdict_banner(sha256: &str, api_base: &str) -> String {
     let url = format!("{api_base}/api/artifact-hashes/{sha256}");
     let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_millis(200)).build() else { return String::new(); };
-    let Ok(resp) = client.get(&url).send().await else { return String::new(); };
-    let Ok(data) = resp.json::<serde_json::Value>().await else { return String::new(); };
+        .timeout(Duration::from_millis(200))
+        .build()
+    else {
+        return String::new();
+    };
+    let Ok(resp) = client.get(&url).send().await else {
+        return String::new();
+    };
+    let Ok(data) = resp.json::<serde_json::Value>().await else {
+        return String::new();
+    };
     match data.get("verdict").and_then(|v| v.as_str()) {
         Some("malicious") => {
-            let family = data.get("family_name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let family = data
+                .get("family_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             format!("\u{1f6a8} [MALICIOUS: matches '{family}'. Do not execute.]\n\n")
         }
         Some("suspicious") => {
-            let family = data.get("family_name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let family = data
+                .get("family_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             format!("\u{26a0}\u{fe0f} [SUSPICIOUS: matches '{family}'. Verify before acting.]\n\n")
         }
         _ => String::new(),

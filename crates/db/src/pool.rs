@@ -31,9 +31,9 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 ///   default; `0` explicitly disables idle reaping — connections are kept
 ///   open indefinitely once opened)
 pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
-    let max_connections   = env_or("DB_POOL_MAX_CONNECTIONS", 20u32);
-    let min_connections   = env_or("DB_POOL_MIN_CONNECTIONS", 0u32);
-    let acquire_timeout   = env_or("DB_POOL_ACQUIRE_TIMEOUT_SECS", 30u64);
+    let max_connections = env_or("DB_POOL_MAX_CONNECTIONS", 20u32);
+    let min_connections = env_or("DB_POOL_MIN_CONNECTIONS", 0u32);
+    let acquire_timeout = env_or("DB_POOL_ACQUIRE_TIMEOUT_SECS", 30u64);
     let idle_timeout_secs = env_or("DB_POOL_IDLE_TIMEOUT_SECS", 600u64);
     let idle_timeout = if idle_timeout_secs == 0 {
         None
@@ -42,8 +42,11 @@ pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
     };
 
     tracing::info!(
-        max_connections, min_connections, acquire_timeout,
-        idle_timeout_secs, "db pool: configured",
+        max_connections,
+        min_connections,
+        acquire_timeout,
+        idle_timeout_secs,
+        "db pool: configured",
     );
 
     let pool = PgPoolOptions::new()
@@ -65,23 +68,19 @@ pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
     // Running this DROP here guarantees the constraint is gone regardless of
     // whether the embedded migration list was stale.  IF EXISTS makes it
     // idempotent — safe to run on every startup.
-    sqlx::query(
-        "ALTER TABLE artifacts DROP CONSTRAINT IF EXISTS artifacts_type_check",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("startup: drop artifact type constraint: {e}"))?;
+    sqlx::query("ALTER TABLE artifacts DROP CONSTRAINT IF EXISTS artifacts_type_check")
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("startup: drop artifact type constraint: {e}"))?;
 
     // Same pattern for sessions.status: replace the narrow three-value check
     // with the full operational-state set (004_session_statuses.sql).
     // Running it unconditionally means it takes effect even if the migration
     // binary was compiled before 004 was added to the migrations/ folder.
-    sqlx::query(
-        "ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("startup: drop sessions status constraint: {e}"))?;
+    sqlx::query("ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check")
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("startup: drop sessions status constraint: {e}"))?;
 
     sqlx::query(
         "ALTER TABLE sessions ADD CONSTRAINT sessions_status_check \

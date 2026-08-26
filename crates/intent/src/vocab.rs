@@ -15,7 +15,10 @@ pub struct Vocab {
 
 impl Vocab {
     pub fn new() -> Self {
-        Vocab { word_to_label: HashMap::new(), next: 1 }
+        Vocab {
+            word_to_label: HashMap::new(),
+            next: 1,
+        }
     }
 
     /// Get-or-create a label for `word` (case-insensitive).

@@ -101,7 +101,9 @@ pub async fn resolve(pool: &PgPool, actor_id: &str, local_index: i32) -> DbResul
 /// catch a stale row anyway, but deleting it is what keeps this table from
 /// silently accumulating dead entries under normal revocation traffic.
 pub async fn delete_for_caps(pool: &PgPool, cap_ids: &[String]) -> DbResult<u64> {
-    if cap_ids.is_empty() { return Ok(0); }
+    if cap_ids.is_empty() {
+        return Ok(0);
+    }
     let uris: Vec<String> = cap_ids.iter().map(|id| format!("cap/{id}")).collect();
     let result = sqlx::query("DELETE FROM actor_descriptors WHERE entity_uri = ANY($1)")
         .bind(&uris)

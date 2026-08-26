@@ -43,7 +43,10 @@ pub fn parse_identity(s: &str) -> Result<age::x25519::Identity, StoreError> {
 /// bundles) and the ratchet's own state persistence (raw 32-byte
 /// epochs — see `secrets-cli`) encrypt through; neither is privileged
 /// over the other, they just serialize different plaintexts.
-pub fn encrypt_bytes(plaintext: &[u8], recipients: &[&dyn Recipient]) -> Result<String, StoreError> {
+pub fn encrypt_bytes(
+    plaintext: &[u8],
+    recipients: &[&dyn Recipient],
+) -> Result<String, StoreError> {
     if recipients.is_empty() {
         return Err(StoreError::NoRecipients);
     }
@@ -138,11 +141,13 @@ mod tests {
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public();
 
-        let armored =
-            encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
+        let armored = encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
         let decrypted = decrypt_bundle(&armored, &identity as &dyn Identity).unwrap();
 
-        assert_eq!(decrypted.database_url, "postgres://solarplex:hunter2@localhost/solarplex");
+        assert_eq!(
+            decrypted.database_url,
+            "postgres://solarplex:hunter2@localhost/solarplex"
+        );
         assert_eq!(decrypted.oidc_client_id, "solarplex-prod");
         assert_eq!(decrypted.oidc_client_secret, "super-secret-oidc-value");
     }
@@ -151,10 +156,11 @@ mod tests {
     fn armored_output_looks_like_age_armor() {
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public();
-        let armored =
-            encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
+        let armored = encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
         assert!(armored.starts_with("-----BEGIN AGE ENCRYPTED FILE-----"));
-        assert!(armored.trim_end().ends_with("-----END AGE ENCRYPTED FILE-----"));
+        assert!(armored
+            .trim_end()
+            .ends_with("-----END AGE ENCRYPTED FILE-----"));
     }
 
     #[test]
@@ -172,7 +178,10 @@ mod tests {
 
         let via_operator = decrypt_bundle(&armored, &operator as &dyn Identity).unwrap();
         let via_recovery = decrypt_bundle(&armored, &recovery as &dyn Identity).unwrap();
-        assert_eq!(via_operator.oidc_client_secret, via_recovery.oidc_client_secret);
+        assert_eq!(
+            via_operator.oidc_client_secret,
+            via_recovery.oidc_client_secret
+        );
     }
 
     #[test]
@@ -188,14 +197,10 @@ mod tests {
         let identity_str = identity.to_string();
 
         let parsed_recipient = parse_recipient(&recipient_str).unwrap();
-        let parsed_identity =
-            parse_identity(identity_str.expose_secret()).unwrap();
+        let parsed_identity = parse_identity(identity_str.expose_secret()).unwrap();
 
-        let armored = encrypt_bundle(
-            &sample_bundle(),
-            &[&parsed_recipient as &dyn Recipient],
-        )
-        .unwrap();
+        let armored =
+            encrypt_bundle(&sample_bundle(), &[&parsed_recipient as &dyn Recipient]).unwrap();
         let decrypted = decrypt_bundle(&armored, &parsed_identity as &dyn Identity).unwrap();
         assert_eq!(decrypted.oidc_client_secret, "super-secret-oidc-value");
     }
@@ -208,8 +213,7 @@ mod tests {
         let attacker_identity = age::x25519::Identity::generate();
         let recipient = real_recipient_identity.to_public();
 
-        let armored =
-            encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
+        let armored = encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
 
         let result = decrypt_bundle(&armored, &attacker_identity as &dyn Identity);
         assert!(
@@ -225,8 +229,7 @@ mod tests {
         // rather than silently returning corrupted plaintext.
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public();
-        let armored =
-            encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
+        let armored = encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
 
         let mut lines: Vec<String> = armored.lines().map(|l| l.to_string()).collect();
         let payload_line_idx = lines
@@ -240,15 +243,17 @@ mod tests {
         let tampered = lines.join("\n");
 
         let result = decrypt_bundle(&tampered, &identity as &dyn Identity);
-        assert!(result.is_err(), "tampered ciphertext must be rejected, not silently decrypted");
+        assert!(
+            result.is_err(),
+            "tampered ciphertext must be rejected, not silently decrypted"
+        );
     }
 
     #[test]
     fn adversarial_truncated_ciphertext_is_rejected() {
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public();
-        let armored =
-            encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
+        let armored = encrypt_bundle(&sample_bundle(), &[&recipient as &dyn Recipient]).unwrap();
 
         let truncated = &armored[..armored.len() * 2 / 3];
         let result = decrypt_bundle(truncated, &identity as &dyn Identity);
@@ -273,6 +278,9 @@ mod tests {
 
         let armored = encrypt_bundle(&sample_bundle(), &recipient_refs).unwrap();
         let result = decrypt_bundle(&armored, &outsider as &dyn Identity);
-        assert!(result.is_err(), "being absent from the recipient list must be enforced, not just typical");
+        assert!(
+            result.is_err(),
+            "being absent from the recipient list must be enforced, not just typical"
+        );
     }
 }

@@ -49,7 +49,7 @@ use std::io;
 /// `SessionArena` is `!Send` (bumpalo uses `UnsafeCell` internally) and must
 /// remain on the same thread as the session task that owns it.
 pub struct SessionArena {
-    bump:        Bump,
+    bump: Bump,
     /// Allocation count since the last [`reset`](Self::reset).
     /// Not used for correctness — useful for capacity profiling and benchmarks.
     alloc_count: Cell<u64>,
@@ -58,7 +58,10 @@ pub struct SessionArena {
 impl SessionArena {
     /// Create a new arena with bumpalo's default initial capacity.
     pub fn new() -> Self {
-        Self { bump: Bump::new(), alloc_count: Cell::new(0) }
+        Self {
+            bump: Bump::new(),
+            alloc_count: Cell::new(0),
+        }
     }
 
     /// Create a new arena pre-allocated to hold at least `capacity` bytes.
@@ -66,7 +69,10 @@ impl SessionArena {
     /// Use this when the expected saga size is known (e.g. from step count ×
     /// average message size) to avoid the first reallocation on the hot path.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { bump: Bump::with_capacity(capacity), alloc_count: Cell::new(0) }
+        Self {
+            bump: Bump::with_capacity(capacity),
+            alloc_count: Cell::new(0),
+        }
     }
 
     /// Reset the region: reclaim all bump allocations in O(1).
@@ -160,7 +166,9 @@ pub struct BumpWriter<'bump> {
 impl<'bump> BumpWriter<'bump> {
     /// Create a new writer backed by `arena`'s bump region.
     pub fn new(arena: &'bump SessionArena) -> Self {
-        Self { buf: BumpVec::new_in(&arena.bump) }
+        Self {
+            buf: BumpVec::new_in(&arena.bump),
+        }
     }
 
     /// Create a new writer with a pre-allocated capacity hint.
@@ -183,14 +191,12 @@ impl<'bump> BumpWriter<'bump> {
     /// `serde_json::to_writer` output, which is always valid UTF-8.
     pub fn into_str(self) -> &'bump str {
         let slice = self.buf.into_bump_slice();
-        std::str::from_utf8(slice)
-            .expect("BumpWriter: serde_json always produces valid UTF-8")
+        std::str::from_utf8(slice).expect("BumpWriter: serde_json always produces valid UTF-8")
     }
 
     /// Return a view of the written bytes without consuming the writer.
     pub fn as_str(&self) -> &str {
-        std::str::from_utf8(&self.buf)
-            .expect("BumpWriter: serde_json always produces valid UTF-8")
+        std::str::from_utf8(&self.buf).expect("BumpWriter: serde_json always produces valid UTF-8")
     }
 
     /// Number of bytes written so far.

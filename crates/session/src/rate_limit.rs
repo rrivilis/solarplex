@@ -13,45 +13,71 @@ use serde::{Deserialize, Serialize};
 /// key, so this derives `Hash` too, not just `Ord`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum RateLimitKey {
-    MessagePost      { actor_id: String },
-    ContextAdd       { actor_id: String },
-    ArtifactCreate   { actor_id: String },
-    ApprovalRequest  { actor_id: String },
-    AgentAttach      { actor_id: String },
+    MessagePost {
+        actor_id: String,
+    },
+    ContextAdd {
+        actor_id: String,
+    },
+    ArtifactCreate {
+        actor_id: String,
+    },
+    ApprovalRequest {
+        actor_id: String,
+    },
+    AgentAttach {
+        actor_id: String,
+    },
     OwnershipTransfer,
     /// Editing or removing an existing artifact. Combines update+delete into
     /// one bucket, same risk profile (you already hold write access to the
     /// artifact; this bounds how fast you can churn through it).
-    ArtifactMutate      { actor_id: String },
+    ArtifactMutate {
+        actor_id: String,
+    },
     /// Casting a vote on an approval request.
-    ApprovalVote        { actor_id: String },
+    ApprovalVote {
+        actor_id: String,
+    },
     /// Delegating an approval to another (linked) session's own decision
     /// process. More expensive than a normal approval action: it creates a
     /// saga and a synthetic approval in the target session.
-    CrossSessionDelegate { actor_id: String },
+    CrossSessionDelegate {
+        actor_id: String,
+    },
     /// The three shim-originated PATCH endpoints that feed an approval's
     /// scout manifest, execution manifest, and declared-effects payload.
     /// Grouped into one key since they're all plumbing for a single
     /// approval's lifecycle, called by the shim, not directly by a human —
     /// this bound exists to catch a malfunctioning or compromised shim
     /// hammering the endpoint, not to constrain normal usage.
-    ManifestPatch        { actor_id: String },
+    ManifestPatch {
+        actor_id: String,
+    },
     /// Session-to-session linking: minting or redeeming a link invite, the
     /// direct-link fast path, and muting/unlinking an existing link.
-    SessionLinkMutate    { actor_id: String },
+    SessionLinkMutate {
+        actor_id: String,
+    },
     /// Session-to-session remotes: adding one, fetching new events through
     /// it, or removing it. `fetch` is the one that does real work (pulls up
     /// to 500 events from another session), so this key exists mainly to
     /// bound that.
-    SessionRemoteMutate  { actor_id: String },
+    SessionRemoteMutate {
+        actor_id: String,
+    },
     /// Granting someone a future way into this session: creating a session
     /// invite, minting an attach (cap) token, or rotating the join token.
     /// Grouped because all three are "credential a newcomer can redeem"
     /// actions with the same abuse shape.
-    MembershipGrant      { actor_id: String },
+    MembershipGrant {
+        actor_id: String,
+    },
     /// Minting or delegating a capability from an authority-dsl s-expression
     /// via `POST /sessions/:id/authority/import`.
-    AuthorityImport      { actor_id: String },
+    AuthorityImport {
+        actor_id: String,
+    },
     /// A new (never-before-seen) actor_id self-registering via the
     /// anonymous join_token WS path — no actor_id field, same as
     /// `OwnershipTransfer`, since the whole point is to bound how many
@@ -66,21 +92,21 @@ impl RateLimitKey {
     /// event's `key_label` field.
     pub fn label(&self) -> &'static str {
         match self {
-            RateLimitKey::MessagePost       { .. } => "MessagePost",
-            RateLimitKey::ContextAdd        { .. } => "ContextAdd",
-            RateLimitKey::ArtifactCreate    { .. } => "ArtifactCreate",
-            RateLimitKey::ApprovalRequest   { .. } => "ApprovalRequest",
-            RateLimitKey::AgentAttach       { .. } => "AgentAttach",
-            RateLimitKey::OwnershipTransfer         => "OwnershipTransfer",
-            RateLimitKey::ArtifactMutate         { .. } => "ArtifactMutate",
-            RateLimitKey::ApprovalVote           { .. } => "ApprovalVote",
-            RateLimitKey::CrossSessionDelegate   { .. } => "CrossSessionDelegate",
-            RateLimitKey::ManifestPatch          { .. } => "ManifestPatch",
-            RateLimitKey::SessionLinkMutate      { .. } => "SessionLinkMutate",
-            RateLimitKey::SessionRemoteMutate    { .. } => "SessionRemoteMutate",
-            RateLimitKey::MembershipGrant        { .. } => "MembershipGrant",
-            RateLimitKey::AuthorityImport        { .. } => "AuthorityImport",
-            RateLimitKey::AnonymousJoin                  => "AnonymousJoin",
+            RateLimitKey::MessagePost { .. } => "MessagePost",
+            RateLimitKey::ContextAdd { .. } => "ContextAdd",
+            RateLimitKey::ArtifactCreate { .. } => "ArtifactCreate",
+            RateLimitKey::ApprovalRequest { .. } => "ApprovalRequest",
+            RateLimitKey::AgentAttach { .. } => "AgentAttach",
+            RateLimitKey::OwnershipTransfer => "OwnershipTransfer",
+            RateLimitKey::ArtifactMutate { .. } => "ArtifactMutate",
+            RateLimitKey::ApprovalVote { .. } => "ApprovalVote",
+            RateLimitKey::CrossSessionDelegate { .. } => "CrossSessionDelegate",
+            RateLimitKey::ManifestPatch { .. } => "ManifestPatch",
+            RateLimitKey::SessionLinkMutate { .. } => "SessionLinkMutate",
+            RateLimitKey::SessionRemoteMutate { .. } => "SessionRemoteMutate",
+            RateLimitKey::MembershipGrant { .. } => "MembershipGrant",
+            RateLimitKey::AuthorityImport { .. } => "AuthorityImport",
+            RateLimitKey::AnonymousJoin => "AnonymousJoin",
         }
     }
 
@@ -90,38 +116,83 @@ impl RateLimitKey {
     /// key shouldn't have every action silently blocked by omission).
     pub fn default_policy(&self) -> Option<Policy> {
         match self {
-            RateLimitKey::MessagePost      { .. } => Some(Policy::Count { max: 30, window: Duration::from_secs(60) }),
-            RateLimitKey::ContextAdd       { .. } => Some(Policy::Count { max: 20, window: Duration::from_secs(60) }),
-            RateLimitKey::ArtifactCreate   { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(60) }),
-            RateLimitKey::ApprovalRequest  { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(60) }),
-            RateLimitKey::AgentAttach      { .. } => Some(Policy::Count { max: 5,  window: Duration::from_secs(3600) }),
-            RateLimitKey::OwnershipTransfer         => Some(Policy::Count { max: 10, window: Duration::from_secs(3600) }),
+            RateLimitKey::MessagePost { .. } => Some(Policy::Count {
+                max: 30,
+                window: Duration::from_secs(60),
+            }),
+            RateLimitKey::ContextAdd { .. } => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(60),
+            }),
+            RateLimitKey::ArtifactCreate { .. } => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(60),
+            }),
+            RateLimitKey::ApprovalRequest { .. } => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(60),
+            }),
+            RateLimitKey::AgentAttach { .. } => Some(Policy::Count {
+                max: 5,
+                window: Duration::from_secs(3600),
+            }),
+            RateLimitKey::OwnershipTransfer => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(3600),
+            }),
             // Same scale as ArtifactCreate, slightly higher ceiling since
             // this bucket covers two actions (update + delete) sharing one
             // window.
-            RateLimitKey::ArtifactMutate       { .. } => Some(Policy::Count { max: 20, window: Duration::from_secs(60) }),
-            RateLimitKey::ApprovalVote         { .. } => Some(Policy::Count { max: 20, window: Duration::from_secs(60) }),
+            RateLimitKey::ArtifactMutate { .. } => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(60),
+            }),
+            RateLimitKey::ApprovalVote { .. } => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(60),
+            }),
             // Creates a saga and a synthetic approval in another session —
             // same hourly scale as OwnershipTransfer, not a per-minute action.
-            RateLimitKey::CrossSessionDelegate { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(3600) }),
+            RateLimitKey::CrossSessionDelegate { .. } => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(3600),
+            }),
             // Shim-originated, called repeatedly per approval lifecycle —
             // generous on purpose, this exists to catch a malfunctioning
             // loop, not to constrain normal use.
-            RateLimitKey::ManifestPatch        { .. } => Some(Policy::Count { max: 60, window: Duration::from_secs(60) }),
+            RateLimitKey::ManifestPatch { .. } => Some(Policy::Count {
+                max: 60,
+                window: Duration::from_secs(60),
+            }),
             // Linking sessions is an infrequent admin action.
-            RateLimitKey::SessionLinkMutate    { .. } => Some(Policy::Count { max: 20, window: Duration::from_secs(3600) }),
+            RateLimitKey::SessionLinkMutate { .. } => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(3600),
+            }),
             // `fetch` can legitimately be polled a bit like any other read-
             // with-side-effects; the other two ops in this bucket are rare.
-            RateLimitKey::SessionRemoteMutate  { .. } => Some(Policy::Count { max: 30, window: Duration::from_secs(60) }),
+            RateLimitKey::SessionRemoteMutate { .. } => Some(Policy::Count {
+                max: 30,
+                window: Duration::from_secs(60),
+            }),
             // Minting a credential someone else can redeem — same bar as
             // AgentAttach.
-            RateLimitKey::MembershipGrant      { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(3600) }),
-            RateLimitKey::AuthorityImport      { .. } => Some(Policy::Count { max: 10, window: Duration::from_secs(3600) }),
+            RateLimitKey::MembershipGrant { .. } => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(3600),
+            }),
+            RateLimitKey::AuthorityImport { .. } => Some(Policy::Count {
+                max: 10,
+                window: Duration::from_secs(3600),
+            }),
             // Generous enough for real anonymous-invite traffic (a handful
             // of people clicking a shared link over a session's lifetime),
             // tight enough to bound a sockpuppet-minting script hammering
             // the same join_token.
-            RateLimitKey::AnonymousJoin                => Some(Policy::Count { max: 20, window: Duration::from_secs(3600) }),
+            RateLimitKey::AnonymousJoin => Some(Policy::Count {
+                max: 20,
+                window: Duration::from_secs(3600),
+            }),
         }
     }
 }
@@ -170,12 +241,14 @@ pub enum Admission {
     /// every caller of this module is a synchronous REST handler that's
     /// going to return a 429 either way, so a soft/hard distinction never
     /// had a different code path to justify it.
-    Denied { retry_after: Duration },
+    Denied {
+        retry_after: Duration,
+    },
 }
 
 // ── Bucket ───────────────────────────────────────────────────────────────────
 
-/// A fixed-window counter, deliberately chosen for simplicity over token refills, 
+/// A fixed-window counter, deliberately chosen for simplicity over token refills,
 /// and the burst-at-window-boundary imprecision this trades away doesn't
 /// matter at the request volumes these policies are sized for. Reset is
 /// implicit: once `window_started_at` is more than `window` old, the count
@@ -202,13 +275,16 @@ pub enum Admission {
 /// uses to reclaim exactly these.
 #[derive(Debug, Clone)]
 pub struct FixedWindowBucket {
-    count:             u32,
+    count: u32,
     window_started_at: Instant,
 }
 
 impl FixedWindowBucket {
     pub fn fresh(now: Instant) -> Self {
-        Self { count: 0, window_started_at: now }
+        Self {
+            count: 0,
+            window_started_at: now,
+        }
     }
 
     /// Attempt to admit one unit against `policy` at time `now`, mutating
@@ -226,11 +302,13 @@ impl FixedWindowBucket {
             self.count += 1;
             Admission::Allowed
         } else {
-            Admission::Denied { retry_after: window.saturating_sub(elapsed) }
+            Admission::Denied {
+                retry_after: window.saturating_sub(elapsed),
+            }
         }
     }
 
-    /// Whether this bucket has sat untouched for at least `idle_for` 
+    /// Whether this bucket has sat untouched for at least `idle_for`
     /// safe to evict from its map, since a fresh bucket allocated on the
     /// next check behaves identically to this one (its window would have
     /// reset by then regardless). `idle_for` must be at least as long as

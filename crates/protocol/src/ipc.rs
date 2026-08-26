@@ -76,7 +76,7 @@ pub enum AdapterMessage {
 /// After this, `cap_id` lives and is used in exactly one process: the shim.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerCallRequest {
-    pub id:   String,
+    pub id: String,
     pub call: ServerCall,
 }
 
@@ -89,26 +89,44 @@ pub struct ServerCallRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ServerCall {
-    RegisterMethods { methods: serde_json::Value },
+    RegisterMethods {
+        methods: serde_json::Value,
+    },
     ListArtifacts,
-    ReadArtifact { id: String },
-    CreateArtifact { name: String, artifact_type: String, content: String },
-    UpdateArtifact { id: String, content: String },
-    PostMessage { content: String },
-    AddContext { kind: String, content: String },
+    ReadArtifact {
+        id: String,
+    },
+    CreateArtifact {
+        name: String,
+        artifact_type: String,
+        content: String,
+    },
+    UpdateArtifact {
+        id: String,
+        content: String,
+    },
+    PostMessage {
+        content: String,
+    },
+    AddContext {
+        kind: String,
+        content: String,
+    },
     /// Also backs `solarplex_read_context`: the adapter requests the raw
     /// event feed and filters client-side for `context.entry.added`, same
     /// as it always has; that filtering is response formatting, not an
     /// authorization decision, so it doesn't need its own IPC op.
-    ReadFeed { limit: u64 },
+    ReadFeed {
+        limit: u64,
+    },
 }
 
 /// Adapter requests that the shim gate this tool call through the approval flow.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProposalRequest {
     /// Correlation ID; echoed back in the matching ShimMessage::Decision.
-    pub id:      String,
-    pub tool:    ToolCall,
+    pub id: String,
+    pub tool: ToolCall,
     /// The full JSON-RPC message as received from the agent; the shim may
     /// patch the args after receipt consumption and return the canonical form.
     pub raw_rpc: serde_json::Value,
@@ -119,20 +137,20 @@ pub struct ProposalRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExecDoneNotice {
     pub approval_id: String,
-    pub tool_name:   String,
+    pub tool_name: String,
     /// Filesystem snapshots before and after the upstream tool ran.
     /// Used by the shim to compute Ring-2 divergence vs. the scout manifest.
-    pub pre_snap:    HashMap<String, SnapEntry>,
-    pub post_snap:   HashMap<String, SnapEntry>,
+    pub pre_snap: HashMap<String, SnapEntry>,
+    pub post_snap: HashMap<String, SnapEntry>,
     /// Present when the tool call opted into Ring-1 hash-fence attestation.
-    pub tier2:       Option<Tier2Notice>,
+    pub tier2: Option<Tier2Notice>,
 }
 
 /// Mtime + size snapshot of a single file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapEntry {
     pub mtime: i64,
-    pub size:  u64,
+    pub size: u64,
 }
 
 /// Snapshots mtime+size for each path, skipping any that don't exist or
@@ -149,10 +167,19 @@ pub async fn snapshot_paths(paths: &[String]) -> HashMap<String, SnapEntry> {
     let mut snap = HashMap::new();
     for path in paths {
         if let Ok(meta) = tokio::fs::metadata(path).await {
-            let mtime = meta.modified().ok()
+            let mtime = meta
+                .modified()
+                .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64).unwrap_or(0);
-            snap.insert(path.clone(), SnapEntry { mtime, size: meta.len() });
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            snap.insert(
+                path.clone(),
+                SnapEntry {
+                    mtime,
+                    size: meta.len(),
+                },
+            );
         }
     }
     snap
@@ -164,14 +191,14 @@ pub async fn snapshot_paths(paths: &[String]) -> HashMap<String, SnapEntry> {
 /// submits the attestation to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tier2Notice {
-    pub receipt_id:           String,
-    pub cap_id:               String,
-    pub tool:                 String,
-    pub path:                 String,
-    pub approved_before:      String,
-    pub approved_after:       String,
+    pub receipt_id: String,
+    pub cap_id: String,
+    pub tool: String,
+    pub path: String,
+    pub approved_before: String,
+    pub approved_after: String,
     pub observed_before_hash: String,
-    pub actual_after_hash:    String,
+    pub actual_after_hash: String,
 }
 
 // ── Shim → Adapter ────────────────────────────────────────────────────────────
@@ -187,38 +214,38 @@ pub enum ShimMessage {
 /// Result of a `ServerCall`, matched to its request by `id`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerCallResponse {
-    pub id:    String,
+    pub id: String,
     /// Raw JSON body from the server on success.
-    pub body:  Option<serde_json::Value>,
+    pub body: Option<serde_json::Value>,
     pub error: Option<String>,
 }
 
 /// Shim's decision on a ProposalRequest, matched by id.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProposalDecision {
-    pub id:      String,
+    pub id: String,
     pub granted: bool,
     /// Set when the approval gate created a record (used for Ring-2 post-exec notice).
-    pub approval_id:   Option<String>,
+    pub approval_id: Option<String>,
     /// The rpc to forward to the upstream (may have server-canonical args substituted).
     /// `None` for meta-tools handled inside the shim or denied calls.
     pub canonical_rpc: Option<serde_json::Value>,
     /// Scout manifest produced during the approval window (heuristic, not authoritative).
-    pub scout:         Option<ScoutManifest>,
+    pub scout: Option<ScoutManifest>,
     /// Execution result for `solarplex_exec` only — the guardian ran the command;
     /// the adapter formats this into the MCP tool call response.
-    pub exec_result:   Option<ExecResultIpc>,
+    pub exec_result: Option<ExecResultIpc>,
     /// Ring-1 context extracted from canonical args after receipt consumption.
     /// The adapter uses this to read files before/after forwarding and populate Tier2Notice.
-    pub tier2_ctx:     Option<Tier2Ctx>,
-    pub error:         Option<String>,
+    pub tier2_ctx: Option<Tier2Ctx>,
+    pub error: Option<String>,
 }
 
 /// Sandboxed execution result sent from the guardian to the shim and then to the adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecResultIpc {
-    pub stdout:    String,
-    pub stderr:    String,
+    pub stdout: String,
+    pub stderr: String,
     pub exit_code: i32,
     /// Filesystem snapshots the guardian took of `DeclaredEffects`' paths,
     /// immediately before/after the sandboxed command ran -- inside the
@@ -228,19 +255,19 @@ pub struct ExecResultIpc {
     /// never executes anything itself for this tool (the guardian already
     /// ran it before the adapter even sees the decision), so the adapter
     /// had no snapshot of its own to take. See docs/threat-model.md §11.1.
-    pub pre_snap:  HashMap<String, SnapEntry>,
+    pub pre_snap: HashMap<String, SnapEntry>,
     pub post_snap: HashMap<String, SnapEntry>,
 }
 
 /// Ring-1 (Tier-2) context propagated from the shim to the adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tier2Ctx {
-    pub receipt_id:      String,
-    pub cap_id:          String,
-    pub tool:            String,
-    pub path:            String,
+    pub receipt_id: String,
+    pub cap_id: String,
+    pub tool: String,
+    pub path: String,
     pub approved_before: String,
-    pub approved_after:  String,
+    pub approved_after: String,
 }
 
 // ── Shim → Guardian ──────────────────────────────────────────────────────────
@@ -254,7 +281,7 @@ pub struct Tier2Ctx {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GuardianRequest {
     /// Correlation ID; echoed back in GuardianResponse.
-    pub id:          String,
+    pub id: String,
     /// The server-side approval record the human voted on.
     pub approval_id: String,
     // No command or declared_effects: the guardian fetches these from the
@@ -267,17 +294,17 @@ pub struct GuardianRequest {
 /// Guardian's execution result for a GuardianRequest.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GuardianResponse {
-    pub id:          String,
+    pub id: String,
     pub approval_id: String,
-    pub stdout:      String,
-    pub stderr:      String,
-    pub exit_code:   i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
     /// See `ExecResultIpc::pre_snap`/`post_snap`'s doc -- same data, one
     /// hop earlier. Empty on an error response (nothing ran).
-    pub pre_snap:    HashMap<String, SnapEntry>,
-    pub post_snap:   HashMap<String, SnapEntry>,
+    pub pre_snap: HashMap<String, SnapEntry>,
+    pub post_snap: HashMap<String, SnapEntry>,
     /// Set when the guardian rejected the request (verification failed or sandbox error).
-    pub error:       Option<String>,
+    pub error: Option<String>,
 }
 
 // ── Wire framing (async, tokio) ───────────────────────────────────────────────

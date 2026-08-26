@@ -65,13 +65,13 @@ pub mod transition;
 pub use arena::{BumpWriter, SessionArena};
 pub use effects::{BundleDisposition, BundleKind, Effect, ReflectorCursor, SagaBundle, TimerId};
 pub use events::{
-    AlgebraMask, BundleTransport, PolicyConstraint, PolicyTarget,
-    SagaOutcome, SagaStepSpec, SagaTermination, SessionEvent, SNAPSHOT_DEPENDS_ON,
+    AlgebraMask, BundleTransport, PolicyConstraint, PolicyTarget, SagaOutcome, SagaStepSpec,
+    SagaTermination, SessionEvent, SNAPSHOT_DEPENDS_ON,
 };
 pub use inbound::{DisconnectReason, InboundEvent, LiveEvent, VoteDecision};
 pub use memory::{
-    build_snapshot, ApprovalRecord, ApprovalStatus, CapRecord, GateKind, GatedBundle,
-    MemberRecord, ProposalRecord, SagaRecord, SagaStatus, SessionMemory,
+    build_snapshot, ApprovalRecord, ApprovalStatus, CapRecord, GateKind, GatedBundle, MemberRecord,
+    ProposalRecord, SagaRecord, SagaStatus, SessionMemory,
 };
 pub use rate_limit::{Admission, FixedWindowBucket, Policy, RateLimitKey};
 pub use saga::{ApprovalSaga, ProtocolOutcome, SagaProtocol, SessionSaga, TransferSaga};

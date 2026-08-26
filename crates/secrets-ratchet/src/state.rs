@@ -83,9 +83,9 @@ impl RatchetState {
     pub fn advance(mut self, fresh_random: [u8; 32]) -> RatchetState {
         let next = advance_bytes(&self.0, &fresh_random);
         self.0.zeroize(); // explicit, in addition to Drop below — the
-                           // intent here is "destroy the old epoch before
-                           // handing back the new one", not merely
-                           // "eventually get cleaned up on scope exit".
+                          // intent here is "destroy the old epoch before
+                          // handing back the new one", not merely
+                          // "eventually get cleaned up on scope exit".
         RatchetState(next)
     }
 
@@ -103,7 +103,8 @@ impl RatchetState {
     pub fn derive_credential_string(&self, context: &str, byte_len: usize) -> String {
         let mut buf = vec![0u8; byte_len];
         self.derive_credential(context, &mut buf);
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &buf);
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &buf);
         buf.zeroize();
         encoded
     }
@@ -187,7 +188,10 @@ mod tests {
     fn advance_depends_on_entropy_not_just_state() {
         let a = advance_bytes(&entropy(1), &entropy(2));
         let b = advance_bytes(&entropy(1), &entropy(3));
-        assert_ne!(a, b, "different fresh_random must produce different next states");
+        assert_ne!(
+            a, b,
+            "different fresh_random must produce different next states"
+        );
     }
 
     #[test]
@@ -204,7 +208,10 @@ mod tests {
         let mut oidc = [0u8; 32];
         state.derive_credential("solarplex-db-password-v1", &mut db);
         state.derive_credential("solarplex-oidc-secret-v1", &mut oidc);
-        assert_ne!(db, oidc, "different contexts from the same epoch must not collide");
+        assert_ne!(
+            db, oidc,
+            "different contexts from the same epoch must not collide"
+        );
     }
 
     #[test]
@@ -227,14 +234,18 @@ mod tests {
         let mut after = [0u8; 32];
         advanced.derive_credential("solarplex-db-password-v1", &mut after);
 
-        assert_ne!(before, after, "rotation must actually change the derived credential");
+        assert_ne!(
+            before, after,
+            "rotation must actually change the derived credential"
+        );
     }
 
     #[test]
     fn derive_credential_string_has_the_requested_length_when_decoded() {
         let state = RatchetState::genesis(entropy(1));
         let s = state.derive_credential_string("ctx", 24);
-        let decoded = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &s).unwrap();
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &s).unwrap();
         assert_eq!(decoded.len(), 24);
     }
 
@@ -259,7 +270,10 @@ mod tests {
         let mut after = [0u8; 32];
         RatchetState::genesis(entropy(0x3C)).derive_credential("ctx", &mut before);
         resumed.derive_credential("ctx", &mut after);
-        assert_eq!(before, after, "resuming from exported bytes must reproduce the same epoch");
+        assert_eq!(
+            before, after,
+            "resuming from exported bytes must reproduce the same epoch"
+        );
     }
 
     #[test]
@@ -267,7 +281,11 @@ mod tests {
         let mut state = RatchetState::genesis(entropy(0xAB));
         assert_ne!(*state.as_bytes(), [0u8; 32]);
         state.retire();
-        assert_eq!(*state.as_bytes(), [0u8; 32], "retire() must actually clear the bytes, not just drop a reference");
+        assert_eq!(
+            *state.as_bytes(),
+            [0u8; 32],
+            "retire() must actually clear the bytes, not just drop a reference"
+        );
     }
 
     #[test]

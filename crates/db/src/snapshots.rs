@@ -11,11 +11,11 @@ use crate::{DbError, DbResult};
 /// the recompute path after an epoch revocation.
 #[derive(Debug, Clone)]
 pub struct SnapshotRow {
-    pub id:              String,
-    pub session_id:      String,
-    pub seq:             i64,
-    pub state:           Value,
-    pub dirty:           bool,
+    pub id: String,
+    pub session_id: String,
+    pub seq: i64,
+    pub state: Value,
+    pub dirty: bool,
     pub stale_since_seq: Option<i64>,
 }
 
@@ -40,11 +40,11 @@ pub async fn get_latest(pool: &PgPool, session_id: &str) -> DbResult<SnapshotRow
     .ok_or(DbError::NotFound)?;
 
     Ok(SnapshotRow {
-        id:              row.get("id"),
-        session_id:      row.get("session_id"),
-        seq:             row.get("seq"),
-        state:           row.get("state"),
-        dirty:           row.get("dirty"),
+        id: row.get("id"),
+        session_id: row.get("session_id"),
+        seq: row.get("seq"),
+        state: row.get("state"),
+        dirty: row.get("dirty"),
         stale_since_seq: row.get("stale_since_seq"),
     })
 }
@@ -66,11 +66,11 @@ pub async fn get_latest_clean(pool: &PgPool, session_id: &str) -> DbResult<Optio
     .await?;
 
     Ok(row.map(|r| SnapshotRow {
-        id:              r.get("id"),
-        session_id:      r.get("session_id"),
-        seq:             r.get("seq"),
-        state:           r.get("state"),
-        dirty:           false,
+        id: r.get("id"),
+        session_id: r.get("session_id"),
+        seq: r.get("seq"),
+        state: r.get("state"),
+        dirty: false,
         stale_since_seq: None,
     }))
 }
@@ -115,9 +115,9 @@ pub async fn insert_in_tx(
 /// snapshot to a `&str` (e.g. via `serde_json::to_string` or `BumpWriter`)
 /// and postgres parses it via the `::jsonb` cast.
 pub async fn insert_raw_in_tx(
-    tx:         &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     session_id: &str,
-    seq:        i64,
+    seq: i64,
     state_json: &str,
 ) -> DbResult<String> {
     let id = Ulid::new().to_string();
@@ -269,9 +269,9 @@ pub async fn compact_dirty_sentinels(pool: &PgPool, retention_days: i64) -> DbRe
 /// replaying events from the last durable snapshot, so losing a write on
 /// crash costs a slightly longer cold-attach replay, not data loss.
 pub async fn write_async(
-    pool:       &PgPool,
+    pool: &PgPool,
     session_id: &str,
-    seq:        i64,
+    seq: i64,
     state_json: &str,
 ) -> DbResult<()> {
     let mut tx = pool.begin().await?;

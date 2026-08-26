@@ -6,17 +6,33 @@
 
 use lexpr::Value;
 
-use crate::parse::{is_lisp_nil, require_i64, require_str, AnyOrInt, IrError};
 use crate::algebra::OpSet;
+use crate::parse::{is_lisp_nil, require_i64, require_str, AnyOrInt, IrError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Resource {
-    Fs { path: String },
-    Net { host: String, port_min: i64, port_max: i64, path_prefix: String },
-    Pid { pid_ref: AnyOrInt },
-    IpcFd { fd: AnyOrInt },
-    Http { url_pattern: String, methods: Option<OpSet> },
-    Wasm { module: String },
+    Fs {
+        path: String,
+    },
+    Net {
+        host: String,
+        port_min: i64,
+        port_max: i64,
+        path_prefix: String,
+    },
+    Pid {
+        pid_ref: AnyOrInt,
+    },
+    IpcFd {
+        fd: AnyOrInt,
+    },
+    Http {
+        url_pattern: String,
+        methods: Option<OpSet>,
+    },
+    Wasm {
+        module: String,
+    },
 }
 
 impl Resource {
@@ -39,16 +55,28 @@ impl Resource {
             }),
             "net" => Ok(Resource::Net {
                 host: require_str(list.require("host")?, "host")?.to_string(),
-                port_min: list.get("port-min").map(|v| require_i64(v, "port-min")).transpose()?.unwrap_or(0),
-                port_max: list.get("port-max").map(|v| require_i64(v, "port-max")).transpose()?.unwrap_or(65535),
+                port_min: list
+                    .get("port-min")
+                    .map(|v| require_i64(v, "port-min"))
+                    .transpose()?
+                    .unwrap_or(0),
+                port_max: list
+                    .get("port-max")
+                    .map(|v| require_i64(v, "port-max"))
+                    .transpose()?
+                    .unwrap_or(65535),
                 path_prefix: list
                     .get("path-prefix")
                     .map(|v| require_str(v, "path-prefix").map(str::to_string))
                     .transpose()?
                     .unwrap_or_else(|| "/".to_string()),
             }),
-            "pid" => Ok(Resource::Pid { pid_ref: AnyOrInt::from_value(list.require("ref")?)? }),
-            "ipc-fd" => Ok(Resource::IpcFd { fd: AnyOrInt::from_value(list.require("fd")?)? }),
+            "pid" => Ok(Resource::Pid {
+                pid_ref: AnyOrInt::from_value(list.require("ref")?)?,
+            }),
+            "ipc-fd" => Ok(Resource::IpcFd {
+                fd: AnyOrInt::from_value(list.require("fd")?)?,
+            }),
             "http" => Ok(Resource::Http {
                 url_pattern: require_str(list.require("url")?, "url")?.to_string(),
                 methods: match list.get("methods") {
@@ -59,7 +87,10 @@ impl Resource {
             "wasm" => Ok(Resource::Wasm {
                 module: require_str(list.require("module")?, "module")?.to_string(),
             }),
-            other => Err(IrError::WrongTag { expected: "fs|net|pid|ipc-fd|http|wasm", actual: other.to_string() }),
+            other => Err(IrError::WrongTag {
+                expected: "fs|net|pid|ipc-fd|http|wasm",
+                actual: other.to_string(),
+            }),
         }
     }
 }

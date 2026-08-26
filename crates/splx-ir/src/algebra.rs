@@ -66,7 +66,10 @@ impl ConditionValue {
                 .collect::<Result<Vec<_>, IrError>>()?;
             return Ok(ConditionValue::SymbolList(syms));
         }
-        Err(IrError::BadValue { key: "condition-value", detail: format!("unrecognized shape: {v}") })
+        Err(IrError::BadValue {
+            key: "condition-value",
+            detail: format!("unrecognized shape: {v}"),
+        })
     }
 
     /// True for the Lisp `t` symbol specifically — the boolean-condition
@@ -83,10 +86,16 @@ impl ConditionSet {
         }
         let items: Vec<&Value> = v
             .list_iter()
-            .ok_or_else(|| IrError::BadValue { key: "conditions", detail: format!("expected a plist, got {v}") })?
+            .ok_or_else(|| IrError::BadValue {
+                key: "conditions",
+                detail: format!("expected a plist, got {v}"),
+            })?
             .collect();
         if !items.len().is_multiple_of(2) {
-            return Err(IrError::BadValue { key: "conditions", detail: "odd-length condition plist".into() });
+            return Err(IrError::BadValue {
+                key: "conditions",
+                detail: "odd-length condition plist".into(),
+            });
         }
         let mut out = Vec::with_capacity(items.len() / 2);
         for pair in items.chunks(2) {

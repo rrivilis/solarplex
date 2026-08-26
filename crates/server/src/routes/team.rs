@@ -19,13 +19,16 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 #[autometrics]
-async fn list_teammates(headers: HeaderMap, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn list_teammates(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     let actor_id = match crate::auth::require_sp_auth(&state.db, &headers).await {
-        Ok(id)   => id,
+        Ok(id) => id,
         Err(res) => return res,
     };
     match actors::list_teammates(&state.db, &actor_id).await {
         Ok(rows) => Json(rows).into_response(),
-        Err(e)   => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

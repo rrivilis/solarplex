@@ -9,7 +9,7 @@
 //! and read for the rest of the process's life, never per-request (a
 //! per-request seal would leak a mapping on every tool call). `SYS_mseal`
 //! is hand-rolled here the same way `crates/guardian/src/seccomp_ffi.rs`
-//! hand-rolls syscalls too new for the `libc` crate to wrap yet. 
+//! hand-rolls syscalls too new for the `libc` crate to wrap yet.
 //!
 //! Falls back to a plain heap buffer on any failure (old kernel, syscall
 //! unavailable). Hardening is additive here. The fallback is loud: a
@@ -30,7 +30,10 @@ enum Backing {
     /// additionally `mseal()`-permanent. Never written to again after
     /// construction.
     #[cfg(target_os = "linux")]
-    Sealed { ptr: *const u8, len: usize },
+    Sealed {
+        ptr: *const u8,
+        len: usize,
+    },
     Fallback(Vec<u8>),
 }
 
@@ -62,7 +65,9 @@ impl SealedRegion {
                 return region;
             }
         }
-        SealedRegion { backing: Backing::Fallback(bytes.to_vec()) }
+        SealedRegion {
+            backing: Backing::Fallback(bytes.to_vec()),
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -98,7 +103,9 @@ impl SealedRegion {
 
         if unsafe { libc::mprotect(ptr, mapped_len, libc::PROT_READ) } != 0 {
             let err = std::io::Error::last_os_error();
-            unsafe { libc::munmap(ptr, mapped_len); }
+            unsafe {
+                libc::munmap(ptr, mapped_len);
+            }
             tracing::warn!(
                 error = %err,
                 "sealed: mprotect(PROT_READ) failed, falling back to a plain (unsealed) heap buffer",
@@ -121,7 +128,10 @@ impl SealedRegion {
         }
 
         Some(SealedRegion {
-            backing: Backing::Sealed { ptr: ptr as *const u8, len: bytes.len() },
+            backing: Backing::Sealed {
+                ptr: ptr as *const u8,
+                len: bytes.len(),
+            },
         })
     }
 
@@ -149,7 +159,10 @@ pub struct SealedJson<T> {
 
 impl<T> Clone for SealedJson<T> {
     fn clone(&self) -> Self {
-        SealedJson { region: Arc::clone(&self.region), _marker: std::marker::PhantomData }
+        SealedJson {
+            region: Arc::clone(&self.region),
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -157,14 +170,18 @@ impl<T: Serialize> SealedJson<T> {
     pub fn new(value: &T) -> Self {
         let bytes = serde_json::to_vec(value)
             .expect("SealedJson::new: serializing a well-formed value cannot fail");
-        SealedJson { region: Arc::new(SealedRegion::from_bytes(&bytes)), _marker: std::marker::PhantomData }
+        SealedJson {
+            region: Arc::new(SealedRegion::from_bytes(&bytes)),
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
 impl<T: DeserializeOwned> SealedJson<T> {
     pub fn get(&self) -> T {
-        serde_json::from_slice(self.region.as_slice())
-            .expect("SealedJson::get: sealed bytes were written by SealedJson::new and never mutated")
+        serde_json::from_slice(self.region.as_slice()).expect(
+            "SealedJson::get: sealed bytes were written by SealedJson::new and never mutated",
+        )
     }
 }
 
@@ -188,17 +205,17 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Sample {
-        name:  String,
+        name: String,
         perms: Vec<String>,
-        n:     u64,
+        n: u64,
     }
 
     #[test]
     fn sealed_json_round_trips_and_clones_share_one_region() {
         let value = Sample {
-            name:  "agent-1".into(),
+            name: "agent-1".into(),
             perms: vec!["read_file".into(), "write_file".into()],
-            n:     42,
+            n: 42,
         };
         let sealed = SealedJson::new(&value);
         assert_eq!(sealed.get(), value);
@@ -213,7 +230,11 @@ mod tests {
     fn sealed_json_get_is_repeatable() {
         // Each .get() deserializes fresh -- confirm multiple calls agree and
         // don't consume/corrupt the underlying sealed bytes.
-        let sealed = SealedJson::new(&Sample { name: "x".into(), perms: vec![], n: 1 });
+        let sealed = SealedJson::new(&Sample {
+            name: "x".into(),
+            perms: vec![],
+            n: 1,
+        });
         for _ in 0..5 {
             assert_eq!(sealed.get().n, 1);
         }
@@ -234,7 +255,10 @@ mod tests {
                 // Already PROT_READ-only: re-asserting PROT_READ must still
                 // succeed (idempotent), proving the mapping exists and is
                 // at least mprotect-managed, not a stray/freed pointer.
-                assert_eq!(rc, 0, "expected the sealed region to still be a valid, mprotect-manageable mapping");
+                assert_eq!(
+                    rc, 0,
+                    "expected the sealed region to still be a valid, mprotect-manageable mapping"
+                );
             }
             Backing::Fallback(_) => {
                 // mmap/mprotect themselves failed on this host (sandboxed

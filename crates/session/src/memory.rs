@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use protocol::types::{
     ApprovalState, ArtifactSummary, ContextEntry, MemberRole, PendingApproval, SessionMember,
@@ -15,12 +15,12 @@ use crate::events::{PolicyConstraint, PolicyTarget, SagaStepSpec};
 /// A record for a session participant (human or agent).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberRecord {
-    pub actor_id:   String,
+    pub actor_id: String,
     /// "owner" | "collaborator" | "observer" | "agent"
-    pub role:       String,
-    pub joined_at:  DateTime<Utc>,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
     /// True when the participant has explicitly left or been detached.
-    pub detached:   bool,
+    pub detached: bool,
     /// Active WebSocket connection ID, if connected right now.
     pub connection: Option<String>,
 }
@@ -38,14 +38,14 @@ impl MemberRecord {
 /// Invariants: child.permissions ⊆ parent.permissions; child.epoch == parent.epoch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapRecord {
-    pub cap_id:      String,
-    pub actor_id:    String,
-    pub parent_cap:  Option<String>,
+    pub cap_id: String,
+    pub actor_id: String,
+    pub parent_cap: Option<String>,
     pub permissions: Vec<String>,
-    pub epoch:       i64,
-    pub stratum:     i64,
-    pub issued_at:   DateTime<Utc>,
-    pub revoked:     bool,
+    pub epoch: i64,
+    pub stratum: i64,
+    pub issued_at: DateTime<Utc>,
+    pub revoked: bool,
 }
 
 // ── Approval ──────────────────────────────────────────────────────────────────
@@ -78,14 +78,14 @@ impl ApprovalStatus {
 /// In-memory approval record with accumulated votes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalRecord {
-    pub approval_id:  String,
-    pub actor_id:     String,
-    pub tool:         String,
-    pub status:       ApprovalStatus,
+    pub approval_id: String,
+    pub actor_id: String,
+    pub tool: String,
+    pub status: ApprovalStatus,
     pub requested_at: DateTime<Utc>,
-    pub expires_at:   Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
     /// voter_id → "approve" | "deny"
-    pub votes:        BTreeMap<String, String>,
+    pub votes: BTreeMap<String, String>,
 }
 
 // ── Proposals ─────────────────────────────────────────────────────────────────
@@ -93,13 +93,13 @@ pub struct ApprovalRecord {
 /// In-memory record for a Ring-0/1 write proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProposalRecord {
-    pub proposal_id:  String,
-    pub effect_type:  String,
-    pub receipt_id:   Option<String>,
-    pub h_before:     Option<String>,
-    pub h_after:      Option<String>,
-    pub committed:    bool,
-    pub diverged:     bool,
+    pub proposal_id: String,
+    pub effect_type: String,
+    pub receipt_id: Option<String>,
+    pub h_before: Option<String>,
+    pub h_after: Option<String>,
+    pub committed: bool,
+    pub diverged: bool,
 }
 
 // ── Timer ─────────────────────────────────────────────────────────────────────
@@ -107,8 +107,8 @@ pub struct ProposalRecord {
 /// A timer that has been armed and not yet cancelled or fired.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerRecord {
-    pub id:          String,
-    pub armed_at:    DateTime<Utc>,
+    pub id: String,
+    pub armed_at: DateTime<Utc>,
     pub duration_ms: u64,
 }
 
@@ -157,19 +157,19 @@ impl SagaStatus {
 /// full `steps` spec) and the subsequent step/ack/terminate events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SagaRecord {
-    pub saga_id:   String,
+    pub saga_id: String,
     /// Discriminator: "approval" | "ownership_transfer" | "custom".
     pub saga_type: String,
     /// Immutable step specs — set at begin time and never mutated.
-    pub steps:     Vec<SagaStepSpec>,
-    pub status:    SagaStatus,
-    pub begun_at:  DateTime<Utc>,
+    pub steps: Vec<SagaStepSpec>,
+    pub status: SagaStatus,
+    pub begun_at: DateTime<Utc>,
     /// Type-specific policy parameters for reducer reconstruction.
     ///
     /// Persisted verbatim from `SagaBegun.metadata`; used by `build_session_saga`
     /// to reconstruct the correct `SessionSaga` discriminant in `live_saga_ack`
     /// without any external lookup.
-    pub metadata:  serde_json::Value,
+    pub metadata: serde_json::Value,
 }
 
 // ── Bundle gates (policy sub-algebra) ────────────────────────────────────────
@@ -180,7 +180,7 @@ pub enum GateKind {
     /// Waiting for a human `ApprovalGranted` event before delivery.
     Approval { approval_id: String },
     /// Delivery deferred until epoch-ms `until_ms`.
-    Deferred  { until_ms: u64 },
+    Deferred { until_ms: u64 },
 }
 
 /// A `SagaBundle` held at the adapter layer pending a gate condition.
@@ -199,7 +199,7 @@ pub struct GatedBundle {
     pub gate_kind: GateKind,
     /// The held bundle — present during live operation, absent on cold replay.
     #[serde(default)]
-    pub bundle:    Option<SagaBundle>,
+    pub bundle: Option<SagaBundle>,
     /// Reflector log position at which this bundle was appended.
     /// `None` on cold replay (cursor was never persisted); `Some` during live
     /// operation so the bundle can be re-fetched by position on restart.
@@ -218,17 +218,17 @@ pub struct GatedBundle {
 /// The runtime maps actor IDs → WS senders and timer IDs → JoinHandles externally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMemory {
-    pub session_id:   String,
+    pub session_id: String,
     pub session_name: String,
 
     /// Current position in the event log.  Strictly monotonically increasing.
-    pub cursor:       i64,
+    pub cursor: i64,
 
     /// Current cap epoch.  Advanced by `EpochAdvanced` events.
-    pub epoch:        i64,
+    pub epoch: i64,
 
     /// Current session owner actor ID.
-    pub owner_id:     String,
+    pub owner_id: String,
 
     /// Approval policy slug: "single_vote" | "majority" | "unanimous".
     pub session_policy: String,
@@ -238,10 +238,10 @@ pub struct SessionMemory {
     pub eligible_approvers: usize,
 
     /// All participants who have ever been attached (including detached ones).
-    pub members:      BTreeMap<String, MemberRecord>,
+    pub members: BTreeMap<String, MemberRecord>,
 
     /// All caps ever issued (including revoked).  `revoked` field gates enforcement.
-    pub caps:         BTreeMap<String, CapRecord>,
+    pub caps: BTreeMap<String, CapRecord>,
 
     /// Inverted children index: `parent_cap_id → [child_cap_id, …]`.
     ///
@@ -255,10 +255,10 @@ pub struct SessionMemory {
     pub cap_children: BTreeMap<String, Vec<String>>,
 
     /// Pending and recently-resolved approval records (kept for audit).
-    pub approvals:    BTreeMap<String, ApprovalRecord>,
+    pub approvals: BTreeMap<String, ApprovalRecord>,
 
     /// Ring-0/1 write proposals tracked in memory.
-    pub proposals:    BTreeMap<String, ProposalRecord>,
+    pub proposals: BTreeMap<String, ProposalRecord>,
 
     /// Artifacts, keyed by artifact_id. Shadow-persisted only today (see
     /// `session_task::is_machine_autonomous`) — `routes/sessions.rs` remains
@@ -266,18 +266,18 @@ pub struct SessionMemory {
     /// directly rather than a parallel struct, since that's exactly the shape
     /// `build_snapshot` needs to project out.
     #[serde(default)]
-    pub artifacts:    BTreeMap<String, ArtifactSummary>,
+    pub artifacts: BTreeMap<String, ArtifactSummary>,
 
     /// Shared epistemic context entries, keyed by entry_id. Shadow-persisted
     /// only today, same reasoning as `artifacts` above.
     #[serde(default)]
-    pub context:      BTreeMap<String, ContextEntry>,
+    pub context: BTreeMap<String, ContextEntry>,
 
     /// Active timers keyed by timer ID.
-    pub timers:       BTreeMap<String, TimerRecord>,
+    pub timers: BTreeMap<String, TimerRecord>,
 
     /// Active and recently-terminated saga coordination records.
-    pub sagas:        BTreeMap<String, SagaRecord>,
+    pub sagas: BTreeMap<String, SagaRecord>,
 
     /// Bundles currently held at the adapter layer (deferred or approval-gated).
     ///
@@ -305,30 +305,35 @@ impl SessionMemory {
     pub fn new(session_id: String, owner_id: String) -> Self {
         Self {
             session_id,
-            session_name:      String::new(),
-            cursor:            0,
-            epoch:             0,
+            session_name: String::new(),
+            cursor: 0,
+            epoch: 0,
             owner_id,
-            session_policy:    "single_vote".into(),
+            session_policy: "single_vote".into(),
             eligible_approvers: 0,
-            members:           BTreeMap::new(),
-            caps:              BTreeMap::new(),
-            cap_children:      BTreeMap::new(),
-            approvals:         BTreeMap::new(),
-            proposals:         BTreeMap::new(),
-            artifacts:         BTreeMap::new(),
-            context:           BTreeMap::new(),
-            timers:            BTreeMap::new(),
-            sagas:             BTreeMap::new(),
-            gated_bundles:     BTreeMap::new(),
-            policies:          BTreeMap::new(),
-            snapshot_seq:      0,
+            members: BTreeMap::new(),
+            caps: BTreeMap::new(),
+            cap_children: BTreeMap::new(),
+            approvals: BTreeMap::new(),
+            proposals: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
+            context: BTreeMap::new(),
+            timers: BTreeMap::new(),
+            sagas: BTreeMap::new(),
+            gated_bundles: BTreeMap::new(),
+            policies: BTreeMap::new(),
+            snapshot_seq: 0,
         }
     }
 
     /// Advance the cursor.  `seq` must be ≥ the current cursor.
     pub fn advance_cursor(&mut self, seq: i64) {
-        debug_assert!(seq >= self.cursor, "cursor regressed: {} → {}", self.cursor, seq);
+        debug_assert!(
+            seq >= self.cursor,
+            "cursor regressed: {} → {}",
+            self.cursor,
+            seq
+        );
         self.cursor = seq;
     }
 
@@ -347,7 +352,7 @@ impl SessionMemory {
     /// order: root first, then children layer by layer.
     pub fn cap_subtree(&self, root_cap_id: &str) -> Vec<String> {
         let mut result = Vec::new();
-        let mut queue  = vec![root_cap_id.to_string()];
+        let mut queue = vec![root_cap_id.to_string()];
         while let Some(current) = queue.pop() {
             result.push(current.clone());
             if let Some(children) = self.cap_children.get(&current) {
@@ -366,9 +371,13 @@ impl SessionMemory {
         let mut current = cap_id.to_string();
         loop {
             chain.push(current.clone());
-            match self.caps.get(&current).and_then(|c| c.parent_cap.as_deref()) {
+            match self
+                .caps
+                .get(&current)
+                .and_then(|c| c.parent_cap.as_deref())
+            {
                 Some(parent) => current = parent.to_string(),
-                None         => break,
+                None => break,
             }
         }
         chain
@@ -393,12 +402,12 @@ impl SessionMemory {
 /// instead of the stub `{ "type": "session_updated" }` placeholder.
 pub fn build_snapshot(
     lifecycle: &crate::state::SessionState,
-    memory:    &SessionMemory,
+    memory: &SessionMemory,
 ) -> SessionSnapshot {
     let status = match lifecycle {
         crate::state::SessionState::Suspended { .. } => SessionStatus::Suspended,
-        crate::state::SessionState::Archived { .. }  => SessionStatus::Archived,
-        _                                            => SessionStatus::Active,
+        crate::state::SessionState::Archived { .. } => SessionStatus::Archived,
+        _ => SessionStatus::Active,
     };
 
     let members: Vec<SessionMember> = memory
@@ -406,10 +415,10 @@ pub fn build_snapshot(
         .values()
         .map(|m| {
             let role = match m.role.as_str() {
-                "owner"        => MemberRole::Owner,
+                "owner" => MemberRole::Owner,
                 "collaborator" => MemberRole::Collaborator,
-                "observer"     => MemberRole::Observer,
-                _              => MemberRole::Agent,
+                "observer" => MemberRole::Observer,
+                _ => MemberRole::Agent,
             };
             // Agents never hold a WS `connection` — AgentAttached/AgentDetached
             // only ever set `detached`, since they attach via a cap, not a
@@ -421,7 +430,7 @@ pub fn build_snapshot(
             // other direction — it'd stay "attached" through a dropped socket.
             let attached = match role {
                 MemberRole::Agent => !m.detached,
-                _                 => m.connection.is_some(),
+                _ => m.connection.is_some(),
             };
             SessionMember {
                 actor_id: m.actor_id.clone(),
@@ -448,22 +457,22 @@ pub fn build_snapshot(
                 .filter_map(|(voter_id, decision)| {
                     let v = match decision.as_str() {
                         "approve" => Vote::Approve,
-                        _         => Vote::Deny,
+                        _ => Vote::Deny,
                     };
                     Some((voter_id.clone(), v))
                 })
                 .collect();
             PendingApproval {
-                approval_id:  a.approval_id.clone(),
-                tool:         a.tool.clone(),
+                approval_id: a.approval_id.clone(),
+                tool: a.tool.clone(),
                 requested_by: a.actor_id.clone(),
                 state: match &a.status {
                     ApprovalStatus::Claimed => ApprovalState::Claimed,
-                    _                       => ApprovalState::Pending,
+                    _ => ApprovalState::Pending,
                 },
                 votes,
                 claimed_by: None,
-                expires_at:  a.expires_at,
+                expires_at: a.expires_at,
                 // ApprovalRecord is a minimal timer/expiry mirror, not the
                 // display source of truth (that's crates/server/src/ws.rs's
                 // snapshot projection) — no structured arguments to carry.
@@ -473,14 +482,14 @@ pub fn build_snapshot(
         .collect();
 
     SessionSnapshot {
-        owner:           memory.owner_id.clone(),
-        owner_name:      String::new(), // enriched server-side, see make_snapshot_msg
-        name:            memory.session_name.clone(),
+        owner: memory.owner_id.clone(),
+        owner_name: String::new(), // enriched server-side, see make_snapshot_msg
+        name: memory.session_name.clone(),
         approval_policy: memory.session_policy.clone(),
         status,
         members,
         pending_approvals,
         artifacts: memory.artifacts.values().cloned().collect(),
-        context:   memory.context.values().cloned().collect(),
+        context: memory.context.values().cloned().collect(),
     }
 }

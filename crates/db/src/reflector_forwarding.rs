@@ -66,7 +66,9 @@ pub async fn claim_pending<T: for<'de> Deserialize<'de>>(
     for row in rows {
         match serde_json::from_value::<T>(row.bundle) {
             Ok(bundle) => out.push((row.id, bundle)),
-            Err(e) => tracing::warn!(id = %row.id, "reflector_forwarded_bundles: undeserializable row, skipping: {e}"),
+            Err(e) => {
+                tracing::warn!(id = %row.id, "reflector_forwarded_bundles: undeserializable row, skipping: {e}")
+            }
         }
     }
     Ok(out)
