@@ -8,9 +8,9 @@ matters most, and it's explicitly welcome.
 
 ## Reporting a vulnerability
 
-**Preferred: [GitHub Private Vulnerability Reporting](../../../security/advisories/new)**
+**Preferred: [GitHub Private Vulnerability Reporting](https://github.com/rrivilis/solarplex/security/advisories/new)**
 (Security tab → "Report a vulnerability"). This opens a private advisory
-thread visible only to you and the maintainer — no PGP key exchange, no
+thread visible only to you and the maintainer with no PGP key exchange or
 email to set up or monitor, and it keeps the whole disclosure timeline in
 one auditable place.
 
@@ -19,7 +19,7 @@ issue with minimal detail ("I found something, how should I send you the
 rest") and asking to move to a private channel is fine too.
 
 **Please don't open a public issue with exploit details or a working PoC.**
-Everything else about this project is genuinely open — this is the one
+Everything else about this project is genuinely open. This is the one
 exception, and only until a fix ships.
 
 ## What's in scope
