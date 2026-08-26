@@ -51,8 +51,8 @@ importers:
         specifier: ^12.40.0
         version: 12.43.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       lexical:
-        specifier: ^0.45.0
-        version: 0.45.0
+        specifier: ^0.49.0
+        version: 0.49.0(typescript@5.9.3)
       next:
         specifier: 15.5.21
         version: 15.5.21(@playwright/test@1.62.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(sass@1.51.0)
@@ -417,6 +417,14 @@ packages:
 
   '@lexical/internal@0.45.0':
     resolution: {integrity: sha512-IhyzCdb1/xdpTtvK0xnqUXpaVRsD2KTZ6EMZpavm6dhKaglf1zorpdbH7r6Hjps6SRb4DCn/t7lac+GMdDFbXg==}
+
+  '@lexical/internal@0.49.0':
+    resolution: {integrity: sha512-s+XjPC7Qb39A/Xx9ahcz1s69CPix4ultaqyW+MDG0AXYW2quDr7m0USqReKIAiuoLIWtGN5HW8BwV2Y6t4qr6Q==}
+    peerDependencies:
+      typescript: '>=5.2'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@lexical/link@0.45.0':
     resolution: {integrity: sha512-9xpsRQ06IA4eVnx4OtFV0+Tmp2Etvh0dh9FTFd/LJYaqo2A0ZIuNUggueDZ0i2dhi8wWW8J08O7U0HxLcDWHAg==}
@@ -1990,6 +1998,14 @@ packages:
   lexical@0.45.0:
     resolution: {integrity: sha512-z2M9C2ILPW7SopQE1aKbOFdZJbe3HvsrgWnJKveMDrSEvVjU9Hce4UpKVsAdkwY7TgY9RDuCV3+sfrGu0WkL+w==}
 
+  lexical@0.49.0:
+    resolution: {integrity: sha512-9V1ZIzGpJEd8rIN+nN7veL4fW4fFWbS66Un4JNqSZB4D5t9euzN9+3+jEXy83FjNjNy0MiiUI3+DQaGCLYko0w==}
+    peerDependencies:
+      typescript: '>=5.2'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   lib0@0.2.117:
     resolution: {integrity: sha512-DeXj9X5xDCjgKLU/7RR+/HQEVzuuEUiwldwOGsHK/sfAfELGWEyTcf0x+uOvCvK3O2zPmZePXWL85vtia6GyZw==}
     engines: {node: '>=16'}
@@ -3088,6 +3104,10 @@ snapshots:
       lexical: 0.45.0
 
   '@lexical/internal@0.45.0': {}
+
+  '@lexical/internal@0.49.0(typescript@5.9.3)':
+    optionalDependencies:
+      typescript: 5.9.3
 
   '@lexical/link@0.45.0':
     dependencies:
@@ -4677,6 +4697,12 @@ snapshots:
   lexical@0.45.0:
     dependencies:
       '@lexical/internal': 0.45.0
+
+  lexical@0.49.0(typescript@5.9.3):
+    dependencies:
+      '@lexical/internal': 0.49.0(typescript@5.9.3)
+    optionalDependencies:
+      typescript: 5.9.3
 
   lib0@0.2.117:
     dependencies:
