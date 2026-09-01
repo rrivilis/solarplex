@@ -46,7 +46,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "chrono", "json"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
-tower = "0.4"
+tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout"] }
 futures-util = "0.3"
 openidconnect = { version = "3", features = ["reqwest"] }
