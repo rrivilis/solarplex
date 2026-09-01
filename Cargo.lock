@@ -997,7 +997,7 @@ name = "cli"
 version = "0.31.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "futures-util",
@@ -5836,7 +5836,7 @@ dependencies = [
 name = "secrets-ratchet"
 version = "0.31.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "fast-erasure-shake-rng",
  "hkdf",
  "sha2 0.10.9",
