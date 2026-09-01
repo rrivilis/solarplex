@@ -81,5 +81,5 @@ autometrics = { version = "3", features = ["metrics-0_24", "prometheus-exporter"
 sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 proptest  = "1"
