@@ -66,9 +66,74 @@ function clearSpToken(): void {
 }
 
 /**
+ * Fired (on `window`) after the server rejected the stored sp_token and it was
+ * cleared, so the app shell can fall back to the signed-out screen without a
+ * reload. Without it, `isAuthenticated()` (which only asks "is a token
+ * stored?") keeps answering yes for a token that expired a month ago, and
+ * every page just shows an error card instead of the sign-in prompt.
+ */
+export const SIGNED_OUT_EVENT = "sol:signed-out";
+
+/**
+ * Drop a token the server just refused. Only if it is still the token we
+ * sent: a sign-in that completed while this request was in flight must not
+ * be wiped out by the stale 401 of the request that predated it.
+ */
+function dropRejectedToken(sent: string): void {
+  if (typeof window === "undefined") return;
+  if (localStorage.getItem(SP_TOKEN_KEY) !== sent) return;
+  clearSpToken();
+  window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
+}
+
+/**
+ * Can the OIDC flow start? Asks `/auth/oidc/start` without following its
+ * redirect: a working server answers with a redirect to the identity provider
+ * (an "opaque redirect" to fetch). Anything else readable (e.g. the 501 a
+ * server started without OIDC configured returns) is an answer we can show
+ * the user in place, rather than navigating them away to a bare text page
+ * with no way back.
+ *
+ * If the probe itself can't tell (network or CORS failure), it does NOT block:
+ * navigating anyway is exactly what happened before, and a genuinely
+ * unreachable server then gets the browser's own error page.
+ *
+ * Costs one extra start request (and one PKCE entry that simply expires),
+ * which the start endpoint's rate limit comfortably allows.
+ */
+async function probeSignIn(
+  url: URL,
+): Promise<{ ok: true } | { ok: false; title: string; detail?: string }> {
+  try {
+    const res = await fetch(url, { redirect: "manual", cache: "no-store" });
+    if (res.type === "opaqueredirect") return { ok: true };
+    if (res.status === 501) {
+      return {
+        ok: false,
+        title: "Sign-in isn't set up on this server",
+        detail: (await res.text()).slice(0, 400),
+      };
+    }
+    if (res.status === 429) {
+      return { ok: false, title: "Too many sign-in attempts", detail: "Wait a minute and try again." };
+    }
+    return {
+      ok: false,
+      title: "Sign-in is unavailable right now",
+      detail: `The server answered HTTP ${res.status}.`,
+    };
+  } catch {
+    return { ok: true };
+  }
+}
+
+/**
  * Redirect to the OIDC login flow.
  * `returnTo` must be a same-origin relative path (e.g. "/invite/01J...") —
  * validated again server-side (`auth::is_safe_return_to`) before use.
+ *
+ * On the web this first checks that sign-in can actually start (see
+ * `probeSignIn`) and, if it can't, says why in a toast and stays on the page.
  *
  * Inside the Tauri desktop shell this opens the flow in the system browser
  * instead of navigating the app's own webview — RFC 8252's recommendation
@@ -82,7 +147,7 @@ function clearSpToken(): void {
  * `captureSpTokenFromHash` below already knows how to pick up — no separate
  * desktop capture path needed here.
  */
-export function signIn(returnTo?: string): void {
+export async function signIn(returnTo?: string): Promise<void> {
   if (typeof window === "undefined") return;
   const url = new URL(`${apiOrigin()}/auth/oidc/start`);
   if (returnTo) url.searchParams.set("return_to", returnTo);
@@ -98,6 +163,11 @@ export function signIn(returnTo?: string): void {
     return;
   }
 
+  const probe = await probeSignIn(url);
+  if (!probe.ok) {
+    toast.error(probe.title, { description: probe.detail });
+    return;
+  }
   window.location.href = url.toString();
 }
 
@@ -122,7 +192,13 @@ export async function authFetch(url: string, init: RequestInit = {}): Promise<Re
   const token = getSpToken();
   const headers = new Headers(init.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  return fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers });
+  // 401 = the server looked at this token and refused it (expired, revoked,
+  // never issued). A server that merely couldn't check answers 503 instead
+  // (see `require_sp_auth`), so a database blip never lands here and never
+  // signs anyone out.
+  if (token && res.status === 401) dropRejectedToken(token);
+  return res;
 }
 
 /**

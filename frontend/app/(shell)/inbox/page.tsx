@@ -2,6 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import RelativeTime from "@/components/RelativeTime";
+import LoadError from "@/components/LoadError";
 import { signIn } from "@/lib/auth";
 import { getMailbox, markMailboxSeen, MailboxEntry, MailboxInviteEntry } from "@/lib/mailbox";
 import { useShellAuth } from "@/lib/shellAuth";
@@ -30,7 +31,7 @@ export default function InboxPage() {
   // always fired an immediate second fetch on mount, since react-query
   // evaluates staleness per-observer: this component's own default
   // staleTime: 0 ignored how fresh AppNav's already-cached data was.
-  const { data: entries, isPending, isError } = useQuery({
+  const { data: entries, isPending, isError, refetch } = useQuery({
     queryKey: ["mailbox"],
     queryFn: getMailbox,
     enabled: authed,
@@ -89,10 +90,7 @@ export default function InboxPage() {
           ))}
         </div>
       ) : isError ? (
-        <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
-          <p className="text-sm font-medium text-subtle mb-1">Couldn&apos;t load your inbox</p>
-          <p className="text-xs text-muted">Your sign-in may have expired.</p>
-        </div>
+        <LoadError what="your inbox" onRetry={() => refetch()} />
       ) : (entries ?? []).length === 0 ? (
         <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
           <div className="text-4xl mb-4 text-border select-none leading-none">⬡</div>

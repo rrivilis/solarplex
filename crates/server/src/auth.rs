@@ -119,6 +119,17 @@ pub async fn init_oidc(cfg: OidcConfig) -> anyhow::Result<OidcState> {
 
 // ── GET /auth/oidc/start ──────────────────────────────────────────────────────
 
+/// What `/auth/oidc/*` answers (501) when the server was started without OIDC
+/// configured. The frontend shows this text to the person who clicked "Sign
+/// in" (it can't redirect anywhere useful), so it says what to do about it,
+/// not just that something is missing. Must keep the "OIDC not configured"
+/// prefix: that exact phrase is what the README documents.
+const OIDC_NOT_CONFIGURED: &str =
+    "OIDC not configured: this server was started without sign-in set up. \
+     Set OIDC_ISSUER_URL, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URI and \
+     OIDC_FRONTEND_REDIRECT in the shell that starts the server, then restart it \
+     (README, \"OIDC setup\").";
+
 #[derive(Deserialize)]
 pub struct StartQuery {
     /// Same-origin relative path to land on after a successful login, e.g.
@@ -176,7 +187,7 @@ pub async fn oidc_start(
 ) -> Response {
     let oidc = match state.oidc.as_ref() {
         Some(o) => o,
-        None => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
+        None => return (StatusCode::NOT_IMPLEMENTED, OIDC_NOT_CONFIGURED).into_response(),
     };
     let ip = client_ip(&connect_info, &headers);
     if let Some(res) = crate::rate_limit::gate_global(
@@ -250,7 +261,7 @@ pub async fn oidc_callback(
 ) -> Response {
     let oidc = match app.oidc.as_ref() {
         Some(o) => o,
-        None => return (StatusCode::NOT_IMPLEMENTED, "OIDC not configured").into_response(),
+        None => return (StatusCode::NOT_IMPLEMENTED, OIDC_NOT_CONFIGURED).into_response(),
     };
     // This is the expensive half of the pair (a real round trip to the
     // provider, plus a DB write) and the actual brute-force target. Same
@@ -533,6 +544,19 @@ pub async fn revoke_session(
 
 // ── Token validation (called by WS handler) ───────────────────────────────────
 
+/// The presented `sp_token` is not acceptable: malformed, never issued, or
+/// expired. See [`validate_sp_token`] for why this is its own type.
+#[derive(Debug)]
+pub struct TokenInvalid;
+
+impl std::fmt::Display for TokenInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid or expired sp_token")
+    }
+}
+
+impl std::error::Error for TokenInvalid {}
+
 /// Validate an `sp_token` presented on a WebSocket upgrade request.
 ///
 /// Called in the HTTP upgrade phase before any WebSocket handshake.
@@ -542,15 +566,26 @@ pub async fn revoke_session(
 ///
 /// On success, fires a best-effort `touch` (updates `last_seen`) in a spawned
 /// task so it does not add latency to the WS connect path.
+///
+/// The error distinguishes *why* validation failed: [`TokenInvalid`] means the
+/// token itself is unacceptable (malformed, unknown, expired); any other error
+/// means the lookup could not be answered (e.g. the database is unreachable).
+/// Callers that turn this into an HTTP status must not treat the two alike
+/// ([`require_sp_auth`] does not): the former is the client's problem (401),
+/// the latter is ours, and a client that signs the user out on a 401 would
+/// otherwise sign everyone out during a database outage.
 pub async fn validate_sp_token(
     pool: &sqlx::PgPool,
     raw_token: &str,
 ) -> anyhow::Result<db::human_sessions::HumanSessionRow> {
-    validate_token_format(raw_token)?;
+    validate_token_format(raw_token).map_err(|_| anyhow::Error::new(TokenInvalid))?;
 
     let row = db::human_sessions::lookup(pool, raw_token)
         .await
-        .map_err(|_| anyhow!("invalid or expired sp_token"))?;
+        .map_err(|e| match e {
+            db::DbError::NotFound => anyhow::Error::new(TokenInvalid),
+            other => anyhow::Error::new(other).context("sp_token lookup failed"),
+        })?;
 
     // Touch last_seen in background. Non-blocking, non-fatal
     let pool_clone = pool.clone();
@@ -588,9 +623,20 @@ pub async fn require_sp_auth(
         )
             .into_response()
     })?;
-    let row = validate_sp_token(db, &raw)
-        .await
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid or expired sp_token").into_response())?;
+    let row = validate_sp_token(db, &raw).await.map_err(|e| {
+        if e.is::<TokenInvalid>() {
+            (StatusCode::UNAUTHORIZED, "invalid or expired sp_token").into_response()
+        } else {
+            // Not the caller's fault: we couldn't check. 503, not 401, so a
+            // database outage is never mistaken for an expired sign-in.
+            tracing::error!("sp_token validation unavailable: {e:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "authentication backend unavailable; retry shortly",
+            )
+                .into_response()
+        }
+    })?;
     Ok(row.actor_id)
 }
 
@@ -869,6 +915,158 @@ fn bad(msg: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 401 means "your token is bad", never "I couldn't check it" ────────────
+    //
+    // The frontend signs the user out on a 401. If a database outage (routine
+    // in local dev: the Postgres container restarts with WSL/Docker) came back
+    // as the same 401 as a genuinely expired token, every blip would log
+    // everyone out and the UI would say "your sign-in may have expired" when
+    // nothing of the sort had happened.
+
+    fn bearer(token: &str) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        h
+    }
+
+    /// A pool that can never reach a database, and gives up quickly.
+    fn unreachable_pool() -> sqlx::PgPool {
+        sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(300))
+            .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
+            .expect("lazy pool construction does not connect")
+    }
+
+    #[tokio::test]
+    async fn a_malformed_token_is_401_without_needing_the_database() {
+        let res = require_sp_auth(&unreachable_pool(), &bearer(&"A".repeat(129)))
+            .await
+            .expect_err("malformed token must be rejected");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn no_token_at_all_is_401() {
+        let res = require_sp_auth(&unreachable_pool(), &axum::http::HeaderMap::new())
+            .await
+            .expect_err("missing token must be rejected");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_database_is_503_not_a_false_sign_out() {
+        let res = require_sp_auth(&unreachable_pool(), &bearer(&"A".repeat(40)))
+            .await
+            .expect_err("cannot validate without a database");
+        assert_eq!(
+            res.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a database outage must not read as an expired sign-in"
+        );
+    }
+
+    /// Clicking "Sign in" against a server started without OIDC used to land
+    /// the browser on a bare "OIDC not configured". The 501 now says what to
+    /// do about it (the frontend shows this text), while keeping the phrase
+    /// the README documents.
+    #[tokio::test]
+    async fn oidc_start_without_config_is_501_with_actionable_text() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let state = Arc::new(AppState::new(
+            unreachable_pool(),
+            None,
+            crate::metrics_route::install_or_reuse_recorder(),
+            "test-replica".to_string(),
+        ));
+        let res = oidc_start(
+            State(state),
+            ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345)),
+            axum::http::HeaderMap::new(),
+            Query(StartQuery {
+                return_to: None,
+                client: None,
+            }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = axum::body::to_bytes(res.into_body(), 4096)
+            .await
+            .expect("body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.starts_with("OIDC not configured"), "got: {text}");
+        for var in [
+            "OIDC_ISSUER_URL",
+            "OIDC_CLIENT_ID",
+            "OIDC_CLIENT_SECRET",
+            "OIDC_REDIRECT_URI",
+            "OIDC_FRONTEND_REDIRECT",
+        ] {
+            assert!(text.contains(var), "501 body should name {var}: {text}");
+        }
+    }
+
+    /// Live-DB: the real situation. A sign-in row past its expiry is a 401, an
+    /// unknown token is a 401, a live one resolves to its actor.
+    /// Run with `DATABASE_URL=... cargo test -p server --lib auth::tests -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn expired_and_unknown_tokens_are_401_and_a_live_one_resolves() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let human = db::actors::create_human(
+            &pool,
+            db::actors::CreateHuman {
+                name: "expiry-test".into(),
+                email: format!("expiry-test-{}@example.invalid", ulid::Ulid::new()),
+            },
+        )
+        .await
+        .expect("create human");
+
+        let live = format!("live-{}", ulid::Ulid::new());
+        let expired = format!("expired-{}", ulid::Ulid::new());
+        let sub = format!("sub-{}", ulid::Ulid::new());
+        db::human_sessions::create(
+            &pool,
+            &live,
+            &human.id,
+            &sub,
+            "test",
+            chrono::Utc::now() + chrono::Duration::days(7),
+        )
+        .await
+        .expect("live session");
+        db::human_sessions::create(
+            &pool,
+            &expired,
+            &human.id,
+            &sub,
+            "test",
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await
+        .expect("expired session");
+
+        assert_eq!(
+            require_sp_auth(&pool, &bearer(&live))
+                .await
+                .expect("live token"),
+            human.id
+        );
+        for (label, token) in [
+            ("expired", expired.as_str()),
+            ("unknown", "never-issued-token-0123456789"),
+        ] {
+            let res = require_sp_auth(&pool, &bearer(token))
+                .await
+                .expect_err("must be rejected");
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{label} token");
+        }
+    }
 
     fn make_entry(ttl_offset_secs: i64) -> PkceEntry {
         let expires = if ttl_offset_secs >= 0 {

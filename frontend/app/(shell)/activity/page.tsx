@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import LoadError from "@/components/LoadError";
 import RelativeTime from "@/components/RelativeTime";
 import { DOT_COLOR, EVENT_LABEL, eventSummary } from "@/lib/eventTaxonomy";
 import EventTypeFilterBar from "@/components/EventTypeFilterBar";
@@ -19,7 +20,7 @@ export default function ActivityPage() {
   // live-pushed version is separate, larger backend work. 30s + refetch on
   // window focus (react-query default) is the same tradeoff made for the
   // inbox badge.
-  const { data: items, isPending, isError } = useQuery({
+  const { data: items, isPending, isError, refetch } = useQuery({
     queryKey: ["activity"],
     queryFn: () => getActivity(150),
     enabled: authed,
@@ -70,10 +71,7 @@ export default function ActivityPage() {
           ))}
         </div>
       ) : isError ? (
-        <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
-          <p className="text-sm font-medium text-subtle mb-1">Couldn&apos;t load activity</p>
-          <p className="text-xs text-muted">Your sign-in may have expired.</p>
-        </div>
+        <LoadError what="activity" onRetry={() => refetch()} />
       ) : (items ?? []).length === 0 ? (
         <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
           <div className="text-4xl mb-4 text-border select-none leading-none">⬡</div>

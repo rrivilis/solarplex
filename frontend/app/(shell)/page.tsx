@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { SessionRow } from "@/lib/types";
 import { motion } from "framer-motion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@radix-ui/react-tooltip";
+import LoadError from "@/components/LoadError";
 import NewSessionDrawer from "@/components/NewSessionDrawer";
 import OnboardingNameModal from "@/components/OnboardingNameModal";
 import SolarplexLogo from "@/components/SolarplexLogo";
@@ -116,7 +117,7 @@ export default function Home() {
   // session) renders the last-known list instantly from cache, then silently
   // refetches in the background — no full-page blank/loading flash on every
   // return trip, only on first-ever visit in the tab's lifetime.
-  const { data: sessions, isPending, isError } = useQuery({
+  const { data: sessions, isPending, isError, refetch } = useQuery({
     queryKey: ["sessions"],
     queryFn: getSessions,
     enabled: authed,
@@ -232,16 +233,7 @@ export default function Home() {
             ))}
           </div>
         ) : isError ? (
-          <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
-            <p className="text-sm font-medium text-subtle mb-1">Couldn&apos;t load sessions</p>
-            <p className="text-xs text-muted mb-6">Your sign-in may have expired.</p>
-            <button
-              onClick={() => signIn("/")}
-              className="text-xs px-4 py-2 rounded-lg font-medium bg-accent-blue/10 text-accent-blue hover:bg-accent-blue/20 border border-accent-blue/20 transition-colors"
-            >
-              Sign in again
-            </button>
-          </div>
+          <LoadError what="sessions" onRetry={() => refetch()} />
         ) : (sessions ?? []).length === 0 ? (
           <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
             <div className="text-4xl mb-4 text-border select-none leading-none">⬡</div>

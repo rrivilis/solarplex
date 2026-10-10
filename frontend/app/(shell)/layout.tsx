@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import AppNav from "@/components/AppNav";
-import { captureSpTokenFromHash, isAuthenticated } from "@/lib/auth";
+import { captureSpTokenFromHash, isAuthenticated, SIGNED_OUT_EVENT } from "@/lib/auth";
 import { ShellAuthContext } from "@/lib/shellAuth";
 
 /**
@@ -34,6 +34,20 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
     captureSpTokenFromHash();
     setAuthed(isAuthenticated());
     setAuthChecked(true);
+
+    // `isAuthenticated()` only knows whether a token is *stored*, not whether
+    // the server still honors it. When any request finds it refused (expired,
+    // revoked), `authFetch` clears it and fires this event: fall back to the
+    // signed-out screen instead of leaving an error card on a dead session.
+    // The `storage` event covers the same change made in another tab (signing
+    // out there, or signing back in).
+    const resync = () => setAuthed(isAuthenticated());
+    window.addEventListener(SIGNED_OUT_EVENT, resync);
+    window.addEventListener("storage", resync);
+    return () => {
+      window.removeEventListener(SIGNED_OUT_EVENT, resync);
+      window.removeEventListener("storage", resync);
+    };
   }, []);
 
   if (!authChecked) {

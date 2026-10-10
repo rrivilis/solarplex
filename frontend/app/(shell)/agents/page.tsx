@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import LoadError from "@/components/LoadError";
 import RelativeTime from "@/components/RelativeTime";
 import { signIn } from "@/lib/auth";
 import { getAgents, Agent } from "@/lib/agents";
@@ -18,7 +19,7 @@ export default function AgentsPage() {
   useDocumentTitle("Agents");
   const { authed } = useShellAuth();
 
-  const { data: agents, isPending, isError } = useQuery({
+  const { data: agents, isPending, isError, refetch } = useQuery({
     queryKey: ["agents"],
     queryFn: getAgents,
     enabled: authed,
@@ -55,10 +56,7 @@ export default function AgentsPage() {
           {[0, 1, 2, 3].map(i => <div key={i} className="h-[52px] rounded-lg bg-surface-1 animate-pulse" />)}
         </div>
       ) : isError ? (
-        <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
-          <p className="text-sm font-medium text-subtle mb-1">Couldn&apos;t load agents</p>
-          <p className="text-xs text-muted">Your sign-in may have expired.</p>
-        </div>
+        <LoadError what="agents" onRetry={() => refetch()} />
       ) : (agents ?? []).length === 0 ? (
         <div className="rounded-xl border border-border bg-surface-1 panel-shine p-14 text-center">
           <div className="text-4xl mb-4 text-border select-none leading-none">⬡</div>
