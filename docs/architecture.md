@@ -38,6 +38,8 @@ The `seq` counter is incremented atomically inside each transaction (`UPDATE ses
 
 `seq` is a **per-session** counter — meaningless for ordering events across sessions. Cross-session views (the activity feed, cross-session linking — see below) order by `timestamp` instead.
 
+"No holes" holds for rows in `events`, not for the counter itself: the session machine's shadow persistence (`db::events::alloc_seq`) draws a real seq without writing an event row, since another code path is that event's durable writer. A client that sees a gap simply takes a fresh snapshot, which is also the recovery for a missed live update.
+
 ---
 
 ## Snapshot projection
@@ -77,6 +79,8 @@ COMMIT
 ```
 
 Nothing is broadcast before a durable commit. The snapshot is never ahead of the EventLog.
+
+**Concurrent writers.** Step 1 takes a row lock on the session's `session_sequences` row, which serializes every writer in a session (including writers on other replicas), so events are always appended in seq order. The snapshot a writer starts from, however, is read *before* it opens its transaction and can be stale by the time the lock is granted. `stamp_append_snapshot` therefore compares that snapshot's seq with the seq it just allocated: if the base already reflects the newest committed event (the normal case) it applies the event directly, with no extra query; otherwise it first folds in the events committed in between (`catch_up_base`), so a later writer's snapshot includes an earlier writer's effect instead of overwriting it. Step 4's `ArcSwap` store is monotonic in seq (`store_and_broadcast`), so two writers finishing out of order cannot regress the in-memory snapshot to an older one. Seqs with no event row, and rows in the session machine's own event shape, are skipped by the catch-up: the machine path maintains its own projection (see [the session crate](#the-session-crate-a-partially-wired-state-machine)).
 
 This is the primary, authoritative write path (`crates/server/src/ws.rs`), documented in full below. A second, independent implementation of the same event/state/effect triad exists in `crates/session` — see [§ The session crate: a partially-wired state machine](#the-session-crate-a-partially-wired-state-machine) for what it is and, honestly, how much of it is actually reachable today.
 
@@ -170,10 +174,10 @@ Every agent-originated tool call passes through three separate OS processes befo
 | Process | Crate | Binary | Trust level | Can | Cannot |
 |---|---|---|---|---|---|
 | **Adapter** | `crates/sidecar` | `solarplex-adapter` | Untrusted relay | Proxy MCP JSON-RPC; observe tool call args; propose calls to the shim; inject Solarplex meta-tools; scan artifact content | Self-approve anything; reach the guardian; hold a session token |
-| **Shim** | `crates/shim` | `solarplex-shim` | Trusted gatekeeper | Hold session token/cap; run the Ring-2 runahead scout; create approval requests; issue a `ProposalDecision`; spawn both other processes | Execute any command (no shell access); talk to the upstream MCP server directly |
+| **Shim** | `crates/shim` | `solarplex-shim` | Trusted gatekeeper | Hold session token/cap; run the Ring-2 runahead scout (only inside a read-only, network-less bwrap sandbox, see [Ring 2](#ring-2--tier-3--shell-commands-runahead-scout--sandbox)); create approval requests; issue a `ProposalDecision`; spawn both other processes | Execute an *approved* command (that is the guardian's job); run anything unapproved outside the scout sandbox; talk to the upstream MCP server directly |
 | **Guardian** | `crates/guardian` | `solarplex-guardian` | Trusted executor | Spawn sandboxed subprocesses (bwrap + landlock + seccomp); carry out a `ProposalDecision` | Create or vote on approvals; hold or read a session token; talk to the adapter |
 
-This is a **positional authority** model: the shim holds credentials but has no execution path; the guardian has an execution path but independently re-verifies every decision with the server before acting — it never trusts the shim's word for what was approved.
+This is a **positional authority** model: the shim holds credentials but has no path to execute an *approved* command (its one execution, the runahead scout, runs a not-yet-approved command only inside a read-only, network-less, environment-cleared sandbox); the guardian has an execution path but independently re-verifies every decision with the server before acting — it never trusts the shim's word for what was approved.
 
 ### Spawn tree vs. message flow
 
@@ -328,7 +332,11 @@ solarplex-shim                                    server
    │◄── receipt.args (server-canonical) ───────────────┤  RETURNING ...  — double-consume → 410
 ```
 
-The shim must execute the **receipt's** args, not its own copy — this is what closes the post-approval args-substitution gap. `execution_receipts` are single-use (`used_at` set atomically on consume) with a short TTL (30s auto-approved, 240s pending-approval).
+The shim must execute the **receipt's** args, not its own copy — this is what closes the post-approval args-substitution gap. `execution_receipts` are single-use (`used_at` set atomically on consume) with a short TTL (30s auto-approved; 240s pending-approval, or the requested approval timeout plus a 60s grace if that is longer, so a slow but legitimate approval cannot outlive its own receipt).
+
+**Consume re-validates, at the moment of use.** A receipt outlives the request that created it, so `consume` is one atomic `UPDATE` that releases the args only if the receipt belongs to the calling session, the cap it was issued under is still live (not revoked, not expired, epoch still current), and, when the receipt is bound to an approval, that approval is `Approved`. A cap revoked, or an epoch advanced, between `/invoke` and consume therefore stops the call; so does a receipt whose approval was denied, expired, or never granted. Every refusal looks the same to the caller (410).
+
+**The shim fails closed on a refused receipt.** If the server won't release the receipt (any non-2xx, an unreachable server, or a call granted with no receipt id at all), the shim denies the proposal and executes nothing. Previously it fell back to the adapter's raw, unverified args in every one of those cases, which silently turned the receipt into an optional check.
 
 ---
 
@@ -367,7 +375,11 @@ POSIX provides no atomic compare-and-swap, for any party — this is not a serve
 
 Applies to: `solarplex_exec` and anything else whose effect isn't a declared content diff. State lives in `approval_requests`' `scout_manifest`/`declared_effects`/`execution_manifest`/`manifest_diverged` columns (migrations 016, 018) — no separate table, since the sandbox decision itself has no DB row.
 
-**Runahead scout** (`solarplex-shim`, `scout.rs`): during the human approval wait — otherwise-idle latency — the shim speculatively runs the command under `strace -f` (Linux only; falls back to filesystem-snapshot-diff-only elsewhere), tracing `openat`/`unlinkat`/`renameat`/`connect`/`execve`, and PATCHes a `ScoutManifest` onto the approval **before the human votes**, so the approval UI can show predicted effects alongside the request. Same-path operations across the exec tree are unioned, not overwritten — the declared policy is the union of everything observed. This is the same idea as TOMOYO Linux's learning mode (observe first, enforce from the observation), applied at the shim layer instead of the kernel LSM layer. A bounded worker pool (`ScoutPool`) prevents one slow scout from blocking others; a full queue drops the job with a warning — the scout is a heuristic enhancement, and approval flow continues without it if dropped.
+**Runahead scout** (`solarplex-shim`, `scout.rs`): during the human approval wait — otherwise-idle latency — the shim speculatively runs the command under `strace -f` (Linux only; falls back to filesystem-snapshot-diff-only elsewhere), tracing `openat`/`unlinkat`/`renameat`/`connect`/`execve`, and PATCHes a `ScoutManifest` onto the approval **before the human votes**, so the approval UI can show predicted effects alongside the request.
+
+The scout runs a command nobody has approved yet, so it must not be able to have any real effect. It runs inside a throwaway bubblewrap sandbox: the whole filesystem bound **read-only** (a write to a real path fails with `EROFS` instead of landing), a small private `/tmp` tmpfs discarded with the sandbox, **no network** (`--unshare-net`), the environment **cleared to an allowlist** (`PATH`, `HOME`, locale; none of the shim's own tokens or cloud credentials), CPU / file-size rlimits, and `--die-with-parent` plus a private pid namespace so that a scout killed on timeout takes every process it started with it. `strace` runs *outside* the sandbox (the sandbox's own seccomp denylist blocks `ptrace`) and bwrap's own setup is filtered out of the log by anchoring on the successful exec of the inner shell, so setup writes never read as the command's effects.
+
+Because the sandbox refuses real writes and connects, a *refused* write, delete, rename, or connect is recorded as the command's intent (an `EROFS`/`EACCES`/`EPERM` on a write-mode call, or `ENETUNREACH`/`ECONNREFUSED` and similar on a connect), while failed reads and lookups of missing paths remain ignored. **The cost is fidelity, not safety:** a command that aborts at its first refused write yields a partial manifest, and the execution sandbox built from it then fails closed on whatever the scout never saw. **If the sandbox is unavailable the scout does not run the command at all** (`sandbox_backend: "none"`, an empty manifest, and the maximally restrictive `DeclaredEffects::default()`); `SOLARPLEX_ALLOW_UNSANDBOXED=1` is the same explicit, development-only opt-out the guardian honors. Not yet bounded: process count (no cgroup `pids.max`), so a fork bomb inside the scout is limited only by the scout timeout. Same-path operations across the exec tree are unioned, not overwritten — the declared policy is the union of everything observed. This is the same idea as TOMOYO Linux's learning mode (observe first, enforce from the observation), applied at the shim layer instead of the kernel LSM layer. A bounded worker pool (`ScoutPool`) prevents one slow scout from blocking others; a full queue drops the job with a warning — the scout is a heuristic enhancement, and approval flow continues without it if dropped.
 
 **Sandbox executor** (`solarplex-guardian`): once approved, the guardian executes inside a sandbox derived *exclusively* from the approved `DeclaredEffects` — no out-of-band configuration, no drift between what was approved and what's enforced:
 
@@ -422,9 +434,11 @@ State transitions follow the session's `approval_policy`:
 - **majority**: requires >50% of eligible members (owners + collaborators).
 - **unanimous**: all active eligible members must agree; any deny resolves as Denied.
 
+**Terminal states are terminal.** `Pending`, `Claimed`, and `Contested` are *open*; `Approved`, `Denied`, and `Expired` are terminal. Recording a vote, resolving, setting `Contested`, and cancelling are each a single `UPDATE` whose `WHERE` clause requires an open approval **in the caller's own session** (`db::approvals`'s `*_in_tx` helpers), so the guard cannot go stale between a check and the write. A vote that loses to an earlier resolution (or names another session's approval) records nothing and emits no event; the REST endpoint answers `409 Conflict` rather than a silent `204`, and over WS it is logged and dropped. Votes on one approval serialize on that row's lock, so concurrent opposing votes under `single_vote` resolve exactly once. `Contested` stays votable: under `majority` a third vote can still break a split.
+
 The `votes` field is a JSONB map of `{ actor_id: "approve" | "deny" }`, queryable without parsing. The owner always has override authority from Contested. Every event constructed through this resolution path also carries the approval's `arguments` verbatim, both in the persisted event log and the live WS snapshot (`PendingApproval.arguments`) — added specifically so a client can render tool-specific detail (e.g. what's actually being proposed) rather than just a bare tool name.
 
-**Caveat surfaced during a recent audit, not yet independently confirmed against the frontend**: the ORB path (previous section) can create *two* approval rows for a single gated call — one via `POST /invoke` carrying the real arguments (whose receipt is what's actually consumed on execution), and a second, separately-created row via the legacy approval endpoint that's what the shim actually polls for grant/deny, carrying only a placeholder reference to the first row's ID rather than the real arguments. If accurate, the record that's load-bearing for whether execution proceeds may not itself display the real command to the approving human (though the scout manifest, which does use the real args, still attaches to the right row). Needs a frontend-side check before being stated as settled fact; flagged here as a concrete follow-up.
+**Resolved: one approval row per gated ORB call.** An earlier audit found that the ORB path could create *two* approval rows for one call (the `POST /invoke` row carrying the real arguments, plus a second, shim-created row that was the one actually polled and carried only a placeholder). That second row no longer exists: `shim/src/approval.rs` polls the `/invoke`-created approval directly, which is the same row the execution receipt is bound to, so the record a human votes on is the record that gates execution and carries the real arguments. (Confirmed from the shim and server code; the UI rendering of `PendingApproval.arguments` was not re-checked here.) The receipt binding is also enforced server-side at consume time (see [ORB](#orb-typed-cap-addresses-mcp_methods--execution_receipts)): a receipt bound to an approval is only released once that approval is `Approved`.
 
 ---
 
@@ -762,9 +776,13 @@ Genuinely open items, audited against current code — several items from earlie
 
 The timeout sweeper transitions approvals directly to `Expired`. It should walk the `escalation_order` chain in `session_memberships`, notify the next actor, and only expire if the chain is exhausted.
 
-### ORB dual-approval-row behavior needs frontend verification
+### WS approval commands: role gating and session scoping
 
-See the caveat under [Approval lifecycle](#approval-lifecycle) — confirm whether the approval record a human actually votes on in the ORB path displays the real command, or a placeholder reference to a second row.
+`approval.claim`, `approval.cancel`, `approval.delegate`, and `approval.dispute` are dispatched in `ws.rs` without the `can_vote(role)` check that `approval.grant`/`approval.deny` have, so any attached member (including an Observer) can issue them. Vote, resolve, set-state, and cancel are now confined to open approvals in the connection's own session at the SQL layer; `claim_if_pending_in_tx` is state-guarded but not yet session-scoped, and delegate/dispute were not audited for it. Decide who may claim/cancel/delegate/dispute, gate at dispatch, and scope the remaining writes to the session.
+
+### Scout: bound process count
+
+The scout sandbox bounds CPU, file size, network, filesystem, and environment, and kills its whole tree on timeout, but not the number of processes (no cgroup `pids.max`). Add one (e.g. via `systemd-run --user --scope -p TasksMax=`), and consider restricting scouting to `solarplex_exec` rather than any tool with a `command`/`cmd`/`shell`/`script`/`run` string argument.
 
 ### IMA appraisal + dm-verity (tooling built, not activated on any host)
 

@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::rate_limit::gate_session;
 use crate::state::AppState;
-use crate::ws::vote_on_approval;
+use crate::ws::{vote_on_approval, VoteOutcome};
 use autometrics::autometrics;
 use protocol::types::{MemberRole, Vote};
 use session::rate_limit::RateLimitKey;
@@ -285,8 +285,17 @@ async fn cast_vote(
         }
     };
 
-    vote_on_approval(&state, &row.session_id, &actor_id, &approval_id, vote).await;
-    StatusCode::NO_CONTENT.into_response()
+    match vote_on_approval(&state, &row.session_id, &actor_id, &approval_id, vote).await {
+        VoteOutcome::Applied => StatusCode::NO_CONTENT.into_response(),
+        // The approval resolved or expired between the read above and the
+        // vote landing: report that honestly rather than a silent 204.
+        VoteOutcome::Rejected => (
+            StatusCode::CONFLICT,
+            "approval is already resolved or expired",
+        )
+            .into_response(),
+        VoteOutcome::Failed => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 // ── POST /api/approvals/{id}/delegate ─────────────────────────────────────────

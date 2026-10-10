@@ -153,7 +153,7 @@ async fn deliver(
         );
         return;
     };
-    let new_snap = apply_event(&current, &msg);
+    let new_snap = apply_event(&current.state, &msg);
     store_and_broadcast(hub, seq, new_snap, &msg).await;
     tracing::debug!(session_id, seq, "event notifier: cross-replica delivery");
 }

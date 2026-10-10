@@ -60,6 +60,10 @@ const AUTO_APPROVE_RECEIPT_TTL_SECS: i64 = 30;
 /// Receipt TTL when approval is pending (human has up to N s to respond, then
 /// sidecar consumes; total window = approval_timeout + execution grace).
 const PENDING_RECEIPT_TTL_SECS: i64 = 240;
+/// Extra time after the approval window for the sidecar to consume and execute.
+const RECEIPT_GRACE_SECS: i64 = 60;
+/// Upper bound on the approval wait used to size the receipt TTL (24 h).
+const MAX_APPROVAL_WAIT_SECS: u64 = 24 * 60 * 60;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -253,13 +257,19 @@ pub async fn handler(
         }
     };
 
+    // The receipt must outlive the human's decision: consuming is refused once
+    // it expires, so a TTL shorter than the approval timeout would turn a slow
+    // but legitimate approval into a denial. (Capped so a huge requested
+    // timeout can't overflow the timestamp arithmetic.)
+    let pending_ttl = PENDING_RECEIPT_TTL_SECS
+        .max(body.approval_timeout_secs.min(MAX_APPROVAL_WAIT_SECS) as i64 + RECEIPT_GRACE_SECS);
     let receipt = match db::receipts::issue(
         &state.db,
         &body.cap_id,
         &session_id,
         &body.method,
         &body.args,
-        PENDING_RECEIPT_TTL_SECS,
+        pending_ttl,
         Some(&approval),
     )
     .await
@@ -286,6 +296,11 @@ pub async fn handler(
 /// Returns the receipt row (including the server-canonical `args`) and marks
 /// the receipt consumed in a single atomic UPDATE — a second call with the same
 /// receipt_id will get a 410 Gone.
+///
+/// The same statement re-validates, at the moment of use, that the receipt
+/// belongs to this session, that its cap is still live (not revoked/expired,
+/// epoch current), and that its approval (if any) is `Approved`. All of those
+/// failures look identical to the caller (410): the caller must not execute.
 #[derive(Deserialize)]
 pub struct ConsumeBody {
     pub receipt_id: String,
@@ -297,12 +312,14 @@ pub async fn consume_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ConsumeBody>,
 ) -> impl IntoResponse {
-    let receipt = match db::receipts::consume(&state.db, &body.receipt_id).await {
+    // Session scoping is part of the atomic UPDATE: a caller naming another
+    // session's receipt neither learns it exists nor burns it.
+    let receipt = match db::receipts::consume(&state.db, &session_id, &body.receipt_id).await {
         Ok(r) => r,
         Err(db::DbError::NotFound) => {
             return (
                 StatusCode::GONE,
-                "receipt not found, already consumed, or expired",
+                "receipt not found, already consumed, expired, or no longer authorized",
             )
                 .into_response();
         }
@@ -310,11 +327,6 @@ pub async fn consume_handler(
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
-
-    // Guard: receipt must belong to this session (prevents cross-session replay).
-    if receipt.session_id != session_id {
-        return (StatusCode::FORBIDDEN, "receipt session mismatch").into_response();
-    }
 
     Json(serde_json::json!({
         "receipt_id":  receipt.id,

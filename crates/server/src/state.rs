@@ -222,6 +222,7 @@ const BROADCAST_CAP: usize = 256;
 /// `seq` is the sequence number of the last event that was applied to
 /// `state` — i.e. both fields always agree on what Postgres has committed.
 /// This is the source-of-truth for WS attach (no DB queries on the hot path).
+#[derive(Clone)]
 pub struct LiveSnapshot {
     pub seq: i64,
     pub state: SessionSnapshot,

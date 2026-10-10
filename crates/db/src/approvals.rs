@@ -186,38 +186,64 @@ pub async fn claim_if_pending_in_tx(
     .ok_or(DbError::NotFound)
 }
 
+// ── State guards ──────────────────────────────────────────────────────────────
+//
+// An approval is *open* while it is `Pending`, `Claimed`, or `Contested` (the
+// same set `list_pending`/`expire_timed_out` already treat as unresolved), and
+// terminal once `Approved`, `Denied`, or `Expired`. The three transaction
+// helpers below only ever act on an open approval that belongs to the stated
+// session, enforced in the `UPDATE`'s own `WHERE` clause rather than by a
+// caller's earlier read. A pre-check outside the transaction can go stale the
+// moment it returns; the row lock the `UPDATE` itself takes cannot.
+//
+// They return `DbError::NotFound` when nothing matched, which the caller must
+// treat as "this approval is closed (or not yours)", not as an invariant
+// violation: a late or racing request losing to an earlier resolution is
+// expected, and is exactly the case this guard exists for.
+
+/// Move an *open* approval to `state`. `NotFound` if it is already terminal or
+/// belongs to a different session.
 pub async fn set_state_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
+    session_id: &str,
     state: &str,
 ) -> DbResult<ApprovalRow> {
     sqlx::query_as::<_, ApprovalRow>(
         "UPDATE approval_requests SET state = $1
-         WHERE id = $2
+         WHERE id = $2 AND session_id = $3
+           AND state IN ('Pending', 'Claimed', 'Contested')
          RETURNING id, session_id, actor_id, tool_name, arguments, state, votes, resolved_by, created_at, timeout_at, resolved_at",
     )
     .bind(state)
     .bind(id)
+    .bind(session_id)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(DbError::NotFound)
 }
 
+/// Resolve an *open* approval (`Approved`/`Denied`). `NotFound` if it is
+/// already terminal or belongs to a different session, so a terminal state is
+/// never overwritten.
 pub async fn resolve_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
+    session_id: &str,
     state: &str,
     resolved_by: &str,
 ) -> DbResult<ApprovalRow> {
     sqlx::query_as::<_, ApprovalRow>(
         "UPDATE approval_requests
          SET state = $1, resolved_by = $2, resolved_at = now()
-         WHERE id = $3
+         WHERE id = $3 AND session_id = $4
+           AND state IN ('Pending', 'Claimed', 'Contested')
          RETURNING id, session_id, actor_id, tool_name, arguments, state, votes, resolved_by, created_at, timeout_at, resolved_at",
     )
     .bind(state)
     .bind(resolved_by)
     .bind(id)
+    .bind(session_id)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(DbError::NotFound)
@@ -250,21 +276,30 @@ pub async fn resolve_if_pending_in_tx(
     .map_err(DbError::from)
 }
 
+/// Record a vote on an *open* approval that belongs to `session_id`.
+///
+/// The row lock this `UPDATE` takes is held until the surrounding transaction
+/// ends, so the resolve/set-state that follows in the same transaction acts on
+/// exactly the row (and state) this vote was admitted against. `NotFound` if
+/// the approval is already terminal or belongs to a different session.
 pub async fn record_vote_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
+    session_id: &str,
     voter_id: &str,
     vote: &str,
 ) -> DbResult<ApprovalRow> {
     sqlx::query_as::<_, ApprovalRow>(
         "UPDATE approval_requests
          SET votes = jsonb_set(votes, ARRAY[$1], to_jsonb($2::text))
-         WHERE id = $3
+         WHERE id = $3 AND session_id = $4
+           AND state IN ('Pending', 'Claimed', 'Contested')
          RETURNING id, session_id, actor_id, tool_name, arguments, state, votes, resolved_by, created_at, timeout_at, resolved_at",
     )
     .bind(voter_id)
     .bind(vote)
     .bind(id)
+    .bind(session_id)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(DbError::NotFound)

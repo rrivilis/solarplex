@@ -1179,7 +1179,7 @@ async fn emit_via_task(
     event: WsMessage,
     replica_id: &str,
 ) {
-    let snap_ref = crate::ws::current_snap(hub);
+    let snap_ref = crate::ws::current_live(hub);
     let mut tx = match db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -2962,8 +2962,10 @@ mod tests {
             "re-claiming an already-claimed A must not broadcast, got {batch:?}"
         );
 
-        // Cancel B — cancel has no CAS guard (matches ws.rs's own unconditional
-        // set_state_in_tx), so this always broadcasts regardless of B's state.
+        // Cancel B: the machine's own cancel path has no state guard, so this
+        // always broadcasts regardless of B's state. (ws.rs's durable cancel
+        // is guarded separately: it only expires an *open* approval; see
+        // `ws::tests::cancel_cannot_rewrite_a_resolved_approval`.)
         task_approval_cancel(&task, approval_b.clone(), human.id.clone()).await;
         let batch = drain_broadcasts(&mut rx, Duration::from_secs(2)).await;
         assert!(

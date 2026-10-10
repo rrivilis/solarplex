@@ -264,6 +264,33 @@ pub async fn list(
     .map_err(DbError::from)
 }
 
+/// Events strictly between `after_seq` and `before_seq` (both exclusive),
+/// oldest first, read inside an existing transaction.
+///
+/// Used by the snapshot writer to catch a stale in-memory snapshot up with
+/// whatever other writers committed after it was read: once the caller holds
+/// the per-session seq lock, everything with a lower seq is already committed
+/// and visible to this statement, so the range is complete.
+pub async fn list_between_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    session_id: &str,
+    after_seq: i64,
+    before_seq: i64,
+) -> DbResult<Vec<EventRow>> {
+    sqlx::query_as::<_, EventRow>(
+        "SELECT id, session_id, actor_id, type, payload, parent_event_id, seq, timestamp
+         FROM events
+         WHERE session_id = $1 AND seq > $2 AND seq < $3
+         ORDER BY seq ASC",
+    )
+    .bind(session_id)
+    .bind(after_seq)
+    .bind(before_seq)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(DbError::from)
+}
+
 /// The highest committed seq for a session. Returns 0 if no events yet.
 /// Used to stamp observed_seq on newly-issued caps.
 /// Recent events across every session in `session_ids`, ordered by wall-

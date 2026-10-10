@@ -592,10 +592,24 @@ is the same model as TOMOYO Linux's learning mode — observe first, enforce
 from the observation — applied at the sidecar layer rather than the kernel LSM
 layer.
 
-During the human approval window (idle latency ≈ cache-miss latency) the sidecar
+During the human approval window (idle latency ≈ cache-miss latency) the shim
 executes the command under `strace(1)` on Linux, tracing `openat`, `unlinkat`,
-`unlink`, `renameat`, `rename`, `connect`, and `execve`.  It captures a
-`ScoutManifest`:
+`unlink`, `renameat`, `rename`, `connect`, and `execve`.  Because that command
+has **not been approved yet**, it runs inside a throwaway bubblewrap sandbox,
+never directly on the host: filesystem bound read-only (a real write fails with
+`EROFS`), a small private `/tmp`, no network namespace routes, environment
+cleared to an allowlist (no shim tokens or cloud credentials), CPU/file-size
+rlimits, and `--die-with-parent` + a private pid namespace so a timed-out scout
+takes its whole process tree with it.  `strace` runs outside the sandbox and
+bwrap's own setup is filtered out of its log (anchored on the successful exec
+of the inner shell), so setup activity is never read as the command's effects.
+A write or connect the sandbox *refused* is still recorded, as intent; failed
+reads and lookups of missing paths are not.  **If the sandbox is unavailable
+the command is not run at all** (`sandbox_backend: "none"`, empty manifest);
+`SOLARPLEX_ALLOW_UNSANDBOXED=1` is the explicit, development-only opt-out.
+Fidelity cost: a command that aborts at its first refused write produces a
+partial manifest, and the execution sandbox built from it fails closed on what
+the scout never saw.  It captures a `ScoutManifest`:
 
 | Field | Content |
 |---|---|
@@ -603,7 +617,7 @@ executes the command under `strace(1)` on Linux, tracing `openat`, `unlinkat`,
 | `file_effects` | Per-path `FileEvent { path, ops: FileOps }` — see table below |
 | `network_connects` | IPv4 destinations ("ip:port") from connect(2) |
 | `subprocesses` | Executables launched via execve(2) |
-| `sandbox_backend` | `"strace"` on Linux with strace(1); `"none"` otherwise |
+| `sandbox_backend` | `"strace+bwrap(ro,no-net)"` on Linux with strace(1) and bwrap; `"strace(unsandboxed)"` only with the dev opt-out; `"none"` otherwise (including: sandbox unavailable, so the command was not run) |
 | `truncated` | True if the event cap (~1000 events) was hit |
 
 `FileOps` captures per-operation granularity for each path, mapped from
@@ -834,7 +848,7 @@ execution.
 | Process | Binary | Trust level | What it can do | What it cannot do |
 |---|---|---|---|---|
 | **Adapter** | `solarplex-adapter` | Untrusted relay | Proxy MCP JSON-RPC; observe tool call args; propose tool calls to shim | Self-approve any proposal; talk to guardian directly; hold session token |
-| **Shim** | `solarplex-shim` | Trusted gatekeeper | Hold session token + cap material; run ring-2 scout; create approval requests; issue `ProposalDecision` | Execute any command (no shell access); talk to upstream MCP directly |
+| **Shim** | `solarplex-shim` | Trusted gatekeeper | Hold session token + cap material; run ring-2 scout (only inside the read-only, network-less scout sandbox, §4.4); create approval requests; issue `ProposalDecision` | Execute an approved command (the guardian's job); run anything unapproved outside the scout sandbox; talk to upstream MCP directly |
 | **Guardian** | `solarplex-guardian` | Trusted executor | Spawn sandboxed subprocesses (bwrap + landlock + seccomp) and supervise each one via a persistent per-exec reactor (§4.4); carry out a `ProposalDecision` | Create or vote on approval requests; hold or read session token; communicate with adapter |
 
 This is a **positional authority** model: the shim holds credentials but has no
@@ -1294,7 +1308,9 @@ tracking on machines where shell commands regularly contain secrets.
 | **No rate limiting on approval creation from adapter** | Low | A compromised or malfunctioning adapter can flood the shim with `Propose` messages, each resulting in a `create_approval_req()` call to the server. No per-session rate limit exists. Add: per-adapter per-session approval creation rate limit in the shim. |
 | **Adapter and guardian not restarted on crash** | Low | The shim spawns both child processes once at startup but does not monitor their health. If the adapter or guardian crashes, the sidecar stack is effectively dead until the shim is restarted. Add: a supervision loop that re-spawns and re-handshakes on child exit. |
 | **ShimClient 90-second proposal timeout can hold connections** | Info | The adapter's `ShimClient::propose()` waits up to 90 seconds for a `ProposalDecision`. A slow human (normal) or a pathological shim (abnormal) holds the MCP connection and the pending-map slot for the full duration. |
-| **Scout manifest is heuristic, not authoritative** | Info | The ring-2 scout runs `strace -f` on a speculative execution; strace can miss effects from dynamic library loading, sub-shell tricks, or pre-fork state. The sandbox policy is derived from this heuristic. Documented in §4.4. |
+| **Scout manifest is heuristic, not authoritative** | Info | The ring-2 scout runs `strace -f` on a speculative execution; strace can miss effects from dynamic library loading, sub-shell tricks, or pre-fork state. The sandbox policy is derived from this heuristic. Documented in §4.4. Since the scout itself is sandboxed read-only, a command that aborts at its first refused write yields a partial manifest; the execution sandbox then fails closed on what was never seen (availability, not safety). |
+| **Scout has no process-count bound** | Low | The scout sandbox bounds CPU, file size, network, filesystem, and environment and kills its tree on timeout, but not the number of processes (no cgroup `pids.max`); a fork bomb inside the scout is limited only by the scout timeout. Also: scouting triggers for any tool whose args carry a `command`/`cmd`/`shell`/`script`/`run` string, not only `solarplex_exec`. |
+| **WS approval commands not role-gated; claim not session-scoped** | Medium | `approval.claim`, `approval.cancel`, `approval.delegate`, `approval.dispute` are dispatched without the `can_vote(role)` check that grant/deny have, so any attached member (including Observers) can issue them. Vote, resolve, set-state, and cancel are now confined to open approvals in the connection's own session at the SQL layer; `claim_if_pending_in_tx` is state-guarded but not session-scoped, and delegate/dispute were not audited. Fix: gate at dispatch and scope the remaining writes. |
 | **Implemented** | | |
 | IPC channels | Implemented | All channels use Unix **socketpairs** created by the shim before exec-ing each child. One end is `dup2`'d to a well-known fd (fd 3 = adapter, fd 4 = guardian) in the child's pre-exec hook. Fd possession is the sole authority proof — the kernel enforces that only a direct descendant of the spawning process holds the fd. No listening socket, no discoverable path, no channel secret env var, and no `SO_PEERCRED` PID check. Both children immediately set `O_CLOEXEC` on their authority fd so bwrap/MCP subprocesses cannot inherit it. Previous three-layer model (path isolation + SO_PEERCRED + ChannelHello secret) is replaced by this single structural guarantee. |
 | Guardian "degraded" path | Implemented | Default is fail-closed: `verify_and_fetch()` returning `Err` causes an error response. Since the guardian fetches the command from the server in the same call, an unreachable server means no command to execute — fail-closed is enforced structurally. `SOLARPLEX_GUARDIAN_FAIL_OPEN=1` exists for dev but has no execution-path effect (changes log level only). |
@@ -1302,6 +1318,10 @@ tracking on machines where shell commands regularly contain secrets.
 | Approval REST endpoint authentication | Implemented | `POST /api/approvals/:id/vote` requires `Authorization: Bearer <sp_token>`; actor_id is derived server-side from the validated token; request-body actor_id is ignored. `GET /api/approvals/pending` also prefers Bearer auth (query-param fallback is deprecated). `GET /api/approvals/:id/resolution`, `PATCH /:id/scout`, `PATCH /:id/execution`, `PATCH /:id/declared-effects` all require `X-Session-Id` + `X-Actor-Id` headers with session membership validation. |
 | Ring-2 sandbox enforcement | Implemented | Default is fail-closed on Linux: if bwrap is not found, the guardian refuses to execute. `SOLARPLEX_ALLOW_UNSANDBOXED=1` is the explicit opt-out (development only; not safe for production). Non-Linux platforms also fail closed under the same opt-out flag. Previous behaviour (`SOLARPLEX_REQUIRE_SANDBOX` as opt-in) is removed. |
 | Token storage at rest | Implemented | `sp_token` and `join_token` are stored as SHA-256 hex digests in the database (`human_sessions.id` and `sessions.join_token`). Raw bearer values are never persisted; only the hash enters the DB. `join_token` is returned to the API caller once (at session creation) and not again. Comparisons use constant-time folded XOR. |
+| Approval state rewritten by a late, racing, or cross-session vote or cancel | Implemented | Vote, resolve, set-state, and cancel were unconditional `UPDATE`s keyed on approval id alone, so a late vote could flip `Approved` to `Contested` (or resurrect an `Expired` approval), a vote cast in session B could resolve session A's approval (the WS path takes the id straight from the client), and a cancel could rewrite `Approved` to `Expired`, each with a contradictory event logged. Each write now requires an *open* approval (`Pending`/`Claimed`/`Contested`) in the caller's own session, enforced in the `UPDATE`'s `WHERE` clause (`db::approvals::{record_vote_in_tx, resolve_in_tx, set_state_in_tx}`), under the row lock the vote already takes. A rejected vote records nothing and emits no event; REST answers 409. Covered by live-DB tests including a 12-round concurrent opposing-vote race. |
+| Execution receipt released without re-checking cap or approval | Implemented | `consume` only checked `used_at`/`expires_at`, and the handler checked the session *after* burning the receipt. It is now one atomic `UPDATE` that also requires the receipt's session, a live cap (not revoked/expired, epoch current), and an `Approved` approval when one is bound. Separately, the shim failed **open** on a refused receipt (it fell back to the adapter's raw args), which made the server-side check advisory; it now denies the proposal. The pending-approval receipt TTL is sized to the approval timeout so slow approvals are not newly refused. Revocation still does not signal an already-running guardian exec; that is bounded by the sandbox and the guardian's 300s deadline. |
+| Persisted snapshot lost a concurrent writer's effect | Implemented | A writer applied its event to a snapshot read before its transaction, so under concurrency (same session, or two replicas) the later commit silently dropped the earlier writer's effect from the persisted projection (the event log stayed complete). `stamp_append_snapshot` now catches a stale base up with the intervening events once it holds the per-session seq lock, with no extra query when the base is current, and the in-memory store is monotonic in seq. Rows the WS path cannot fold (seqs burned by shadow persistence, the session machine's own event shape) are skipped, which is no worse than before. |
+| Scout executed an unapproved command directly on the host | Implemented | The ring-2 scout ran `strace -f -- sh -c <command>` with no isolation while the human was still deciding, so the command's real writes, deletes, and network calls happened *before* approval. It now runs inside a read-only, network-less, environment-cleared bwrap sandbox and kills its whole process tree on timeout (previously the timed-out child was left running); with no sandbox it does not run the command (`SOLARPLEX_ALLOW_UNSANDBOXED` is the dev opt-out). See §4.4. |
 | Frontend token storage | Implemented | join_token moved from `localStorage` (XSS-persistent, cross-tab) to `sessionStorage` (tab-scoped, cleared on close) in both frontend write sites (`components/NewSessionDrawer.tsx`, `app/sessions/[id]/page.tsx`). A third site, `app/sessions/new/page.tsx`, was fixed the same way at the time but has since been deleted as a redundant route — NewSessionDrawer is the only session-creation UI now. |
 
 ### 11.2 Pre-existing gaps (unchanged)

@@ -515,7 +515,10 @@ async fn dispatch(
             handle_approval_claim(state, hub, session_id, actor_id, &approval_id).await
         }
         WsPayload::ApprovalGrant { approval_id, .. } if can_vote(role) => {
-            handle_vote(
+            // A rejected vote (already resolved, or not this session's
+            // approval) is logged inside `handle_vote`; the WS protocol has no
+            // per-command reply to carry the rejection back.
+            let _applied = handle_vote(
                 state,
                 hub,
                 session_id,
@@ -523,10 +526,11 @@ async fn dispatch(
                 &approval_id,
                 Vote::Approve,
             )
-            .await
+            .await;
         }
         WsPayload::ApprovalDeny { approval_id, .. } if can_vote(role) => {
-            handle_vote(state, hub, session_id, actor_id, &approval_id, Vote::Deny).await
+            let _applied =
+                handle_vote(state, hub, session_id, actor_id, &approval_id, Vote::Deny).await;
         }
         WsPayload::ApprovalCancel { approval_id, .. } => {
             handle_approval_cancel(state, hub, session_id, actor_id, &approval_id).await
@@ -734,6 +738,17 @@ async fn handle_approval_claim(
     }
 }
 
+/// What happened to a vote. `Rejected` is an expected outcome (a late or
+/// racing vote losing to an earlier resolution, or a vote naming another
+/// session's approval); `Failed` is an infrastructure error. Neither records
+/// anything or emits an event: the transaction is dropped and rolled back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VoteOutcome {
+    Applied,
+    Rejected,
+    Failed,
+}
+
 async fn handle_vote(
     state: &Arc<AppState>,
     hub: &Arc<SessionHub>,
@@ -741,7 +756,7 @@ async fn handle_vote(
     actor_id: &str,
     approval_id: &str,
     vote: Vote,
-) {
+) -> VoteOutcome {
     let t0 = std::time::Instant::now();
     let vote_str = match vote {
         Vote::Approve => "approve",
@@ -777,18 +792,32 @@ async fn handle_vote(
         Ok(t) => t,
         Err(e) => {
             tracing::error!(session_id, "vote begin tx: {e}");
-            return;
+            return VoteOutcome::Failed;
         }
     };
 
-    let updated = match approvals::record_vote_in_tx(&mut tx, approval_id, actor_id, vote_str).await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(session_id, "record_vote_in_tx: {e}");
-            return;
-        }
-    };
+    // The guard lives in the UPDATE itself (open state, same session), so a
+    // late, racing, or cross-session vote loses here, under the row lock that
+    // then protects the resolve/set-state below until commit.
+    let updated =
+        match approvals::record_vote_in_tx(&mut tx, approval_id, session_id, actor_id, vote_str)
+            .await
+        {
+            Ok(r) => r,
+            Err(db::DbError::NotFound) => {
+                tracing::info!(
+                    session_id,
+                    approval_id,
+                    actor_id,
+                    "vote rejected: approval is closed or does not belong to this session"
+                );
+                return VoteOutcome::Rejected;
+            }
+            Err(e) => {
+                tracing::error!(session_id, "record_vote_in_tx: {e}");
+                return VoteOutcome::Failed;
+            }
+        };
 
     let votes: HashMap<String, Vote> =
         serde_json::from_value(updated.votes.clone()).unwrap_or_default();
@@ -799,47 +828,66 @@ async fn handle_vote(
         record_vote_ms = %t0.elapsed().as_millis(), "handle_vote",
     );
 
-    // Determine outcome event; update approval row in same tx
-    let outcome_event: Option<WsMessage> = match &new_state {
+    // Persist the outcome on the approval row first, in the same transaction.
+    // This can only fail for a real DB error: the vote above already holds the
+    // row lock against an open approval, so nothing can have closed it since.
+    // If it does fail the transaction is dropped (rolled back, vote included),
+    // so no event is ever emitted for a state change that did not happen.
+    let outcome_write = match &new_state {
         ApprovalState::Approved => {
-            let _ = approvals::resolve_in_tx(&mut tx, approval_id, "Approved", actor_id).await;
-            Some(make_event(WsPayload::ApprovalGranted {
-                session_id: session_id.to_string(),
-                actor: actor_id.to_string(),
-                timestamp: Utc::now(),
-                seq: 0,
-                payload: ApprovalEventPayload {
-                    approval_id: approval_id.to_string(),
-                },
-            }))
+            approvals::resolve_in_tx(&mut tx, approval_id, session_id, "Approved", actor_id)
+                .await
+                .map(|_| ())
         }
         ApprovalState::Denied => {
-            let _ = approvals::resolve_in_tx(&mut tx, approval_id, "Denied", actor_id).await;
-            Some(make_event(WsPayload::ApprovalDenied {
-                session_id: session_id.to_string(),
-                actor: actor_id.to_string(),
-                timestamp: Utc::now(),
-                seq: 0,
-                payload: protocol::messages::ApprovalDeniedPayload {
-                    approval_id: approval_id.to_string(),
-                    reason: None,
-                },
-            }))
+            approvals::resolve_in_tx(&mut tx, approval_id, session_id, "Denied", actor_id)
+                .await
+                .map(|_| ())
         }
         ApprovalState::Contested => {
-            let _ = approvals::set_state_in_tx(&mut tx, approval_id, "Contested").await;
-            Some(make_event(WsPayload::ApprovalContested {
-                session_id: session_id.to_string(),
-                actor: "system".to_string(),
-                timestamp: Utc::now(),
-                seq: 0,
-                payload: protocol::messages::ApprovalContestedPayload {
-                    approval_id: approval_id.to_string(),
-                    votes: votes.clone(),
-                    pending_resolution: "owner".to_string(),
-                },
-            }))
+            approvals::set_state_in_tx(&mut tx, approval_id, session_id, "Contested")
+                .await
+                .map(|_| ())
         }
+        _ => Ok(()),
+    };
+    if let Err(e) = outcome_write {
+        tracing::error!(session_id, approval_id, "vote: persisting outcome: {e}");
+        return VoteOutcome::Failed;
+    }
+
+    // Determine the outcome event.
+    let outcome_event: Option<WsMessage> = match &new_state {
+        ApprovalState::Approved => Some(make_event(WsPayload::ApprovalGranted {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: ApprovalEventPayload {
+                approval_id: approval_id.to_string(),
+            },
+        })),
+        ApprovalState::Denied => Some(make_event(WsPayload::ApprovalDenied {
+            session_id: session_id.to_string(),
+            actor: actor_id.to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::ApprovalDeniedPayload {
+                approval_id: approval_id.to_string(),
+                reason: None,
+            },
+        })),
+        ApprovalState::Contested => Some(make_event(WsPayload::ApprovalContested {
+            session_id: session_id.to_string(),
+            actor: "system".to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::ApprovalContestedPayload {
+                approval_id: approval_id.to_string(),
+                votes: votes.clone(),
+                pending_resolution: "owner".to_string(),
+            },
+        })),
         _ => None,
     };
 
@@ -850,7 +898,7 @@ async fn handle_vote(
             Ok((seq, new_snap, stamped)) => Some((seq, new_snap, stamped)),
             Err(e) => {
                 tracing::error!(session_id, "vote stamp_append_snapshot: {e}");
-                return;
+                return VoteOutcome::Failed;
             }
         }
     } else {
@@ -859,7 +907,7 @@ async fn handle_vote(
 
     if let Err(e) = tx.commit().await {
         tracing::error!(session_id, "vote commit: {e}");
-        return;
+        return VoteOutcome::Failed;
     }
 
     // Post-commit: update ArcSwap + broadcast + send_resolved (after durable commit)
@@ -949,6 +997,7 @@ async fn handle_vote(
         // WS path: backward compat — no-op if sidecar is no longer WS-connected.
         send_resolved(hub, &sidecar_actor, approval_id, decision, Some(actor_id)).await;
     }
+    VoteOutcome::Applied
 }
 
 async fn handle_approval_cancel(
@@ -975,7 +1024,26 @@ async fn handle_approval_cancel(
             return;
         }
     };
-    let _ = approvals::set_state_in_tx(&mut tx, approval_id, "Expired").await;
+    // Only an open approval can be cancelled; the guard is in the UPDATE. A
+    // cancel racing a resolution (or aimed at another session's approval) is a
+    // no-op: no state change, and no ApprovalCancelled event for something
+    // that did not happen.
+    match approvals::set_state_in_tx(&mut tx, approval_id, session_id, "Expired").await {
+        Ok(_) => {}
+        Err(db::DbError::NotFound) => {
+            tracing::info!(
+                session_id,
+                approval_id,
+                actor_id,
+                "cancel rejected: approval is closed or does not belong to this session"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::error!(session_id, "cancel set_state_in_tx: {e}");
+            return;
+        }
+    }
     let (seq, new_snap, stamped) = match stamp_append_snapshot(
         &mut tx,
         snap_ref.as_ref(),
@@ -1416,11 +1484,11 @@ pub(crate) async fn create_approval_for_session(
 
     // Hub may not exist if no human is currently attached — fall back to DB load.
     let hub_opt: Option<Arc<SessionHub>> = state.hubs.get(session_id).map(|e| e.value().clone());
-    let snap_ref: Option<SessionSnapshot> = if let Some(ref hub) = hub_opt {
-        current_snap(hub)
+    let snap_ref: Option<LiveSnapshot> = if let Some(ref hub) = hub_opt {
+        current_live(hub)
     } else {
         match load_snapshot_from_db(state, session_id).await {
-            Ok((_, snap)) => Some(snap),
+            Ok((seq, state)) => Some(LiveSnapshot { seq, state }),
             Err(e) => {
                 tracing::warn!(
                     session_id,
@@ -1500,14 +1568,16 @@ pub(crate) async fn create_approval_for_session(
 /// policy evaluation logic as the WebSocket path, with the same ArcSwap +
 /// broadcast + pg_notify side-effects.
 ///
-/// Called from `POST /api/approvals/:id/vote`.
+/// Called from `POST /api/approvals/:id/vote`. The returned [`VoteOutcome`]
+/// lets the REST handler answer 409 for a vote that lost to an earlier
+/// resolution, rather than a misleading 204.
 pub(crate) async fn vote_on_approval(
     state: &Arc<AppState>,
     session_id: &str,
     actor_id: &str,
     approval_id: &str,
     vote: protocol::types::Vote,
-) {
+) -> VoteOutcome {
     // Use an existing hub if present; otherwise create a cold one so the
     // snapshot can still be loaded and updated.
     let hub = state.get_or_create_hub(session_id);
@@ -1520,7 +1590,7 @@ pub(crate) async fn vote_on_approval(
         }
     }
 
-    handle_vote(state, &hub, session_id, actor_id, approval_id, vote).await;
+    handle_vote(state, &hub, session_id, actor_id, approval_id, vote).await
 }
 
 /// Emit a WS event from outside the WS connection loop (e.g. REST handlers).
@@ -1538,11 +1608,11 @@ pub(crate) async fn emit_to_session(
     let hub_opt: Option<Arc<SessionHub>> = state.hubs.get(session_id).map(|e| e.value().clone());
 
     // Snapshot: hot from ArcSwap if connected, cold from DB otherwise.
-    let snap_ref: Option<SessionSnapshot> = if let Some(ref hub) = hub_opt {
-        current_snap(hub)
+    let snap_ref: Option<LiveSnapshot> = if let Some(ref hub) = hub_opt {
+        current_live(hub)
     } else {
         match load_snapshot_from_db(state, session_id).await {
-            Ok((_, snap)) => Some(snap),
+            Ok((seq, state)) => Some(LiveSnapshot { seq, state }),
             Err(e) => {
                 tracing::warn!(session_id, "emit_to_session: load_snapshot fallback: {e}");
                 None
@@ -1595,13 +1665,21 @@ pub(crate) async fn emit_to_session(
 /// Returns `(seq, new_snapshot)` for the caller to store into ArcSwap after commit.
 /// The caller must still call `tx.commit()`.
 ///
+/// `current` is the snapshot the caller read *before* opening the transaction,
+/// together with the seq it reflects. It can be stale by the time the seq lock
+/// below is granted: a concurrent writer in the same session (or on another
+/// replica) may have committed in between. Applying this event to a stale base
+/// would persist a snapshot missing that writer's effect, so after the seq is
+/// allocated the base is caught up with whatever committed after it; see
+/// [`catch_up_base`].
+///
 /// `pub(crate)`: also called directly from `session_task.rs`'s cross-session
 /// side-effect hooks, which already hold `db`/`hub` and don't have `state`
 /// (see `emit_via_task`) — same durable pipeline `emit_to_session` uses, so
 /// these events get real EventRows and cross-replica delivery picks them up.
 pub(crate) async fn stamp_append_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    current: Option<&SessionSnapshot>,
+    current: Option<&LiveSnapshot>,
     session_id: &str,
     actor_id: &str,
     event: WsMessage,
@@ -1621,7 +1699,10 @@ pub(crate) async fn stamp_append_snapshot(
     .await?;
 
     let new_snap = match current {
-        Some(s) => apply_event(s, &stamped),
+        Some(base) => {
+            let caught_up = catch_up_base(tx, session_id, base, seq).await?;
+            apply_event(&caught_up, &stamped)
+        }
         None => {
             // Last-resort fallback — callers now warm the snapshot via
             // `warm_snap` before reaching here, so this only fires if that
@@ -1660,6 +1741,66 @@ pub(crate) async fn stamp_append_snapshot(
     Ok((seq, new_snap, stamped))
 }
 
+/// Bring a snapshot read *before* the transaction up to date with everything
+/// committed ahead of `seq`, the seq this transaction just allocated.
+///
+/// Allocating the seq takes a row lock that serializes every writer in the
+/// session, so once it is held, every event with a lower seq is committed and
+/// visible to the next statement: the range `(base.seq, seq)` is complete.
+///
+/// - **Fast path** (`base.seq + 1 >= seq`): the base already reflects the
+///   newest committed event, so there is nothing to fold and no query is run.
+///   This is the normal, uncontended case.
+/// - **Stale base**: another writer committed after the base was read. Fold
+///   those events in, in order, so this writer's snapshot includes their
+///   effects instead of overwriting them.
+///
+/// Only rows that parse as a [`WsMessage`] can be folded with [`apply_event`].
+/// Seqs that have no event row at all (`db::events::alloc_seq` burns them for
+/// shadow persistence) and rows in the session machine's own event shape are
+/// skipped; the machine path maintains its own projection, so this is no worse
+/// than before for those, and strictly better for every WS-written event.
+async fn catch_up_base<'a>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    session_id: &str,
+    base: &'a LiveSnapshot,
+    seq: i64,
+) -> anyhow::Result<std::borrow::Cow<'a, SessionSnapshot>> {
+    if base.seq + 1 >= seq {
+        return Ok(std::borrow::Cow::Borrowed(&base.state));
+    }
+    let missed = db::events::list_between_in_tx(tx, session_id, base.seq, seq).await?;
+    if missed.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(&base.state));
+    }
+    let mut snap = base.state.clone();
+    let (mut folded, mut skipped) = (0usize, 0usize);
+    for row in missed {
+        match serde_json::from_value::<WsMessage>(row.payload) {
+            Ok(msg) => {
+                snap = apply_event(&snap, &msg);
+                folded += 1;
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+    tracing::debug!(
+        session_id,
+        base_seq = base.seq,
+        seq,
+        folded,
+        skipped,
+        "snapshot base was stale: caught up before applying event"
+    );
+    Ok(std::borrow::Cow::Owned(snap))
+}
+
+/// Read the current in-memory snapshot together with the seq it reflects (if
+/// warm) before opening a transaction.
+pub(crate) fn current_live(hub: &Arc<SessionHub>) -> Option<LiveSnapshot> {
+    hub.snapshot.load_full().as_ref().clone()
+}
+
 /// Read the current in-memory snapshot (if warm) before opening a transaction.
 /// Calling this before `db.begin()` avoids any borrow conflict with the tx.
 pub(crate) fn current_snap(hub: &Arc<SessionHub>) -> Option<SessionSnapshot> {
@@ -1690,17 +1831,15 @@ pub(crate) async fn warm_snap(
     state: &Arc<AppState>,
     hub: &Arc<SessionHub>,
     session_id: &str,
-) -> Option<SessionSnapshot> {
-    if let Some(s) = current_snap(hub) {
-        return Some(s);
+) -> Option<LiveSnapshot> {
+    if let Some(live) = current_live(hub) {
+        return Some(live);
     }
     match load_snapshot_from_db(state, session_id).await {
         Ok((seq, snap)) => {
-            hub.snapshot.store(Arc::new(Some(LiveSnapshot {
-                seq,
-                state: snap.clone(),
-            })));
-            Some(snap)
+            let live = LiveSnapshot { seq, state: snap };
+            hub.snapshot.store(Arc::new(Some(live.clone())));
+            Some(live)
         }
         Err(e) => {
             tracing::warn!(session_id, "warm_snap: load fallback failed: {e}");
@@ -1713,16 +1852,27 @@ pub(crate) async fn warm_snap(
 /// (or, from `notifier.rs`, after replaying an already-committed event onto
 /// a different replica's hub — same invariant, the durable write already
 /// happened, this just needs to be reflected locally).
+///
+/// The store is monotonic in `seq`: two writers in one session commit in seq
+/// order but reach this point in whatever order their tasks are scheduled, so
+/// without the guard a slower, *older* writer could overwrite the newer
+/// snapshot already stored, silently regressing the in-memory state until the
+/// next write. (An equal seq is allowed through: presence patches re-store the
+/// same seq with an updated member list.)
 pub(crate) async fn store_and_broadcast(
     hub: &Arc<SessionHub>,
     seq: i64,
     new_snap: SessionSnapshot,
     event: &WsMessage,
 ) {
-    hub.snapshot.store(Arc::new(Some(LiveSnapshot {
+    let new = Arc::new(Some(LiveSnapshot {
         seq,
         state: new_snap,
-    })));
+    }));
+    hub.snapshot.rcu(|cur| match cur.as_ref() {
+        Some(existing) if existing.seq > seq => Arc::clone(cur),
+        _ => Arc::clone(&new),
+    });
     let Ok(json) = serde_json::to_string(event) else {
         return;
     };
@@ -2466,11 +2616,11 @@ async fn fire_scheduled_transfer(state: &Arc<AppState>, artifact: db::artifacts:
         .hubs
         .get(&artifact.session_id)
         .map(|e| e.value().clone());
-    let snap_ref: Option<SessionSnapshot> = if let Some(ref hub) = hub_opt {
-        current_snap(hub)
+    let snap_ref: Option<LiveSnapshot> = if let Some(ref hub) = hub_opt {
+        current_live(hub)
     } else {
         match load_snapshot_from_db(state, &artifact.session_id).await {
-            Ok((_, snap)) => Some(snap),
+            Ok((seq, state)) => Some(LiveSnapshot { seq, state }),
             Err(e) => {
                 tracing::warn!(session_id = %artifact.session_id, "fire_scheduled_transfer: snapshot load: {e}");
                 None
@@ -2944,5 +3094,577 @@ mod tests {
         });
         let stamped = stamp_seq(&m, 99);
         assert_eq!(extract_seq(&stamped), Some(99));
+    }
+
+    // ── Live-DB approval-state tests ─────────────────────────────────────────
+    //
+    // These drive the real `vote_on_approval` / `handle_approval_cancel` entry
+    // points against a real Postgres, because the bugs they guard against (a
+    // late or concurrent vote rewriting an already-resolved approval, a vote
+    // landing on another session's approval) live in the interaction between
+    // the SQL state guards and the surrounding handler, not in either alone.
+    //
+    // `#[ignore]`d so `cargo test --workspace` stays DB-free. Run with a
+    // scratch database that has every migration applied:
+    //   DATABASE_URL=postgres://... cargo test -p server --lib ws::tests -- --ignored --test-threads=1
+
+    struct ApprovalFixture {
+        state: Arc<AppState>,
+        session_id: String,
+        owner: String,
+        collab_a: String,
+        collab_b: String,
+        agent: String,
+    }
+
+    impl ApprovalFixture {
+        async fn new(policy: Option<&str>) -> Self {
+            let database_url = std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL must be set to run this live-DB test");
+            let pool = sqlx::PgPool::connect(&database_url)
+                .await
+                .expect("failed to connect to DATABASE_URL");
+
+            let mut humans = Vec::new();
+            for tag in ["owner", "collab-a", "collab-b"] {
+                let h = db::actors::create_human(
+                    &pool,
+                    db::actors::CreateHuman {
+                        name: format!("approval-test-{tag}"),
+                        email: format!("approval-test-{tag}-{}@example.invalid", Ulid::new()),
+                    },
+                )
+                .await
+                .expect("create human");
+                humans.push(h.id);
+            }
+            let agent = db::actors::create_agent(
+                &pool,
+                db::actors::CreateAgent {
+                    name: "approval-test-agent".into(),
+                    provider: "custom".into(),
+                    model: "test".into(),
+                    config: None,
+                },
+            )
+            .await
+            .expect("create agent");
+
+            let created = db::sessions::create(
+                &pool,
+                db::sessions::CreateSession {
+                    name: "approval-test".into(),
+                    description: None,
+                    created_by: humans[0].clone(),
+                    approval_policy: policy.map(str::to_string),
+                },
+            )
+            .await
+            .expect("create session");
+            let session_id = created.session.id.clone();
+            for id in &humans[1..] {
+                db::sessions::add_member(&pool, &session_id, id, "collaborator", None, None)
+                    .await
+                    .expect("add member");
+            }
+            // Force the first warm-up to rebuild the snapshot from the fact
+            // tables, so the eligible-voter count reflects the members added
+            // above rather than the single owner the session was created with.
+            sqlx::query("DELETE FROM session_snapshots WHERE session_id = $1")
+                .bind(&session_id)
+                .execute(&pool)
+                .await
+                .expect("clear seeded snapshot");
+
+            let state = Arc::new(AppState::new(
+                pool,
+                None,
+                crate::metrics_route::install_or_reuse_recorder(),
+                Ulid::new().to_string(),
+            ));
+            Self {
+                state,
+                session_id,
+                owner: humans[0].clone(),
+                collab_a: humans[1].clone(),
+                collab_b: humans[2].clone(),
+                agent: agent.id,
+            }
+        }
+
+        async fn new_approval(&self) -> String {
+            create_approval_for_session(
+                &self.state,
+                &self.session_id,
+                &self.agent,
+                "test_tool",
+                &serde_json::json!({"n": 1}),
+                300,
+            )
+            .await
+            .expect("create_approval_for_session")
+            .0
+        }
+
+        async fn state_of(&self, approval_id: &str) -> String {
+            sqlx::query_scalar("SELECT state FROM approval_requests WHERE id = $1")
+                .bind(approval_id)
+                .fetch_one(&self.state.db)
+                .await
+                .expect("read approval state")
+        }
+
+        async fn votes_of(&self, approval_id: &str) -> serde_json::Value {
+            sqlx::query_scalar("SELECT votes FROM approval_requests WHERE id = $1")
+                .bind(approval_id)
+                .fetch_one(&self.state.db)
+                .await
+                .expect("read approval votes")
+        }
+
+        /// Count events of `kind` in this session that mention `approval_id`.
+        async fn events_for(&self, kind: &str, approval_id: &str) -> i64 {
+            sqlx::query_scalar(
+                "SELECT count(*) FROM events
+                 WHERE session_id = $1 AND type = $2 AND payload::text LIKE '%' || $3 || '%'",
+            )
+            .bind(&self.session_id)
+            .bind(kind)
+            .bind(approval_id)
+            .fetch_one(&self.state.db)
+            .await
+            .expect("count events")
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn vote_resolves_a_pending_approval_normally() {
+        let f = ApprovalFixture::new(None).await;
+        let aid = f.new_approval().await;
+        vote_on_approval(&f.state, &f.session_id, &f.owner, &aid, Vote::Approve).await;
+        assert_eq!(f.state_of(&aid).await, "Approved");
+        assert_eq!(f.events_for("approval.granted", &aid).await, 1);
+
+        let aid2 = f.new_approval().await;
+        vote_on_approval(&f.state, &f.session_id, &f.collab_a, &aid2, Vote::Deny).await;
+        assert_eq!(f.state_of(&aid2).await, "Denied");
+        assert_eq!(f.events_for("approval.denied", &aid2).await, 1);
+    }
+
+    /// The Contested state must stay votable: under `majority`, a third voter
+    /// breaking a 1-1 split is the whole point of the state. A guard that only
+    /// allowed `Pending` would silently break this.
+    #[tokio::test]
+    #[ignore]
+    async fn majority_policy_still_resolves_through_contested() {
+        let f = ApprovalFixture::new(Some("majority")).await;
+        let aid = f.new_approval().await;
+
+        vote_on_approval(&f.state, &f.session_id, &f.owner, &aid, Vote::Approve).await;
+        assert_eq!(
+            f.state_of(&aid).await,
+            "Pending",
+            "1 of 3 approve is not a majority"
+        );
+
+        vote_on_approval(&f.state, &f.session_id, &f.collab_a, &aid, Vote::Deny).await;
+        assert_eq!(
+            f.state_of(&aid).await,
+            "Contested",
+            "1-1 split is contested"
+        );
+
+        vote_on_approval(&f.state, &f.session_id, &f.collab_b, &aid, Vote::Approve).await;
+        assert_eq!(
+            f.state_of(&aid).await,
+            "Approved",
+            "a third vote must still be able to resolve a Contested approval"
+        );
+        assert_eq!(f.events_for("approval.granted", &aid).await, 1);
+    }
+
+    /// A vote arriving after the approval already resolved must be rejected,
+    /// not rewrite the terminal state (previously: Approved then a late Deny
+    /// flipped it to Contested and logged a second, contradictory event).
+    #[tokio::test]
+    #[ignore]
+    async fn late_vote_cannot_rewrite_a_resolved_approval() {
+        let f = ApprovalFixture::new(None).await;
+        let aid = f.new_approval().await;
+
+        vote_on_approval(&f.state, &f.session_id, &f.owner, &aid, Vote::Approve).await;
+        assert_eq!(f.state_of(&aid).await, "Approved");
+
+        vote_on_approval(&f.state, &f.session_id, &f.collab_a, &aid, Vote::Deny).await;
+
+        assert_eq!(
+            f.state_of(&aid).await,
+            "Approved",
+            "a late opposing vote must not rewrite a resolved approval"
+        );
+        assert_eq!(f.events_for("approval.granted", &aid).await, 1);
+        assert_eq!(f.events_for("approval.contested", &aid).await, 0);
+        assert_eq!(f.events_for("approval.denied", &aid).await, 0);
+        let votes = f.votes_of(&aid).await;
+        assert!(
+            votes.get(&f.collab_a).is_none(),
+            "the rejected late vote must not be recorded, got {votes}"
+        );
+    }
+
+    /// Two opposing votes racing for the same approval must resolve exactly
+    /// once. Repeated because the interesting interleavings are timing-
+    /// dependent; the guard makes the outcome deterministic regardless.
+    #[tokio::test]
+    #[ignore]
+    async fn concurrent_opposing_votes_resolve_exactly_once() {
+        let f = ApprovalFixture::new(None).await;
+        for round in 0..12 {
+            let aid = f.new_approval().await;
+            let (s1, s2) = (Arc::clone(&f.state), Arc::clone(&f.state));
+            let (sid1, sid2) = (f.session_id.clone(), f.session_id.clone());
+            let (a1, a2) = (aid.clone(), aid.clone());
+            let (o, c) = (f.owner.clone(), f.collab_a.clone());
+            let h1 =
+                tokio::spawn(
+                    async move { vote_on_approval(&s1, &sid1, &o, &a1, Vote::Approve).await },
+                );
+            let h2 =
+                tokio::spawn(
+                    async move { vote_on_approval(&s2, &sid2, &c, &a2, Vote::Deny).await },
+                );
+            let _ = tokio::join!(h1, h2);
+
+            let st = f.state_of(&aid).await;
+            assert!(
+                st == "Approved" || st == "Denied",
+                "round {round}: opposing votes must resolve to a decision, got {st}"
+            );
+            let granted = f.events_for("approval.granted", &aid).await;
+            let denied = f.events_for("approval.denied", &aid).await;
+            let contested = f.events_for("approval.contested", &aid).await;
+            assert_eq!(
+                (granted + denied, contested),
+                (1, 0),
+                "round {round}: exactly one resolution event, no contested event \
+                 (granted={granted} denied={denied} contested={contested}, state={st})"
+            );
+            // The event log must agree with the stored state.
+            let expected_event = if st == "Approved" { granted } else { denied };
+            assert_eq!(
+                expected_event, 1,
+                "round {round}: event contradicts state {st}"
+            );
+        }
+    }
+
+    /// A vote must only land on an approval belonging to the session it was
+    /// cast in. The WS path takes the approval id straight from the client, so
+    /// a member of session B could previously vote on session A's approval.
+    #[tokio::test]
+    #[ignore]
+    async fn vote_cannot_land_on_another_sessions_approval() {
+        let a = ApprovalFixture::new(None).await;
+        let b = ApprovalFixture::new(None).await;
+        let aid = a.new_approval().await;
+
+        // B's owner casts a vote in session B, naming session A's approval.
+        vote_on_approval(&a.state, &b.session_id, &b.owner, &aid, Vote::Approve).await;
+
+        assert_eq!(
+            a.state_of(&aid).await,
+            "Pending",
+            "a vote cast in another session must not resolve this approval"
+        );
+        assert_eq!(a.votes_of(&aid).await, serde_json::json!({}));
+        assert_eq!(a.events_for("approval.granted", &aid).await, 0);
+    }
+
+    /// Expired is terminal: a vote after expiry must not resurrect the
+    /// approval into Approved.
+    #[tokio::test]
+    #[ignore]
+    async fn vote_cannot_resurrect_an_expired_approval() {
+        let f = ApprovalFixture::new(None).await;
+        let aid = f.new_approval().await;
+        sqlx::query("UPDATE approval_requests SET state = 'Expired' WHERE id = $1")
+            .bind(&aid)
+            .execute(&f.state.db)
+            .await
+            .expect("expire approval");
+
+        vote_on_approval(&f.state, &f.session_id, &f.owner, &aid, Vote::Approve).await;
+
+        assert_eq!(f.state_of(&aid).await, "Expired");
+        assert_eq!(f.events_for("approval.granted", &aid).await, 0);
+    }
+
+    /// Cancelling an approval that already resolved must be a no-op, not
+    /// rewrite Approved into Expired and log a misleading cancellation.
+    #[tokio::test]
+    #[ignore]
+    async fn cancel_cannot_rewrite_a_resolved_approval() {
+        let f = ApprovalFixture::new(None).await;
+        let aid = f.new_approval().await;
+        vote_on_approval(&f.state, &f.session_id, &f.owner, &aid, Vote::Approve).await;
+        assert_eq!(f.state_of(&aid).await, "Approved");
+
+        let hub = f.state.get_or_create_hub(&f.session_id);
+        handle_approval_cancel(&f.state, &hub, &f.session_id, &f.owner, &aid).await;
+
+        assert_eq!(f.state_of(&aid).await, "Approved");
+        assert_eq!(f.events_for("approval.cancelled", &aid).await, 0);
+    }
+
+    /// Cancelling a still-open approval keeps working.
+    #[tokio::test]
+    #[ignore]
+    async fn cancel_still_expires_an_open_approval() {
+        let f = ApprovalFixture::new(None).await;
+        let aid = f.new_approval().await;
+        let hub = f.state.get_or_create_hub(&f.session_id);
+        handle_approval_cancel(&f.state, &hub, &f.session_id, &f.owner, &aid).await;
+        assert_eq!(f.state_of(&aid).await, "Expired");
+        assert_eq!(f.events_for("approval.cancelled", &aid).await, 1);
+    }
+
+    // ── Snapshot projection under concurrent writers ─────────────────────────
+    //
+    // Two writers in one session each read the in-memory snapshot, then commit
+    // in turn. The seq lock keeps the event log complete and gap-free, but the
+    // snapshot each one persists used to be computed from its own pre-
+    // transaction read, so the later commit silently dropped the earlier
+    // writer's effect from the persisted projection (last writer wins).
+
+    /// What a writer holds before it opens its transaction: the snapshot and
+    /// the seq it reflects.
+    type Base = LiveSnapshot;
+
+    async fn read_base(state: &Arc<AppState>, session_id: &str) -> Base {
+        let hub = state.get_or_create_hub(session_id);
+        warm_snap(state, &hub, session_id)
+            .await
+            .expect("session has a snapshot to read")
+    }
+
+    async fn stamp_with(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        base: &Base,
+        session_id: &str,
+        actor_id: &str,
+        event: WsMessage,
+    ) -> anyhow::Result<(i64, SessionSnapshot, WsMessage)> {
+        stamp_append_snapshot(tx, Some(base), session_id, actor_id, event).await
+    }
+
+    fn approval_requested(session_id: &str, approval_id: &str) -> WsMessage {
+        make_event(WsPayload::ApprovalRequested {
+            session_id: session_id.to_string(),
+            actor: "agent".to_string(),
+            timestamp: Utc::now(),
+            seq: 0,
+            payload: protocol::messages::ApprovalRequestedPayload {
+                approval_id: approval_id.to_string(),
+                tool: "t".to_string(),
+                summary: "s".to_string(),
+                requested_by: "agent".to_string(),
+                expires_at: None,
+                arguments: serde_json::json!({}),
+            },
+        })
+    }
+
+    async fn persisted_pending_ids(f: &ApprovalFixture) -> std::collections::HashSet<String> {
+        let latest = db::snapshots::get_latest(&f.state.db, &f.session_id)
+            .await
+            .expect("latest snapshot");
+        let snap: SessionSnapshot = serde_json::from_value(latest.state).expect("snapshot json");
+        snap.pending_approvals
+            .into_iter()
+            .map(|p| p.approval_id)
+            .collect()
+    }
+
+    /// Deterministic version of the race: both writers read the same base
+    /// before either commits, then commit one after the other.
+    #[tokio::test]
+    #[ignore]
+    async fn stale_base_does_not_drop_a_concurrent_writers_effect() {
+        let f = ApprovalFixture::new(None).await;
+        let base = read_base(&f.state, &f.session_id).await;
+
+        for id in ["WRITER-A", "WRITER-B"] {
+            let mut tx = f.state.db.begin().await.expect("begin");
+            stamp_with(
+                &mut tx,
+                &base,
+                &f.session_id,
+                &f.agent,
+                approval_requested(&f.session_id, id),
+            )
+            .await
+            .expect("stamp");
+            tx.commit().await.expect("commit");
+        }
+
+        let ids = persisted_pending_ids(&f).await;
+        assert!(
+            ids.contains("WRITER-A") && ids.contains("WRITER-B"),
+            "the second writer's snapshot dropped the first writer's effect: {ids:?}"
+        );
+    }
+
+    /// Real concurrency through the real entry point. Every effect must be in
+    /// the persisted snapshot AND the in-memory one, and the in-memory one must
+    /// not have been regressed by writers finishing out of order.
+    #[tokio::test]
+    #[ignore]
+    async fn concurrent_emits_keep_every_effect_in_both_snapshots() {
+        let f = ApprovalFixture::new(None).await;
+        let hub = f.state.get_or_create_hub(&f.session_id);
+        let _ = read_base(&f.state, &f.session_id).await; // warm the hub's ArcSwap
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let state = Arc::clone(&f.state);
+            let (sid, agent) = (f.session_id.clone(), f.agent.clone());
+            handles.push(tokio::spawn(async move {
+                emit_to_session(
+                    &state,
+                    &sid,
+                    &agent,
+                    approval_requested(&sid, &format!("CONC-{i}")),
+                )
+                .await;
+            }));
+        }
+        for h in handles {
+            h.await.expect("emit task");
+        }
+
+        let want: Vec<String> = (0..8).map(|i| format!("CONC-{i}")).collect();
+        let persisted = persisted_pending_ids(&f).await;
+        for id in &want {
+            assert!(
+                persisted.contains(id),
+                "persisted snapshot lost {id}: {persisted:?}"
+            );
+        }
+
+        let live = hub.snapshot.load_full();
+        let live = live.as_ref().as_ref().expect("hub snapshot warm");
+        let live_ids: std::collections::HashSet<String> = live
+            .state
+            .pending_approvals
+            .iter()
+            .map(|p| p.approval_id.clone())
+            .collect();
+        for id in &want {
+            assert!(
+                live_ids.contains(id),
+                "in-memory snapshot lost {id}: {live_ids:?}"
+            );
+        }
+        let latest = db::snapshots::get_latest(&f.state.db, &f.session_id)
+            .await
+            .expect("latest snapshot");
+        assert_eq!(
+            live.seq, latest.seq,
+            "in-memory snapshot must end at the newest committed seq"
+        );
+    }
+
+    /// `alloc_seq` (shadow persist) burns sequence numbers that have no event
+    /// row. That must look like "nothing missed", not an error or a loss.
+    #[tokio::test]
+    #[ignore]
+    async fn a_burned_seq_gap_is_harmless() {
+        let f = ApprovalFixture::new(None).await;
+        let base = read_base(&f.state, &f.session_id).await;
+        db::events::alloc_seq(&f.state.db, &f.session_id)
+            .await
+            .expect("burn a seq");
+
+        let mut tx = f.state.db.begin().await.expect("begin");
+        stamp_with(
+            &mut tx,
+            &base,
+            &f.session_id,
+            &f.agent,
+            approval_requested(&f.session_id, "AFTER-GAP"),
+        )
+        .await
+        .expect("stamp across a burned seq");
+        tx.commit().await.expect("commit");
+
+        assert!(persisted_pending_ids(&f).await.contains("AFTER-GAP"));
+    }
+
+    /// A row in the gap that isn't a `WsMessage` (the session machine writes a
+    /// different shape) must be skipped, not abort the write.
+    #[tokio::test]
+    #[ignore]
+    async fn an_unparseable_event_in_the_gap_is_skipped() {
+        let f = ApprovalFixture::new(None).await;
+        let base = read_base(&f.state, &f.session_id).await;
+        let burned = db::events::alloc_seq(&f.state.db, &f.session_id)
+            .await
+            .expect("burn a seq");
+        db::events::append(
+            &f.state.db,
+            db::events::AppendEvent {
+                session_id: f.session_id.clone(),
+                actor_id: f.agent.clone(),
+                event_type: "machine.other_shape".into(),
+                payload: serde_json::json!({"kind": "not-a-ws-message"}),
+                parent_event_id: None,
+                seq: burned,
+            },
+        )
+        .await
+        .expect("insert machine-shaped row");
+
+        let mut tx = f.state.db.begin().await.expect("begin");
+        stamp_with(
+            &mut tx,
+            &base,
+            &f.session_id,
+            &f.agent,
+            approval_requested(&f.session_id, "AFTER-JUNK"),
+        )
+        .await
+        .expect("stamp must tolerate a non-WsMessage row in the gap");
+        tx.commit().await.expect("commit");
+
+        assert!(persisted_pending_ids(&f).await.contains("AFTER-JUNK"));
+    }
+
+    /// With an up-to-date base the write must not pay for the catch-up query:
+    /// the common, uncontended path stays a pure in-memory apply.
+    #[tokio::test]
+    #[ignore]
+    async fn sequential_writers_still_chain_correctly() {
+        let f = ApprovalFixture::new(None).await;
+        for id in ["SEQ-1", "SEQ-2", "SEQ-3"] {
+            let base = read_base(&f.state, &f.session_id).await;
+            let hub = f.state.get_or_create_hub(&f.session_id);
+            let mut tx = f.state.db.begin().await.expect("begin");
+            let (seq, new_snap, stamped) = stamp_with(
+                &mut tx,
+                &base,
+                &f.session_id,
+                &f.agent,
+                approval_requested(&f.session_id, id),
+            )
+            .await
+            .expect("stamp");
+            tx.commit().await.expect("commit");
+            store_and_broadcast(&hub, seq, new_snap, &stamped).await;
+        }
+        let ids = persisted_pending_ids(&f).await;
+        for id in ["SEQ-1", "SEQ-2", "SEQ-3"] {
+            assert!(ids.contains(id), "{id} missing from {ids:?}");
+        }
     }
 }

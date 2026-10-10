@@ -138,14 +138,18 @@ async fn orb_path(
     match invoke_resp {
         Some(resp) if resp.status == "approved" => {
             // Auto-approved — consume receipt to get canonical args.
-            let (canonical_rpc, tier2_ctx) = consume_and_patch(
+            let Some((canonical_rpc, tier2_ctx)) = consume_and_patch(
                 &req.raw_rpc,
                 resp.receipt_id.as_deref(),
                 cap_id,
                 tool,
                 session,
             )
-            .await;
+            .await
+            else {
+                session.update_status(AgentStatus::Idle).await;
+                return deny(&req.id, RECEIPT_REFUSED);
+            };
             session.update_status(AgentStatus::Running).await;
             ipc::ProposalDecision {
                 id: req.id,
@@ -187,14 +191,21 @@ async fn orb_path(
             match session.poll_approval(&orb_approval_id).await {
                 ApprovalDecision::Granted => {
                     let manifest = collect_scout(scout_rx).await;
-                    let (canonical_rpc, tier2_ctx) = consume_and_patch(
+                    // Consume BEFORE anything runs (including the guardian
+                    // exec below): if the server won't hand the receipt over,
+                    // nothing executes.
+                    let Some((canonical_rpc, tier2_ctx)) = consume_and_patch(
                         &req.raw_rpc,
                         resp.receipt_id.as_deref(),
                         cap_id,
                         tool,
                         session,
                     )
-                    .await;
+                    .await
+                    else {
+                        session.update_status(AgentStatus::Idle).await;
+                        return deny(&req.id, RECEIPT_REFUSED);
+                    };
                     session.update_status(AgentStatus::Running).await;
 
                     // solarplex_exec via guardian.
@@ -308,18 +319,35 @@ async fn collect_scout(
     }
 }
 
+/// Shown to the agent when the server refuses (or can't be reached for) the
+/// execution receipt. Deliberately generic: the reason is in the shim's logs.
+const RECEIPT_REFUSED: &str =
+    "tool call not executed: the server would not release its execution receipt \
+     (expired, already used, revoked, or no longer approved)";
+
+/// Consume the execution receipt and return the call to forward, with the
+/// server's canonical args substituted for the adapter's own.
+///
+/// **Fails closed.** `None` means "do not execute": no receipt id, the server
+/// refused it (expired, already used, cap revoked or epoch superseded,
+/// approval not `Approved`), or the server could not be reached. The previous
+/// version fell back to the adapter's raw, unverified args in every one of
+/// those cases, which silently defeated the whole receipt model: the receipt
+/// is the authorization *and* the instruction, so without it there is neither.
 async fn consume_and_patch(
     raw_rpc: &serde_json::Value,
     receipt_id: Option<&str>,
     cap_id: &str,
     tool: &ToolCall,
     session: &Arc<SessionClient>,
-) -> (serde_json::Value, Option<Tier2Ctx>) {
+) -> Option<(serde_json::Value, Option<Tier2Ctx>)> {
     let Some(rid) = receipt_id else {
-        return (raw_rpc.clone(), None);
+        tracing::error!(tool = %tool.tool, "shim: ORB granted a call with no receipt_id; refusing to execute");
+        return None;
     };
     let Some(canonical_args) = session.consume_receipt(rid).await else {
-        return (raw_rpc.clone(), None);
+        tracing::error!(tool = %tool.tool, receipt_id = rid, "shim: receipt not released by server; refusing to execute");
+        return None;
     };
     let tier2_ctx = extract_tier2_ctx(rid, cap_id, &tool.tool, &canonical_args);
     let mut patched = raw_rpc.clone();
@@ -328,7 +356,7 @@ async fn consume_and_patch(
             *args_field = canonical_args;
         }
     }
-    (patched, tier2_ctx)
+    Some((patched, tier2_ctx))
 }
 
 fn extract_tier2_ctx(
@@ -448,4 +476,267 @@ pub async fn handle_exec_done(
         notice.tool_name
     );
     session.post_message(content).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Reads one HTTP/1.1 request fully (head + `Content-Length` body) so the
+    /// mock never closes with unread bytes, which would reset the connection
+    /// and make the client see a transport error instead of our response.
+    async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            if let Some(head_end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&data[..head_end]).to_lowercase();
+                let want = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if data.len() >= head_end + 4 + want {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&data).to_string()
+    }
+
+    struct Mock {
+        ws_base: String,
+        consume_calls: Arc<AtomicUsize>,
+    }
+
+    /// A minimal stand-in for the server's ORB endpoints: `/invoke` answers
+    /// with `invoke_body`, `/consume-receipt` with `consume`, an approval
+    /// resolution poll with `granted`, and anything else with an empty 200.
+    async fn mock_server(invoke_body: &'static str, consume: (u16, &'static str)) -> Mock {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let consume_calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&consume_calls);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let req = read_request(&mut sock).await;
+                    let first = req.lines().next().unwrap_or("").to_string();
+                    let (status, body) = if first.contains("/consume-receipt") {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        (consume.0, consume.1.to_string())
+                    } else if first.contains("/invoke") {
+                        (200, invoke_body.to_string())
+                    } else if first.contains("/resolution") {
+                        (200, r#"{"decision":"granted"}"#.to_string())
+                    } else {
+                        (200, "{}".to_string())
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        Mock {
+            ws_base: format!("ws://127.0.0.1:{port}"),
+            consume_calls,
+        }
+    }
+
+    fn test_config(server_ws: &str) -> Config {
+        let identity = crate::Identity {
+            session_id: "sess1".into(),
+            actor_id: "agent-1".into(),
+            cap_id: Some("cap1".into()),
+            permissions: vec![],
+        };
+        Config {
+            identity: crate::sealed::SealedJson::new(&identity),
+            server_ws: server_ws.to_string(),
+            listen_port: 0,
+            upstream_mcp: String::new(),
+            upstream_mcp_cmd: None,
+            fail_open: false,
+            tool_categories: HashMap::new(),
+        }
+    }
+
+    fn tool() -> ToolCall {
+        ToolCall {
+            tool: "write_file".into(),
+            args: serde_json::json!({"path": "/evil"}),
+        }
+    }
+
+    fn raw_rpc() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "write_file", "arguments": {"path": "/evil"} }
+        })
+    }
+
+    /// Drives the real `handle_proposal` end to end against the mock server.
+    async fn propose(mock: &Mock) -> ipc::ProposalDecision {
+        let config = test_config(&mock.ws_base);
+        let session = Arc::new(SessionClient::new(config.clone()));
+        let scout_pool = ScoutPool::spawn(&scout::ScoutPoolConfig::default());
+        let (sock, _peer) = tokio::net::UnixStream::pair().expect("socketpair");
+        let guardian = GuardianHandle {
+            socket: Arc::new(tokio::sync::Mutex::new(sock)),
+        };
+        let policy = Policy::build(|_| {});
+        let req = ipc::ProposalRequest {
+            id: "p1".into(),
+            tool: tool(),
+            raw_rpc: raw_rpc(),
+        };
+        handle_proposal(req, &config, &session, &scout_pool, &guardian, &policy).await
+    }
+
+    #[tokio::test]
+    async fn consume_and_patch_substitutes_the_servers_canonical_args() {
+        let mock = mock_server("{}", (200, r#"{"args":{"path":"/canonical"}}"#)).await;
+        let session = Arc::new(SessionClient::new(test_config(&mock.ws_base)));
+        let (patched, _) = consume_and_patch(&raw_rpc(), Some("r1"), "cap1", &tool(), &session)
+            .await
+            .expect("released receipt must yield a call to forward");
+        assert_eq!(
+            patched["params"]["arguments"],
+            serde_json::json!({"path": "/canonical"}),
+            "the adapter's own args must be replaced by the server's"
+        );
+    }
+
+    #[tokio::test]
+    async fn consume_and_patch_fails_closed_when_the_server_refuses() {
+        for status in [410u16, 403, 500] {
+            let mock = mock_server("{}", (status, "no")).await;
+            let session = Arc::new(SessionClient::new(test_config(&mock.ws_base)));
+            assert!(
+                consume_and_patch(&raw_rpc(), Some("r1"), "cap1", &tool(), &session)
+                    .await
+                    .is_none(),
+                "HTTP {status} from consume-receipt must mean do-not-execute"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn consume_and_patch_fails_closed_when_the_server_is_unreachable() {
+        // Bind then drop, so the port is known-closed.
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        let session = Arc::new(SessionClient::new(test_config(&format!(
+            "ws://127.0.0.1:{port}"
+        ))));
+        assert!(
+            consume_and_patch(&raw_rpc(), Some("r1"), "cap1", &tool(), &session)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn consume_and_patch_fails_closed_without_a_receipt_id() {
+        let mock = mock_server("{}", (200, r#"{"args":{}}"#)).await;
+        let session = Arc::new(SessionClient::new(test_config(&mock.ws_base)));
+        assert!(
+            consume_and_patch(&raw_rpc(), None, "cap1", &tool(), &session)
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            mock.consume_calls.load(Ordering::SeqCst),
+            0,
+            "with no receipt id there is nothing to consume"
+        );
+    }
+
+    // ── End to end through `handle_proposal` ─────────────────────────────────
+
+    #[tokio::test]
+    async fn auto_approved_call_with_a_released_receipt_executes_canonical_args() {
+        let mock = mock_server(
+            r#"{"status":"approved","receipt_id":"r1"}"#,
+            (200, r#"{"args":{"path":"/canonical"}}"#),
+        )
+        .await;
+        let d = propose(&mock).await;
+        assert!(d.granted, "error: {:?}", d.error);
+        assert_eq!(
+            d.canonical_rpc.expect("canonical rpc")["params"]["arguments"],
+            serde_json::json!({"path": "/canonical"})
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_approved_call_is_denied_when_the_receipt_is_refused() {
+        // Cap revoked / epoch superseded / receipt expired between invoke and
+        // consume: the server answers 410. The shim must NOT fall back to the
+        // adapter's raw args and run them anyway.
+        let mock = mock_server(r#"{"status":"approved","receipt_id":"r1"}"#, (410, "gone")).await;
+        let d = propose(&mock).await;
+        assert!(!d.granted, "a refused receipt must not be executed");
+        assert!(d.canonical_rpc.is_none(), "no call may be forwarded");
+        assert_eq!(mock.consume_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn approved_call_with_no_receipt_id_is_denied() {
+        let mock = mock_server(r#"{"status":"approved"}"#, (200, r#"{"args":{}}"#)).await;
+        let d = propose(&mock).await;
+        assert!(!d.granted);
+        assert!(d.canonical_rpc.is_none());
+        assert_eq!(mock.consume_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn human_approved_call_is_denied_when_the_receipt_is_refused() {
+        // The pending path: the human approved, but by the time the shim
+        // consumes, the server won't release the receipt.
+        let mock = mock_server(
+            r#"{"status":"pending","receipt_id":"r1","approval_id":"a1"}"#,
+            (410, "gone"),
+        )
+        .await;
+        let d = propose(&mock).await;
+        assert!(!d.granted, "a refused receipt must not be executed");
+        assert!(d.canonical_rpc.is_none());
+        assert_eq!(mock.consume_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn human_approved_call_with_a_released_receipt_executes_canonical_args() {
+        let mock = mock_server(
+            r#"{"status":"pending","receipt_id":"r1","approval_id":"a1"}"#,
+            (200, r#"{"args":{"path":"/canonical"}}"#),
+        )
+        .await;
+        let d = propose(&mock).await;
+        assert!(d.granted, "error: {:?}", d.error);
+        assert_eq!(
+            d.canonical_rpc.expect("canonical rpc")["params"]["arguments"],
+            serde_json::json!({"path": "/canonical"})
+        );
+    }
 }
