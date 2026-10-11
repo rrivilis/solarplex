@@ -13,6 +13,10 @@ Most AI tools are built around a single-user relationship: Alice has her Claude,
 
 Solarplex makes the **session** the root object. Operational context lives in the session, not in any individual human or agent. Multiple humans can supervise multiple agents in a persistent workspace. Agents run continuously. Ownership rotates. Context persists. Anyone who attaches sees the full picture immediately.
 
+<p align="center">
+  <img src=".github/assets/screenshots/s1-01-chat-pending-approval.png" alt="A Solarplex session where two humans and an AI agent investigate a production regression, with the agent's rollback request waiting for approval" width="900" />
+</p>
+
 ## Development Status
 
 Solarplex is being actively developed and has not yet undergone an independent security audit from an external partner. The core execution and enforcement path is functional on bare-metal Linux. I would expect someone to find subtle bugs, incomplete threat coverage, and possibly design choices that could be reassessed down the road. 
@@ -60,6 +64,11 @@ He reviews the migration and approves it. The agent executes the change. Every a
 Alice returns the next morning and sees the complete chain of events without needing a summary meeting.
 
 That's the model. The session persists. Participants attach and detach. The workflow survived the handoff.
+
+<p align="center">
+  <img src=".github/assets/screenshots/s1-02-context.png" alt="The session's shared context: objective, current state, constraints, open questions, and decisions" width="49%" />
+  <img src=".github/assets/screenshots/s1-03-chat-approved.png" alt="The same session after both approvals: the agent executes the rollback and reports the error rate back at baseline" width="49%" />
+</p>
 
 ## The suite of services
 
