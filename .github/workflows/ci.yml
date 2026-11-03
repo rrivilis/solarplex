@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           # `defaults.run.working-directory: frontend` above only affects
           # `run:` steps, not this action's own inputs — package.json/
@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           # `defaults.run.working-directory: frontend` above only affects
           # `run:` steps, not this action's own inputs — package.json/
